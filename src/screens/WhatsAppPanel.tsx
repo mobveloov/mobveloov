@@ -5,6 +5,66 @@ import { useAuth } from '@/context/AuthContext';
 import { slugify } from '@/lib/utils';
 import type { WhatsAppInstance, WhatsAppStatus, WhatsAppProvider } from '@/types';
 
+const QR_CODE_TTL_SECONDS = 60;
+
+function normalizeQrCode(value: unknown): string | null {
+  if (typeof value !== 'string') return null;
+  const qr = value.trim();
+  if (!qr) return null;
+  if (qr.startsWith('data:image/')) return qr;
+  if (qr.startsWith('http://') || qr.startsWith('https://')) return qr;
+  if (qr.length < 40) return null;
+  return `data:image/png;base64,${qr.replace(/\\s/g, '')}`;
+}
+
+function extractQrCode(payload: unknown): string | null {
+  if (!payload || typeof payload !== 'object') return normalizeQrCode(payload);
+  const value = payload as Record<string, unknown>;
+  const candidates: unknown[] = [
+    value.base64,
+    value.qr,
+    value.qrcode,
+    value.code,
+    value.data,
+    value.response,
+  ];
+  for (const candidate of candidates) {
+    const qr = extractQrCode(candidate);
+    if (qr) return qr;
+  }
+  return null;
+}
+
+function getEvolutionState(payload: unknown): string {
+  if (!payload || typeof payload !== 'object') return '';
+  const value = payload as Record<string, unknown>;
+  const nested = value.instance && typeof value.instance === 'object'
+    ? value.instance as Record<string, unknown>
+    : null;
+  return String(
+    nested?.state ?? nested?.status ?? value.state ?? value.status ?? value.connectionStatus ?? '',
+  ).toUpperCase();
+}
+
+async function fetchWithTimeout(input: RequestInfo | URL, init: RequestInit = {}, timeoutMs = 15000): Promise<Response> {
+  const controller = new AbortController();
+  const timeout = window.setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(input, { ...init, signal: controller.signal });
+  } finally {
+    window.clearTimeout(timeout);
+  }
+}
+
+async function blobToDataUrl(blob: Blob): Promise<string> {
+  return await new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(typeof reader.result === 'string' ? reader.result : '');
+    reader.onerror = () => reject(new Error('Não foi possível ler a imagem do QR Code.'));
+    reader.readAsDataURL(blob);
+  });
+}
+
 const PROVIDERS: {
   value: WhatsAppProvider;
   label: string;
@@ -33,7 +93,13 @@ export function WhatsAppPanel() {
   const [success, setSuccess] = useState<string | null>(null);
   const [planFeatures, setPlanFeatures] = useState<{ plan_name: string; send_driver_info: boolean; send_eta: boolean; distance_update_interval_min: number } | null>(null);
   const [messageCount, setMessageCount] = useState<number>(0);
+  const [qrError, setQrError] = useState<string | null>(null);
+  const [qrImageError, setQrImageError] = useState(false);
+  const [qrExpiresAt, setQrExpiresAt] = useState<number | null>(null);
+  const [qrSecondsRemaining, setQrSecondsRemaining] = useState<number>(0);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const configRef = useRef({ apiUrl: '', globalToken: '', instanceName: '' });
+  const qrRefreshRef = useRef(false);
 
   const loadInstance = useCallback(async () => {
     if (!company) return;
@@ -45,16 +111,27 @@ export function WhatsAppPanel() {
 
     if (data) {
       const wi = data as WhatsAppInstance;
-      setInstance(wi);
+      const storedInstanceName = wi.instance_name || slugify(company.slug);
+      const storedApiUrl = (wi.evolution_api_url || wi.provider_api_url || '').replace(/\/+$/, '');
+      const storedToken = wi.evolution_global_token || '';
+      const isStoredConnected = wi.connection_status === 'connected';
+      const safeInstance = isStoredConnected ? { ...wi, qr_code: null } : { ...wi, qr_code: normalizeQrCode(wi.qr_code) };
+      setInstance(safeInstance);
       setProvider(wi.whatsapp_provider ?? 'evolution');
-      setApiUrl(wi.evolution_api_url || wi.provider_api_url || '');
-      setGlobalToken(wi.evolution_global_token || '');
-      setInstanceName(wi.instance_name || slugify(company.slug));
+      setApiUrl(storedApiUrl);
+      setGlobalToken(storedToken);
+      setInstanceName(storedInstanceName);
       setProviderToken(wi.provider_token || '');
       setProviderPhoneId(wi.provider_phone_id || '');
       setProviderWabaId(wi.provider_waba_id || '');
+      configRef.current = { apiUrl: storedApiUrl, globalToken: storedToken, instanceName: storedInstanceName };
+      if (isStoredConnected && wi.qr_code) {
+        await supabase.from('whatsapp_instances').update({ qr_code: null }).eq('id', wi.id);
+      }
     } else {
-      setInstanceName(slugify(company.slug));
+      const defaultInstanceName = slugify(company.slug);
+      setInstanceName(defaultInstanceName);
+      configRef.current = { apiUrl: '', globalToken: '', instanceName: defaultInstanceName };
     }
     setLoading(false);
 
@@ -112,15 +189,37 @@ export function WhatsAppPanel() {
 
   useEffect(() => () => clearPolling(), []);
 
+  useEffect(() => {
+    if (!qrExpiresAt) {
+      setQrSecondsRemaining(0);
+      return;
+    }
+
+    const updateCountdown = () => {
+      const remaining = Math.max(0, Math.ceil((qrExpiresAt - Date.now()) / 1000));
+      setQrSecondsRemaining(remaining);
+      if (remaining === 0) {
+        setQrExpiresAt(null);
+        setQrError('Este QR Code expirou. Gerando um novo código...');
+        if (!qrRefreshRef.current) void handleFetchQR();
+      }
+    };
+
+    updateCountdown();
+    const timer = window.setInterval(updateCountdown, 1000);
+    return () => window.clearInterval(timer);
+  }, [qrExpiresAt]);
+
   const upsertInstance = async (extra?: Partial<WhatsAppInstance>) => {
     if (!company) return;
+    const cleanApiUrl = apiUrl.trim().replace(/\/+$/, '');
     const payload = {
       company_id: company.id,
       whatsapp_provider: provider,
-      evolution_api_url: provider === 'evolution' ? apiUrl : null,
+      evolution_api_url: provider === 'evolution' ? cleanApiUrl : null,
       evolution_global_token: provider === 'evolution' ? (globalToken || null) : null,
       instance_name: instanceName,
-      provider_api_url: provider === 'zapi' ? apiUrl : null,
+      provider_api_url: provider === 'zapi' ? cleanApiUrl : null,
       provider_token: provider === 'zapi' || provider === 'meta_cloud' ? (providerToken || null) : null,
       provider_phone_id: provider === 'meta_cloud' ? (providerPhoneId || null) : null,
       provider_waba_id: provider === 'meta_cloud' ? (providerWabaId || null) : null,
@@ -131,6 +230,7 @@ export function WhatsAppPanel() {
       .from('whatsapp_instances')
       .upsert(payload, { onConflict: 'company_id' });
     if (err) throw err;
+    configRef.current = { apiUrl: cleanApiUrl, globalToken, instanceName };
     await loadInstance();
   };
 
@@ -176,81 +276,112 @@ export function WhatsAppPanel() {
   };
 
   const handleCreateInstance = async () => {
-    if (!company || !apiUrl || !globalToken || !instanceName) {
-      setError('Preencha URL, token global e nome da instância');
+    const config = { apiUrl: apiUrl.trim().replace(/\/+$/, ''), globalToken: globalToken.trim(), instanceName: instanceName.trim() };
+    if (!company || !config.apiUrl || !config.globalToken || !config.instanceName) {
+      setError('Preencha a URL da Evolution API, o token global e o nome da instância.');
       return;
     }
+    configRef.current = config;
     setActionLoading(true);
     setError(null);
+    setQrError(null);
     setSuccess(null);
 
     try {
-      const res = await fetch(`${apiUrl}/instance/create`, {
+      const res = await fetchWithTimeout(`${config.apiUrl}/instance/create`, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          apikey: globalToken,
-        },
-        body: JSON.stringify({
-          instanceName,
-          token: globalToken,
-          qrcode: true,
-        }),
+        headers: { 'Content-Type': 'application/json', apikey: config.globalToken },
+        body: JSON.stringify({ instanceName: config.instanceName, token: config.globalToken, qrcode: true }),
       });
+      if (!res.ok) throw new Error(`Servidor Evolution API respondeu ${res.status}.`);
+      const data: unknown = await res.json();
+      const state = getEvolutionState(data);
+      const qr = extractQrCode(data);
 
-      if (!res.ok) {
-        const body = await res.text();
-        throw new Error(`Erro ${res.status}: ${body}`);
+      if (state === 'OPEN' || state === 'CONNECTED') {
+        await upsertInstance({ connection_status: 'connected', qr_code: null, last_connected_at: new Date().toISOString() });
+        setQrExpiresAt(null);
+        setSuccess('WhatsApp já está conectado.');
+        clearPolling();
+      } else if (qr) {
+        await upsertInstance({ connection_status: 'connecting', qr_code: qr });
+        setInstance(previous => previous ? { ...previous, connection_status: 'connecting', qr_code: qr } : previous);
+        setQrExpiresAt(Date.now() + QR_CODE_TTL_SECONDS * 1000);
+        setSuccess('Instância criada. Escaneie o QR Code antes que ele expire.');
+        startPolling();
+      } else {
+        throw new Error('A Evolution API criou a instância, mas não retornou um QR Code válido.');
       }
-
-      const data = await res.json();
-
-      await upsertInstance({
-        connection_status: 'connecting',
-        qr_code: data?.qrcode?.base64 ?? data?.qrcode ?? null,
-      });
-
-      setSuccess('Instância criada! Escaneie o QR code.');
-      startPolling();
     } catch (err) {
-      const msg = err instanceof Error ? err.message : 'Erro ao criar instância';
-      setError(msg);
-      await upsertInstance({ connection_status: 'error' });
+      const message = err instanceof DOMException && err.name === 'AbortError'
+        ? 'Tempo limite excedido ao conectar com a Evolution API.'
+        : err instanceof Error ? err.message : 'Não foi possível gerar o QR Code.';
+      setError(`${message} Verifique a URL e o Global Master Token.`);
+      setQrError('Não foi possível gerar o QR Code. Verifique a conexão com o servidor Evolution API.');
+      await upsertInstance({ connection_status: 'error', qr_code: null }).catch(() => {});
     } finally {
       setActionLoading(false);
     }
   };
 
   const handleFetchQR = async () => {
-    if (!instance || !apiUrl || !globalToken) return;
+    const config = configRef.current;
+    if (!config.apiUrl || !config.globalToken || !config.instanceName || qrRefreshRef.current) {
+      if (!config.apiUrl || !config.globalToken || !config.instanceName) {
+        setQrError('Preencha a URL, o Global Master Token e o nome da instância.');
+      }
+      return;
+    }
+    qrRefreshRef.current = true;
     setActionLoading(true);
     setError(null);
+    setQrError(null);
 
     try {
-      const res = await fetch(`${apiUrl}/instance/connect/${instanceName}`, {
-        headers: { apikey: globalToken },
-      });
+      const headers = { apikey: config.globalToken, Accept: 'application/json, image/png, image/jpeg' };
+      let res = await fetchWithTimeout(`${config.apiUrl}/instance/connect/${encodeURIComponent(config.instanceName)}`, { headers });
+      if (res.status === 404 || res.status === 405) {
+        res = await fetchWithTimeout(`${config.apiUrl}/instance/qrcode/${encodeURIComponent(config.instanceName)}`, { headers });
+      }
+      if (!res.ok) throw new Error(`Servidor Evolution API respondeu ${res.status}.`);
 
-      if (!res.ok) {
-        throw new Error(`Erro ${res.status}`);
+      const contentType = res.headers.get('content-type') || '';
+      let qr: string | null = null;
+      let state = '';
+      if (contentType.startsWith('image/')) {
+        const blob = await res.blob();
+        qr = await blobToDataUrl(blob);
+      } else if (contentType.includes('json')) {
+        const data: unknown = await res.json();
+        state = getEvolutionState(data);
+        qr = extractQrCode(data);
+      } else {
+        qr = extractQrCode(await res.text());
       }
 
-      const data = await res.json();
-
-      if (data?.status === 'open' || data?.instance?.status === 'open') {
+      if (state === 'OPEN' || state === 'CONNECTED') {
         await upsertInstance({ connection_status: 'connected', qr_code: null, last_connected_at: new Date().toISOString() });
+        setQrExpiresAt(null);
         setSuccess('WhatsApp conectado!');
         clearPolling();
-      } else if (data?.qrcode?.base64 || data?.base64) {
-        const qr = data?.qrcode?.base64 ?? data?.base64;
+      } else if (qr) {
         await upsertInstance({ connection_status: 'connecting', qr_code: qr });
+        setInstance(previous => previous ? { ...previous, connection_status: 'connecting', qr_code: qr } : previous);
+        setQrExpiresAt(Date.now() + QR_CODE_TTL_SECONDS * 1000);
+        setQrImageError(false);
+        setQrError(null);
+        startPolling();
       } else {
-        setError('QR code não disponível. Crie a instância primeiro.');
+        throw new Error('A resposta não contém base64 nem imagem de QR Code.');
       }
     } catch (err) {
-      const msg = err instanceof Error ? err.message : 'Erro ao buscar QR';
-      setError(msg);
+      const message = err instanceof DOMException && err.name === 'AbortError'
+        ? 'Tempo limite excedido ao conectar com a Evolution API.'
+        : err instanceof Error ? err.message : 'Erro desconhecido ao buscar o QR Code.';
+      setQrError('Não foi possível gerar o QR Code. Verifique a conexão com o servidor Evolution API.');
+      setError(`${message} Verifique a URL e o Global Master Token.`);
     } finally {
+      qrRefreshRef.current = false;
       setActionLoading(false);
     }
   };
@@ -258,24 +389,23 @@ export function WhatsAppPanel() {
   const startPolling = () => {
     clearPolling();
     pollRef.current = setInterval(async () => {
-      if (!instance || !apiUrl || !globalToken) return;
-
+      const config = configRef.current;
+      if (!config.apiUrl || !config.globalToken || !config.instanceName) return;
       try {
-        const res = await fetch(`${apiUrl}/instance/connectionState/${instanceName}`, {
-          headers: { apikey: globalToken },
-        });
+        const res = await fetchWithTimeout(`${config.apiUrl}/instance/connectionState/${encodeURIComponent(config.instanceName)}`, {
+          headers: { apikey: config.globalToken, Accept: 'application/json' },
+        }, 10000);
         if (!res.ok) return;
-        const data = await res.json();
-
-        const state = data?.instance?.state?.toUpperCase() ?? data?.status?.toUpperCase() ?? '';
-
+        const data: unknown = await res.json();
+        const state = getEvolutionState(data);
         if (state === 'OPEN' || state === 'CONNECTED') {
           await upsertInstance({ connection_status: 'connected', qr_code: null, last_connected_at: new Date().toISOString() });
+          setQrExpiresAt(null);
           setSuccess('WhatsApp conectado!');
           clearPolling();
         }
       } catch {
-        // silent polling errors
+        // A transient polling failure should not replace the QR code with a broken image.
       }
     }, 5000);
   };
@@ -502,28 +632,83 @@ export function WhatsAppPanel() {
         </div>
       ) : (
         <>
-          {provider === 'evolution' && instance?.qr_code && (
+          {provider === 'evolution' && status === 'connecting' && (
             <div className="card p-6 mb-4 text-center">
               <h3 className="mb-3 text-sm font-bold text-neutral-700 dark:text-neutral-300 flex items-center justify-center gap-2">
                 <QrCode className="h-5 w-5 text-gold-500" />
-                Escaneie o QR code
+                Escaneie o QR Code
               </h3>
-              <img
-                src={instance.qr_code.startsWith('data:') ? instance.qr_code : `data:image/png;base64,${instance.qr_code}`}
-                alt="WhatsApp QR Code"
-                className="mx-auto rounded-xl border border-neutral-200 dark:border-neutral-700 max-w-[260px]"
-              />
-              <p className="mt-3 text-xs text-neutral-400">
-                Abra o WhatsApp {'>'} Configurações {'>'} Aparelhos conectados {'>'} Conectar aparelho
-              </p>
-              <button
-                onClick={handleFetchQR}
-                disabled={actionLoading}
-                className="mt-3 flex items-center gap-1.5 mx-auto text-sm text-gold-600 dark:text-gold-400 hover:text-gold-700"
-              >
-                <RefreshCw className="h-4 w-4" />
-                Atualizar QR
-              </button>
+
+              {qrError ? (
+                <div className="mx-auto max-w-[260px] space-y-3">
+                  <div className="flex flex-col items-center gap-2 rounded-xl border border-error-500/30 bg-error-500/5 p-6">
+                    <AlertCircle className="h-10 w-10 text-error-500" />
+                    <p className="text-sm text-error-600 dark:text-error-400">{qrError}</p>
+                  </div>
+                  <button
+                    onClick={handleFetchQR}
+                    disabled={actionLoading}
+                    className="btn-secondary w-full flex items-center justify-center gap-2"
+                  >
+                    {actionLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
+                    Tentar novamente
+                  </button>
+                </div>
+              ) : instance?.qr_code && !qrImageError ? (
+                <div className="relative mx-auto inline-block">
+                  <img
+                    src={instance.qr_code.startsWith('data:') || instance.qr_code.startsWith('blob:') ? instance.qr_code : `data:image/png;base64,${instance.qr_code}`}
+                    alt="WhatsApp QR Code"
+                    onError={() => setQrImageError(true)}
+                    className="mx-auto rounded-xl border border-neutral-200 dark:border-neutral-700 max-w-[260px]"
+                  />
+                  {qrSecondsRemaining > 0 && (
+                    <div className="mt-2 flex items-center justify-center gap-1.5 text-xs text-neutral-500">
+                      <Clock className="h-3.5 w-3.5" />
+                      <span>Expira em {qrSecondsRemaining}s</span>
+                    </div>
+                  )}
+                  {qrSecondsRemaining === 0 && qrExpiresAt === null && (
+                    <div className="mt-2 flex items-center justify-center gap-1.5 text-xs text-amber-500">
+                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                      <span>Gerando novo QR Code...</span>
+                    </div>
+                  )}
+                </div>
+              ) : (
+                <div className="mx-auto max-w-[260px] space-y-3">
+                  <div className="flex flex-col items-center gap-2 rounded-xl border border-neutral-200 dark:border-neutral-700 p-6">
+                    <QrCode className="h-10 w-10 text-neutral-400" />
+                    <p className="text-sm text-neutral-500">
+                      {qrImageError ? 'Não foi possível exibir a imagem do QR Code.' : 'Aguardando geração do QR Code...'}
+                    </p>
+                  </div>
+                  <button
+                    onClick={handleFetchQR}
+                    disabled={actionLoading}
+                    className="btn-secondary w-full flex items-center justify-center gap-2"
+                  >
+                    {actionLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
+                    Gerar QR Code
+                  </button>
+                </div>
+              )}
+
+              {!qrError && instance?.qr_code && !qrImageError && (
+                <>
+                  <p className="mt-3 text-xs text-neutral-400">
+                    Abra o WhatsApp {'>'} Configurações {'>'} Aparelhos conectados {'>'} Conectar aparelho
+                  </p>
+                  <button
+                    onClick={handleFetchQR}
+                    disabled={actionLoading}
+                    className="mt-3 flex items-center gap-1.5 mx-auto text-sm text-gold-600 dark:text-gold-400 hover:text-gold-700"
+                  >
+                    <RefreshCw className="h-4 w-4" />
+                    Gerar novo QR Code
+                  </button>
+                </>
+              )}
             </div>
           )}
 
@@ -659,7 +844,7 @@ export function WhatsAppPanel() {
               </div>
             )}
 
-            {provider === 'evolution' && !instance?.qr_code && (
+            {provider === 'evolution' && status !== 'connected' && status !== 'connecting' && (
               <button
                 onClick={handleCreateInstance}
                 disabled={actionLoading}
@@ -681,7 +866,7 @@ export function WhatsAppPanel() {
               </button>
             )}
 
-            {provider === 'evolution' && instance?.qr_code && (
+            {provider === 'evolution' && status === 'connecting' && (
               <button
                 onClick={handleSaveProvider}
                 disabled={actionLoading}

@@ -19,6 +19,7 @@ import { WhatsAppPanel } from '@/screens/WhatsAppPanel';
 import { DriversPanel } from '@/screens/DriversPanel';
 import { DispatchBoard } from '@/screens/DispatchBoard';
 import { LocationsPanel } from '@/screens/LocationsPanel';
+import { ManualModule } from '@/screens/admin/ManualModule';
 
 export function TenantAdminScreen() {
   const { company, signOut } = useAuth();
@@ -76,95 +77,8 @@ export function TenantAdminScreen() {
       {adminScreen === 'reports' && <ReportsModule />}
       {adminScreen === 'finance' && <FinanceModule />}
       {adminScreen === 'subscription' && <SubscriptionModule />}
-      {adminScreen === 'manual' && <UserManual />}
+      {adminScreen === 'manual' && <ManualModule />}
     </AdminLayout>
-  );
-}
-
-function UserManual() {
-  return (
-    <div className="animate-slide-up space-y-6">
-      <div>
-        <h2 className="text-xl font-extrabold text-slate-100">Manual do Usuário</h2>
-        <p className="text-sm text-slate-500">Passo a passo da plataforma Veloov</p>
-      </div>
-
-      <div className="rounded-2xl border border-slate-800 bg-slate-900/50 p-6 space-y-3">
-        <div className="flex items-center gap-2 mb-3">
-          <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-gold-500 text-neutral-900 font-bold text-sm">1</span>
-          <h3 className="text-base font-bold text-slate-100">Central de Passageiro (O Totem)</h3>
-        </div>
-        <p className="text-sm text-slate-400 leading-6">
-          A Central de Passageiro é a tela que o público utiliza para solicitar corridas. Para abrir o totem,
-          acesse o link gerado para cada local diretamente no navegador do quiosque ou tablet. O link tem o formato
-          <span className="font-mono text-gold-400"> /sua-empresa/nome-do-local</span>.
-        </p>
-        <p className="text-sm text-slate-400 leading-6">
-          Ao abrir o link pela primeira vez, o dispositivo é automaticamente vinculado ao totem (hardware lock).
-          Se outra pessoa tentar abrir o mesmo link em um dispositivo diferente, o acesso será bloqueado. Para
-          trocar de monitor, use o botão "Limpar Dispositivo" na aba Totens & Locais.
-        </p>
-        <p className="text-sm text-slate-400 leading-6">
-          O passageiro informa nome e telefone, escolhe o destino, seleciona a categoria e confirma a corrida.
-          A tela de acompanhamento mostra o status em tempo real.
-        </p>
-      </div>
-
-      <div className="rounded-2xl border border-slate-800 bg-slate-900/50 p-6 space-y-3">
-        <div className="flex items-center gap-2 mb-3">
-          <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-gold-500 text-neutral-900 font-bold text-sm">2</span>
-          <h3 className="text-base font-bold text-slate-100">Configurações de Integração</h3>
-        </div>
-        <p className="text-sm text-slate-400 leading-6">
-          Na seção "Integração", você escolhe como sua empresa processa as corridas. Existem três modos:
-        </p>
-        <ul className="list-disc pl-5 text-sm text-slate-400 space-y-1">
-          <li><strong className="text-slate-200">Dispatch Manual:</strong> Sem software externo. As corridas aparecem no painel "Dispatch" para um operador designar motoristas manualmente.</li>
-          <li><strong className="text-slate-200">Machine API:</strong> Integração direta com a plataforma Machine (taximachine.com.br). As credenciais (API Key, usuário e senha do Taxímetro) são preenchidas aqui e enviadas automaticamente pelo servidor.</li>
-          <li><strong className="text-slate-200">Webhook Customizado:</strong> Para qualquer outro provedor. Configure a URL, headers e template do payload.</li>
-        </ul>
-        <p className="text-sm text-slate-400 leading-6">
-          Você também pode ativar o <strong className="text-slate-200">Modo Simulação</strong> para testar o fluxo completo sem enviar
-          requisições reais. O sistema retorna um mock de corrida criada.
-        </p>
-      </div>
-
-      <div className="rounded-2xl border border-slate-800 bg-slate-900/50 p-6 space-y-3">
-        <div className="flex items-center gap-2 mb-3">
-          <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-gold-500 text-neutral-900 font-bold text-sm">3</span>
-          <h3 className="text-base font-bold text-slate-100">Configuração do WhatsApp</h3>
-        </div>
-        <p className="text-sm text-slate-400 leading-6">
-          Na seção "WhatsApp", você conecta uma instância da Evolution API para enviar notificações de status
-          de corrida aos passageiros e motoristas.
-        </p>
-        <ul className="list-disc pl-5 text-sm text-slate-400 space-y-1">
-          <li>Preencha a URL da Evolution API e o token global.</li>
-          <li>Digite um nome para a instância (ex: nome da empresa).</li>
-          <li>Clique em "Criar instância" — um QR Code será exibido.</li>
-          <li>Abra o WhatsApp no celular, vá em Configurações → Dispositivos conectados e escaneie o QR Code.</li>
-          <li>Quando o status mudar para "Conectado", as notificações automáticas estarão ativas.</li>
-        </ul>
-      </div>
-
-      <div className="rounded-2xl border border-slate-800 bg-slate-900/50 p-6 space-y-3">
-        <div className="flex items-center gap-2 mb-3">
-          <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-gold-500 text-neutral-900 font-bold text-sm">4</span>
-          <h3 className="text-base font-bold text-slate-100">Painel de Valores</h3>
-        </div>
-        <p className="text-sm text-slate-400 leading-6">
-          Na seção "Preços", você configura os valores cobrados por cada categoria de veículo. Para cada categoria,
-          você define:
-        </p>
-        <ul className="list-disc pl-5 text-sm text-slate-400 space-y-1">
-          <li><strong className="text-slate-200">Taxa base:</strong> valor fixo cobrado ao iniciar a corrida.</li>
-          <li><strong className="text-slate-200">Preço por KM:</strong> valor adicionado por quilômetro rodado.</li>
-          <li><strong className="text-slate-200">Preço por minuto:</strong> valor adicionado por minuto de viagem.</li>
-          <li><strong className="text-slate-200">Taxa mínima:</strong> o menor valor que pode ser cobrado.</li>
-          <li><strong className="text-slate-200">Tempo estimado (ETA):</strong> minutos para chegada do motorista.</li>
-        </ul>
-      </div>
-    </div>
   );
 }
 
