@@ -1,5 +1,5 @@
-import { useState, useEffect } from 'react';
-import { DollarSign, Save, Loader2, CheckCircle2, AlertCircle, Plus, Trash2, Car, RefreshCw, Link2, Info, MapPin } from 'lucide-react';
+import { useState, useEffect, useCallback } from 'react';
+import { DollarSign, Save, Loader2, CheckCircle2, AlertCircle, Plus, Trash2, Car, RefreshCw, Link2, Info, MapPin, Copy } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 import { useAuth } from '@/context/AuthContext';
 import { fetchMachineCategories, type MachineCategory } from '@/lib/machineApi';
@@ -24,14 +24,32 @@ interface CategoryFormData {
   is_active: boolean;
   machine_category_id: string;
   machine_category_name: string;
-  location_id: string;
+}
+
+function catToForm(c: VehicleCategory): CategoryFormData {
+  return {
+    id: c.id,
+    label: c.label,
+    description: c.description,
+    base_fee: c.base_fee.toString(),
+    per_km_rate: c.per_km_rate.toString(),
+    per_min_rate: c.per_min_rate.toString(),
+    min_fee: c.min_fee.toString(),
+    eta_minutes: c.eta_minutes.toString(),
+    sort_order: c.sort_order.toString(),
+    is_active: c.is_active,
+    machine_category_id: c.machine_category_id ?? '',
+    machine_category_name: c.machine_category_name ?? '',
+  };
 }
 
 export function PricingPanel() {
   const { company } = useAuth();
+  const [companyLocations, setCompanyLocations] = useState<CompanyLocation[]>([]);
+  const [selectedLocationId, setSelectedLocationId] = useState<string | null>(null);
   const [categories, setCategories] = useState<VehicleCategory[]>([]);
-  const [surge, setSurge] = useState('1.00');
   const [forms, setForms] = useState<CategoryFormData[]>([]);
+  const [surge, setSurge] = useState('1.00');
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
@@ -44,44 +62,25 @@ export function PricingPanel() {
   const [catLat, setCatLat] = useState('');
   const [catLng, setCatLng] = useState('');
   const [locationLoaded, setLocationLoaded] = useState(false);
-  const [companyLocations, setCompanyLocations] = useState<CompanyLocation[]>([]);
-  const [filterLocation, setFilterLocation] = useState<string>('all');
+  const [copying, setCopying] = useState(false);
+  const [copied, setCopied] = useState(false);
 
+  // Load company locations first
   useEffect(() => {
     if (!company) return;
     (async () => {
-      const { data: cats } = await supabase
-        .from('vehicle_categories')
-        .select('*')
-        .eq('company_id', company.id)
-        .order('sort_order', { ascending: true });
-
-      const catList = (cats ?? []) as VehicleCategory[];
-      setCategories(catList);
-
       const { data: locs } = await supabase
         .from('company_locations')
         .select('*')
         .eq('company_id', company.id)
         .order('sort_order', { ascending: true });
-      setCompanyLocations((locs ?? []) as CompanyLocation[]);
+      const locList = (locs ?? []) as CompanyLocation[];
+      setCompanyLocations(locList);
 
-      if (catList.length > 0) {
-        setForms(catList.map(catToForm));
+      if (locList.length > 0) {
+        setSelectedLocationId(locList[0].id);
       } else {
-        setForms(DEFAULT_CATEGORIES.map((c) => ({
-          ...c,
-          base_fee: c.base_fee.toString(),
-          per_km_rate: c.per_km_rate.toString(),
-          per_min_rate: c.per_min_rate.toString(),
-          min_fee: c.min_fee.toString(),
-          eta_minutes: c.eta_minutes.toString(),
-          sort_order: c.sort_order.toString(),
-          is_active: true,
-          machine_category_id: '',
-          machine_category_name: '',
-          location_id: '',
-        })));
+        setLoading(false);
       }
 
       const { data: sett } = await supabase
@@ -108,25 +107,46 @@ export function PricingPanel() {
         setCatLng(cred.lng?.toString() ?? '');
       }
       setLocationLoaded(true);
-      setLoading(false);
     })();
   }, [company?.id]);
 
-  const catToForm = (c: VehicleCategory): CategoryFormData => ({
-    id: c.id,
-    label: c.label,
-    description: c.description,
-    base_fee: c.base_fee.toString(),
-    per_km_rate: c.per_km_rate.toString(),
-    per_min_rate: c.per_min_rate.toString(),
-    min_fee: c.min_fee.toString(),
-    eta_minutes: c.eta_minutes.toString(),
-    sort_order: c.sort_order.toString(),
-    is_active: c.is_active,
-    machine_category_id: c.machine_category_id ?? '',
-    machine_category_name: c.machine_category_name ?? '',
-    location_id: c.location_id ?? '',
-  });
+  // Load categories for the selected location only
+  const loadCategories = useCallback(async (locationId: string) => {
+    setLoading(true);
+    const { data: cats } = await supabase
+      .from('vehicle_categories')
+      .select('*')
+      .eq('company_id', company!.id)
+      .eq('location_id', locationId)
+      .order('sort_order', { ascending: true });
+
+    const catList = (cats ?? []) as VehicleCategory[];
+    setCategories(catList);
+
+    if (catList.length > 0) {
+      setForms(catList.map(catToForm));
+    } else {
+      setForms(DEFAULT_CATEGORIES.map((c) => ({
+        ...c,
+        base_fee: c.base_fee.toString(),
+        per_km_rate: c.per_km_rate.toString(),
+        per_min_rate: c.per_min_rate.toString(),
+        min_fee: c.min_fee.toString(),
+        eta_minutes: c.eta_minutes.toString(),
+        sort_order: c.sort_order.toString(),
+        is_active: true,
+        machine_category_id: '',
+        machine_category_name: '',
+      })));
+    }
+    setLoading(false);
+  }, [company]);
+
+  useEffect(() => {
+    if (selectedLocationId) {
+      loadCategories(selectedLocationId);
+    }
+  }, [selectedLocationId, loadCategories]);
 
   const updateForm = (idx: number, field: keyof CategoryFormData, value: string | boolean) => {
     setForms((prev) => prev.map((f, i) => (i === idx ? { ...f, [field]: value } : f)));
@@ -169,10 +189,8 @@ export function PricingPanel() {
           is_active: true,
           machine_category_id: machineCategory.id,
           machine_category_name: machineCategory.nome,
-          location_id: '',
         })));
       } else {
-        // Refresh names/descriptions for already-linked categories, keep local prices untouched
         setForms((prev) => prev.map((form) => {
           if (!form.machine_category_id) return form;
           const mc = result.data!.find((c) => c.id === form.machine_category_id);
@@ -191,7 +209,7 @@ export function PricingPanel() {
     setLoadingMachineCats(false);
   };
 
-  const addCategory = (locationId: string = '') => {
+  const addCategory = () => {
     setForms((prev) => [...prev, {
       label: 'Nova categoria',
       description: '',
@@ -204,7 +222,6 @@ export function PricingPanel() {
       is_active: true,
       machine_category_id: '',
       machine_category_name: '',
-      location_id: locationId,
     }]);
   };
 
@@ -214,7 +231,7 @@ export function PricingPanel() {
 
   const handleSave = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!company) return;
+    if (!company || !selectedLocationId) return;
     setSaving(true);
     setError(null);
     setSaved(false);
@@ -225,6 +242,7 @@ export function PricingPanel() {
       return;
     }
 
+    // Only touch categories for THIS location — never others
     const currentIds = new Set(categories.map((c) => c.id));
     const formIds = new Set(forms.filter((f) => f.id).map((f) => f.id));
     const toDelete = [...currentIds].filter((id) => !formIds.has(id));
@@ -236,6 +254,7 @@ export function PricingPanel() {
     for (const form of forms) {
       const payload = {
         company_id: company.id,
+        location_id: selectedLocationId,
         label: form.label,
         description: form.description,
         base_fee: parseFloat(form.base_fee) || 0,
@@ -247,7 +266,6 @@ export function PricingPanel() {
         is_active: form.is_active,
         machine_category_id: form.machine_category_id || null,
         machine_category_name: form.machine_category_name || null,
-        location_id: form.location_id || null,
         updated_at: new Date().toISOString(),
       };
 
@@ -285,16 +303,68 @@ export function PricingPanel() {
     setSaving(false);
     setTimeout(() => setSaved(false), 3000);
 
-    const { data: cats } = await supabase
-      .from('vehicle_categories')
-      .select('*')
-      .eq('company_id', company.id)
-      .order('sort_order', { ascending: true });
-    setCategories((cats ?? []) as VehicleCategory[]);
-    setForms(((cats ?? []) as VehicleCategory[]).map(catToForm));
+    // Reload categories for this location only
+    await loadCategories(selectedLocationId);
   };
 
-  if (loading) {
+  const handleCopyToAll = async () => {
+    if (!company || !selectedLocationId) return;
+    const targetLocations = companyLocations.filter((l) => l.id !== selectedLocationId);
+    if (targetLocations.length === 0) return;
+
+    setCopying(true);
+    setError(null);
+    setCopied(false);
+
+    try {
+      for (const loc of targetLocations) {
+        // Delete existing categories in target location
+        await supabase
+          .from('vehicle_categories')
+          .delete()
+          .eq('company_id', company.id)
+          .eq('location_id', loc.id);
+
+        // Insert copies of current forms
+        const inserts = forms.map((form) => ({
+          company_id: company.id,
+          location_id: loc.id,
+          label: form.label,
+          description: form.description,
+          base_fee: parseFloat(form.base_fee) || 0,
+          per_km_rate: parseFloat(form.per_km_rate) || 0,
+          per_min_rate: parseFloat(form.per_min_rate) || 0,
+          min_fee: parseFloat(form.min_fee) || 0,
+          eta_minutes: parseInt(form.eta_minutes) || 5,
+          sort_order: parseInt(form.sort_order) || 0,
+          is_active: form.is_active,
+          machine_category_id: form.machine_category_id || null,
+          machine_category_name: form.machine_category_name || null,
+        }));
+
+        if (inserts.length > 0) {
+          const { error: insErr } = await supabase
+            .from('vehicle_categories')
+            .insert(inserts);
+          if (insErr) {
+            setError(`Erro ao copiar para "${loc.name}": ${insErr.message}`);
+            setCopying(false);
+            return;
+          }
+        }
+      }
+
+      setCopied(true);
+      setTimeout(() => setCopied(false), 3000);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Erro ao copiar categorias';
+      setError(msg);
+    } finally {
+      setCopying(false);
+    }
+  };
+
+  if (loading && companyLocations.length === 0) {
     return (
       <div className="flex h-40 items-center justify-center">
         <Loader2 className="h-6 w-6 animate-spin text-gold-500" />
@@ -302,8 +372,30 @@ export function PricingPanel() {
     );
   }
 
+  if (companyLocations.length === 0) {
+    return (
+      <div className="animate-slide-up">
+        <div className="mb-6 flex items-center gap-3">
+          <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-gold-500/15">
+            <DollarSign className="h-5 w-5 text-gold-600 dark:text-gold-400" />
+          </div>
+          <div>
+            <h2 className="text-xl font-bold text-neutral-900 dark:text-neutral-100">Tabela de preços</h2>
+            <p className="text-sm text-neutral-500">Defina preços por categoria de veículo</p>
+          </div>
+        </div>
+        <div className="card p-8 text-center">
+          <MapPin className="mx-auto mb-3 h-10 w-10 text-neutral-400" />
+          <p className="text-sm font-semibold text-neutral-700 dark:text-neutral-300">Nenhum totem cadastrado</p>
+          <p className="text-xs text-neutral-500 mt-1">Crie pelo menos um totem na aba "Totens & Locais" para configurar preços.</p>
+        </div>
+      </div>
+    );
+  }
+
   const labelCls = 'mb-1 block text-xs font-semibold text-neutral-600 dark:text-neutral-400';
   const isMachineMode = integrationMode === 'machine';
+  const selectedLocation = companyLocations.find((l) => l.id === selectedLocationId);
 
   return (
     <div className="animate-slide-up">
@@ -312,13 +404,38 @@ export function PricingPanel() {
           <DollarSign className="h-5 w-5 text-gold-600 dark:text-gold-400" />
         </div>
         <div>
-          <h2 className="text-xl font-bold text-neutral-900 dark:text-neutral-100">
-            Tabela de preços
-          </h2>
-          <p className="text-sm text-neutral-500">
-            Defina preços independentes por categoria de veículo
-          </p>
+          <h2 className="text-xl font-bold text-neutral-900 dark:text-neutral-100">Tabela de preços</h2>
+          <p className="text-sm text-neutral-500">Defina preços independentes por totem e categoria</p>
         </div>
+      </div>
+
+      {/* Totem selector — mandatory, no "all" option */}
+      <div className="card p-4 mb-4">
+        <label className="mb-2 block text-sm font-bold text-neutral-700 dark:text-neutral-300">
+          Editando categorias do totem:
+        </label>
+        <div className="flex flex-wrap gap-2">
+          {companyLocations.map((loc) => (
+            <button
+              key={loc.id}
+              type="button"
+              onClick={() => setSelectedLocationId(loc.id)}
+              className={`px-4 py-2 rounded-lg text-sm font-semibold transition-all flex items-center gap-1.5 ${
+                selectedLocationId === loc.id
+                  ? 'bg-gold-500 text-white'
+                  : 'bg-neutral-100 dark:bg-neutral-800 text-neutral-600 dark:text-neutral-400 hover:bg-gold-500/10'
+              }`}
+            >
+              <MapPin className="h-3.5 w-3.5" />
+              {loc.name}
+            </button>
+          ))}
+        </div>
+        {selectedLocation && (
+          <p className="mt-2 text-xs text-neutral-500">
+            As alterações abaixo afetam apenas o totem <strong className="text-neutral-700 dark:text-neutral-300">{selectedLocation.name}</strong>. Os outros totens não são modificados.
+          </p>
+        )}
       </div>
 
       {isMachineMode && (
@@ -330,7 +447,7 @@ export function PricingPanel() {
                 Vincular categorias à Machine API
               </p>
               <p className="text-xs text-neutral-500 dark:text-neutral-400 mt-1 mb-3">
-                As categorias vinculadas à Machine usam o preço calculado em tempo real pela central para cada corrida. A tarifa (base, por km, por minuto) é configurada no painel da Machine — não aqui.
+                As categorias vinculadas à Machine usam o preço calculado em tempo real pela central para cada corrida. A tarifa é configurada no painel da Machine — não aqui.
               </p>
               <div className="flex items-center justify-between gap-3 mb-3">
                 <div className="flex items-center gap-2 text-xs text-neutral-600 dark:text-neutral-400">
@@ -370,9 +487,6 @@ export function PricingPanel() {
                       </span>
                     ))}
                   </div>
-                  <p className="mt-2 text-[11px] text-neutral-500 dark:text-neutral-400">
-                    Cada categoria está vinculada pelo ID da Machine. O preço final é calculado em tempo real pela central quando o passageiro solicita a corrida.
-                  </p>
                 </>
               )}
             </div>
@@ -380,234 +494,192 @@ export function PricingPanel() {
         </div>
       )}
 
-      {companyLocations.length > 0 && (
-        <div className="mb-4 flex flex-wrap gap-2">
-          <button
-            type="button"
-            onClick={() => setFilterLocation('all')}
-            className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors ${
-              filterLocation === 'all'
-                ? 'bg-gold-500 text-white'
-                : 'bg-neutral-100 dark:bg-neutral-800 text-neutral-600 dark:text-neutral-400 hover:bg-gold-500/10'
-            }`}
-          >
-            Todos os locais
-          </button>
-          {companyLocations.map((loc) => (
-            <button
-              key={loc.id}
-              type="button"
-              onClick={() => setFilterLocation(loc.id)}
-              className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors flex items-center gap-1.5 ${
-                filterLocation === loc.id
-                  ? 'bg-gold-500 text-white'
-                  : 'bg-neutral-100 dark:bg-neutral-800 text-neutral-600 dark:text-neutral-400 hover:bg-gold-500/10'
-              }`}
-            >
-              <MapPin className="h-3 w-3" />
-              {loc.name}
-            </button>
-          ))}
+      {loading ? (
+        <div className="flex h-40 items-center justify-center">
+          <Loader2 className="h-6 w-6 animate-spin text-gold-500" />
         </div>
-      )}
-
-      <form onSubmit={handleSave} className="space-y-4">
-        <div className="card p-4 flex items-center justify-between">
-          <div>
-            <label className={labelCls}>Multiplicador de demanda (surge)</label>
-            <input
-              type="number"
-              step="0.01"
-              value={surge}
-              onChange={(e) => setSurge(e.target.value)}
-              className="input-field w-32"
-            />
-          </div>
-          <p className="text-xs text-neutral-400 max-w-[180px] text-right">
-            Aplicado sobre todas as categorias. 1.0 = preço normal.
-          </p>
-        </div>
-
-        {forms
-          .map((form, idx) => {
-            if (filterLocation !== 'all' && form.location_id !== filterLocation && form.location_id !== '') return null;
-            const locName = form.location_id
-              ? companyLocations.find((l) => l.id === form.location_id)?.name
-              : null;
-            return (
-          <div key={idx} className="card p-5 space-y-3">
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-2">
-                <Car className="h-4 w-4 text-gold-500" />
-                <span className="text-sm font-bold text-neutral-700 dark:text-neutral-300">
-                  Categoria {idx + 1}
-                </span>
-                {form.machine_category_id && (
-                  <span className="badge-gold text-[10px] flex items-center gap-1">
-                    <Link2 className="h-3 w-3" />
-                    Machine ID: {form.machine_category_id}
-                  </span>
-                )}
-                {locName && (
-                  <span className="text-[10px] font-semibold text-gold-600 dark:text-gold-400 bg-gold-500/10 px-2 py-0.5 rounded-full flex items-center gap-1">
-                    <MapPin className="h-2.5 w-2.5" />
-                    {locName}
-                  </span>
-                )}
-              </div>
-              <button
-                type="button"
-                onClick={() => removeCategory(idx)}
-                className="text-error-500 hover:text-error-600 transition-colors"
-              >
-                <Trash2 className="h-4 w-4" />
-              </button>
+      ) : (
+        <form onSubmit={handleSave} className="space-y-4">
+          <div className="card p-4 flex items-center justify-between">
+            <div>
+              <label className={labelCls}>Multiplicador de demanda (surge)</label>
+              <input
+                type="number"
+                step="0.01"
+                value={surge}
+                onChange={(e) => setSurge(e.target.value)}
+                className="input-field w-32"
+              />
             </div>
+            <p className="text-xs text-neutral-400 max-w-[180px] text-right">
+              Aplicado sobre todas as categorias. 1.0 = preço normal.
+            </p>
+          </div>
 
-            <div className="grid grid-cols-2 gap-3">
-              <div>
-                <label className={labelCls}>Nome</label>
-                <input type="text" value={form.label} onChange={(e) => updateForm(idx, 'label', e.target.value)} className="input-field" />
-              </div>
-              <div>
-                <label className={labelCls}>Descrição</label>
-                <input type="text" value={form.description} onChange={(e) => updateForm(idx, 'description', e.target.value)} className="input-field" />
-              </div>
-
-              {isMachineMode && (
-                <div className="col-span-2">
-                  <label className={labelCls}>Categoria na Machine API</label>
-                  {machineCats.length > 0 ? (
-                    <>
-                    <select
-                      value={form.machine_category_id}
-                      onChange={(e) => handleMachineCatChange(idx, e.target.value)}
-                      className="input-field"
-                    >
-                      <option value="">— Sem vinculação (usa preço local) —</option>
-                      {machineCats.map((mc) => (
-                        <option key={mc.id} value={mc.id}>
-                          {mc.id} — {mc.nome}
-                        </option>
-                      ))}
-                    </select>
-                    {form.machine_category_id && (
-                      <p className="mt-1.5 text-[11px] text-success-600 flex items-center gap-1">
-                        <CheckCircle2 className="h-3 w-3" />
-                        Categoria vinculada. O preço será calculado pela Machine em tempo real.
-                      </p>
-                    )}
-                    </>
-                  ) : (
-                    <div className="flex items-center gap-2 text-xs text-neutral-400">
-                      <Info className="h-3 w-3" />
-                      Clique em "Carregar categorias da Machine API" acima para vincular
-                    </div>
+          {forms.map((form, idx) => (
+            <div key={idx} className="card p-5 space-y-3">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <Car className="h-4 w-4 text-gold-500" />
+                  <span className="text-sm font-bold text-neutral-700 dark:text-neutral-300">
+                    Categoria {idx + 1}
+                  </span>
+                  {form.machine_category_id && (
+                    <span className="badge-gold text-[10px] flex items-center gap-1">
+                      <Link2 className="h-3 w-3" />
+                      Machine ID: {form.machine_category_id}
+                    </span>
                   )}
                 </div>
-              )}
+                <button
+                  type="button"
+                  onClick={() => removeCategory(idx)}
+                  className="text-error-500 hover:text-error-600 transition-colors"
+                >
+                  <Trash2 className="h-4 w-4" />
+                </button>
+              </div>
 
-              {form.machine_category_id ? (
-                <div className="col-span-2">
-                  <div className="rounded-lg bg-gold-500/5 border border-gold-500/20 p-3 text-xs text-neutral-600 dark:text-neutral-400">
-                    <p className="font-semibold text-neutral-700 dark:text-neutral-300 mb-1">Preço gerenciado pela Machine API</p>
-                    <p>A tarifa desta categoria (taxa base, valor por km, por minuto e corrida mínima) é configurada no painel da Machine. O preço final exato é calculado em tempo real para cada corrida e mostrado ao passageiro na hora da solicitação.</p>
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className={labelCls}>Nome</label>
+                  <input type="text" value={form.label} onChange={(e) => updateForm(idx, 'label', e.target.value)} className="input-field" />
+                </div>
+                <div>
+                  <label className={labelCls}>Descrição</label>
+                  <input type="text" value={form.description} onChange={(e) => updateForm(idx, 'description', e.target.value)} className="input-field" />
+                </div>
+
+                {isMachineMode && (
+                  <div className="col-span-2">
+                    <label className={labelCls}>Categoria na Machine API</label>
+                    {machineCats.length > 0 ? (
+                      <>
+                        <select
+                          value={form.machine_category_id}
+                          onChange={(e) => handleMachineCatChange(idx, e.target.value)}
+                          className="input-field"
+                        >
+                          <option value="">— Sem vinculação (usa preço local) —</option>
+                          {machineCats.map((mc) => (
+                            <option key={mc.id} value={mc.id}>
+                              {mc.id} — {mc.nome}
+                            </option>
+                          ))}
+                        </select>
+                        {form.machine_category_id && (
+                          <p className="mt-1.5 text-[11px] text-success-600 flex items-center gap-1">
+                            <CheckCircle2 className="h-3 w-3" />
+                            Categoria vinculada. O preço será calculado pela Machine em tempo real.
+                          </p>
+                        )}
+                      </>
+                    ) : (
+                      <div className="flex items-center gap-2 text-xs text-neutral-400">
+                        <Info className="h-3 w-3" />
+                        Clique em "Carregar categorias da Machine API" acima para vincular
+                      </div>
+                    )}
                   </div>
+                )}
+
+                {form.machine_category_id ? (
+                  <div className="col-span-2">
+                    <div className="rounded-lg bg-gold-500/5 border border-gold-500/20 p-3 text-xs text-neutral-600 dark:text-neutral-400">
+                      <p className="font-semibold text-neutral-700 dark:text-neutral-300 mb-1">Preço gerenciado pela Machine API</p>
+                      <p>A tarifa desta categoria é configurada no painel da Machine. O preço final é calculado em tempo real para cada corrida.</p>
+                    </div>
+                  </div>
+                ) : (
+                  <>
+                    <div>
+                      <label className={labelCls}>Taxa base (R$)</label>
+                      <input type="number" step="0.01" value={form.base_fee} onChange={(e) => updateForm(idx, 'base_fee', e.target.value)} className="input-field" />
+                    </div>
+                    <div>
+                      <label className={labelCls}>Por km (R$)</label>
+                      <input type="number" step="0.01" value={form.per_km_rate} onChange={(e) => updateForm(idx, 'per_km_rate', e.target.value)} className="input-field" />
+                    </div>
+                    <div>
+                      <label className={labelCls}>Por min (R$)</label>
+                      <input type="number" step="0.01" value={form.per_min_rate} onChange={(e) => updateForm(idx, 'per_min_rate', e.target.value)} className="input-field" />
+                    </div>
+                    <div>
+                      <label className={labelCls}>Corrida mínima (R$)</label>
+                      <input type="number" step="0.01" value={form.min_fee} onChange={(e) => updateForm(idx, 'min_fee', e.target.value)} className="input-field" />
+                    </div>
+                  </>
+                )}
+                <div>
+                  <label className={labelCls}>Tempo espera (min)</label>
+                  <input type="number" value={form.eta_minutes} onChange={(e) => updateForm(idx, 'eta_minutes', e.target.value)} className="input-field" />
                 </div>
-              ) : (
-                <>
-              <div>
-                <label className={labelCls}>Taxa base (R$)</label>
-                <input type="number" step="0.01" value={form.base_fee} onChange={(e) => updateForm(idx, 'base_fee', e.target.value)} className="input-field" />
-              </div>
-              <div>
-                <label className={labelCls}>Por km (R$)</label>
-                <input type="number" step="0.01" value={form.per_km_rate} onChange={(e) => updateForm(idx, 'per_km_rate', e.target.value)} className="input-field" />
-              </div>
-              <div>
-                <label className={labelCls}>Por min (R$)</label>
-                <input type="number" step="0.01" value={form.per_min_rate} onChange={(e) => updateForm(idx, 'per_min_rate', e.target.value)} className="input-field" />
-              </div>
-              <div>
-                <label className={labelCls}>Corrida mínima (R$)</label>
-                <input type="number" step="0.01" value={form.min_fee} onChange={(e) => updateForm(idx, 'min_fee', e.target.value)} className="input-field" />
-              </div>
-                </>
-              )}
-              <div>
-                <label className={labelCls}>Tempo espera (min)</label>
-                <input type="number" value={form.eta_minutes} onChange={(e) => updateForm(idx, 'eta_minutes', e.target.value)} className="input-field" />
-              </div>
-              <div>
-                <label className={labelCls}>Ordem</label>
-                <input type="number" value={form.sort_order} onChange={(e) => updateForm(idx, 'sort_order', e.target.value)} className="input-field" />
+                <div>
+                  <label className={labelCls}>Ordem</label>
+                  <input type="number" value={form.sort_order} onChange={(e) => updateForm(idx, 'sort_order', e.target.value)} className="input-field" />
+                </div>
               </div>
 
-              {companyLocations.length > 0 && (
-                <div className="col-span-2">
-                  <label className={labelCls}>Local (totem)</label>
-                  <select
-                    value={form.location_id}
-                    onChange={(e) => updateForm(idx, 'location_id', e.target.value)}
-                    className="input-field"
-                  >
-                    <option value="">Todos os locais (compartilhada)</option>
-                    {companyLocations.map((loc) => (
-                      <option key={loc.id} value={loc.id}>
-                        {loc.name} ({loc.slug})
-                      </option>
-                    ))}
-                  </select>
-                  <p className="mt-1 text-[11px] text-neutral-400">
-                    Selecione um local específico ou deixe em "Todos" para mostrar em todos os totens.
-                  </p>
-                </div>
-              )}
+              <label className="flex items-center gap-2 text-sm text-neutral-600 dark:text-neutral-400">
+                <input
+                  type="checkbox"
+                  checked={form.is_active}
+                  onChange={(e) => updateForm(idx, 'is_active', e.target.checked)}
+                  className="h-4 w-4 rounded accent-gold-500"
+                />
+                Categoria ativa (visível para passageiros)
+              </label>
             </div>
+          ))}
 
-            <label className="flex items-center gap-2 text-sm text-neutral-600 dark:text-neutral-400">
-              <input
-                type="checkbox"
-                checked={form.is_active}
-                onChange={(e) => updateForm(idx, 'is_active', e.target.checked)}
-                className="h-4 w-4 rounded accent-gold-500"
-              />
-              Categoria ativa (visível para passageiros)
-            </label>
+          <button
+            type="button"
+            onClick={addCategory}
+            className="btn-secondary w-full flex items-center justify-center gap-2"
+          >
+            <Plus className="h-5 w-5" />
+            Adicionar categoria a {selectedLocation?.name ?? 'totem'}
+          </button>
+
+          {error && (
+            <div className="flex items-center gap-2 text-sm text-error-500">
+              <AlertCircle className="h-4 w-4" />
+              {error}
+            </div>
+          )}
+          {saved && (
+            <div className="flex items-center gap-2 text-sm text-success-600">
+              <CheckCircle2 className="h-4 w-4" />
+              Preços de {selectedLocation?.name} salvos com sucesso!
+            </div>
+          )}
+          {copied && (
+            <div className="flex items-center gap-2 text-sm text-success-600">
+              <CheckCircle2 className="h-4 w-4" />
+              Categorias copiadas para todos os outros totens!
+            </div>
+          )}
+
+          <div className="flex gap-3">
+            <button type="submit" disabled={saving} className="btn-primary flex-1 flex items-center justify-center gap-2">
+              {saving ? <Loader2 className="h-5 w-5 animate-spin" /> : <Save className="h-5 w-5" />}
+              {saving ? 'Salvando...' : `Salvar categorias de ${selectedLocation?.name ?? 'totem'}`}
+            </button>
+
+            {companyLocations.length > 1 && (
+              <button
+                type="button"
+                onClick={handleCopyToAll}
+                disabled={copying || saving}
+                className="btn-secondary flex items-center justify-center gap-2"
+              >
+                {copying ? <Loader2 className="h-5 w-5 animate-spin" /> : <Copy className="h-5 w-5" />}
+                {copying ? 'Copiando...' : 'Copiar para todos os totens'}
+              </button>
+            )}
           </div>
-            );
-          })
-        }
-
-        <button
-          type="button"
-          onClick={() => addCategory(filterLocation !== 'all' ? filterLocation : '')}
-          className="btn-secondary w-full flex items-center justify-center gap-2"
-        >
-          <Plus className="h-5 w-5" />
-          {filterLocation !== 'all'
-            ? `Adicionar categoria a ${companyLocations.find((l) => l.id === filterLocation)?.name ?? 'local'}`
-            : 'Adicionar categoria (todos os locais)'}
-        </button>
-
-        {error && (
-          <div className="flex items-center gap-2 text-sm text-error-500">
-            <AlertCircle className="h-4 w-4" />
-            {error}
-          </div>
-        )}
-        {saved && (
-          <div className="flex items-center gap-2 text-sm text-success-600">
-            <CheckCircle2 className="h-4 w-4" />
-            Preços atualizados com sucesso!
-          </div>
-        )}
-
-        <button type="submit" disabled={saving} className="btn-primary w-full flex items-center justify-center gap-2">
-          {saving ? <Loader2 className="h-5 w-5 animate-spin" /> : <Save className="h-5 w-5" />}
-          {saving ? 'Salvando...' : 'Salvar todas as categorias'}
-        </button>
-      </form>
+        </form>
+      )}
     </div>
   );
 }

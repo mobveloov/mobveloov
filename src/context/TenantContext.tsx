@@ -153,8 +153,7 @@ export function TenantProvider({ children }: { children: ReactNode }) {
 
       if (sett) setSettings(sett as CompanySettings);
 
-      // Load categories: if location is specified, get categories for that location
-      // PLUS categories with location_id = NULL (shared across all locations)
+      // Load categories for the active location only (location_id is NOT NULL after migration)
       let catQuery = supabase
         .from('vehicle_categories')
         .select('*')
@@ -162,7 +161,7 @@ export function TenantProvider({ children }: { children: ReactNode }) {
         .eq('is_active', true);
 
       if (activeLocation) {
-        catQuery = catQuery.or(`location_id.eq.${activeLocation.id},location_id.is.null`);
+        catQuery = catQuery.eq('location_id', activeLocation.id);
       }
 
       const { data: cats } = await catQuery.order('sort_order', { ascending: true });
