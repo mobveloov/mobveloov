@@ -164,7 +164,7 @@ Deno.serve(async (req: Request) => {
               billingType: "UNDEFINED",
               value: safeFinalPrice,
               cycle: billingType,
-              description: `Assinatura Veloov Mobilidade — ${planName} (${totem_limit} totens, ${billing_cycle})`,
+              description: `Assinatura Veloov Mob — ${planName} (${totem_limit} totens, ${billing_cycle})`,
               externalReference: slug,
               callbackUrl: `${supabaseUrl}/functions/v1/asaas-webhook`,
             }),
@@ -213,6 +213,19 @@ Deno.serve(async (req: Request) => {
       return new Response(JSON.stringify({ error: "Erro ao criar empresa no banco de dados", detail: insertErr.message }), {
         status: 500,
         headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
+    }
+
+    // Create subscription_invoice record if Asaas payment was created
+    if (asaasPaymentId) {
+      await supabase.from("subscription_invoices").insert({
+        company_id: company.id,
+        plan_id: plan.id,
+        cycle: plan.billing_period,
+        amount: safeFinalPrice,
+        status: "pending",
+        asaas_payment_id: asaasPaymentId,
+        due_date: new Date().toISOString(),
       });
     }
 

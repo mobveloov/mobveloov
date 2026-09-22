@@ -1,5 +1,5 @@
-// asaas-webhook edge function — receives Asaas payment + invoice callbacks
-// Validates webhook token, activates licenses on payment, and tracks NFS-e status.
+// asaas-webhook edge function — Veloov Mob
+// Handles payment events (subscription invoices + license activation) and NFS-e invoice events.
 import { createClient } from "npm:@supabase/supabase-js@2.57.4";
 
 const corsHeaders = {
@@ -8,12 +8,6 @@ const corsHeaders = {
   "Access-Control-Allow-Headers": "Content-Type, Authorization, X-Client-Info, Apikey",
 };
 
-const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
-const supabaseServiceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
-const supabase = createClient(supabaseUrl, supabaseServiceKey);
-
-const ASAAS_API_KEY = Deno.env.get("ASAAS_API_KEY") ?? "";
-const ASAAS_WEBHOOK_TOKEN = Deno.env.get("ASAAS_WEBHOOK_TOKEN") ?? "";
 const ASAAS_API_URL = "https://asaas.com";
 
 const PERIOD_DAYS: Record<string, number> = {
@@ -23,13 +17,8 @@ const PERIOD_DAYS: Record<string, number> = {
   annual: 365,
 };
 
-const PAYMENT_EVENTS = new Set([
-  "PAYMENT_RECEIVED",
-  "PAYMENT_CONFIRMED",
-  "PAYMENT_CREATED",
-  "PAYMENT_UPDATED",
-  "PAYMENT_OVERDUE",
-]);
+const CONFIRMED_EVENTS = ["PAYMENT_RECEIVED", "PAYMENT_CONFIRMED"];
+const CONFIRMED_STATUSES = ["RECEIVED", "CONFIRMED", "RECEIVED_IN_CASH"];
 
 const INVOICE_EVENTS = new Set([
   "INVOICE_CREATED",
@@ -43,60 +32,37 @@ Deno.serve(async (req: Request) => {
     return new Response(null, { status: 200, headers: corsHeaders });
   }
 
+  if (req.method !== "POST") {
+    return new Response(JSON.stringify({ error: "Method not allowed" }), {
+      status: 405,
+      headers: { ...corsHeaders, "Content-Type": "application/json" },
+    });
+  }
+
   try {
-    // Validate webhook auth token (if configured)
-    if (ASAAS_WEBHOOK_TOKEN) {
-      const receivedToken = req.headers.get("asaas-access-token");
-      if (receivedToken !== ASAAS_WEBHOOK_TOKEN) {
-        return new Response(
-          JSON.stringify({ error: "Invalid webhook token" }),
-          { status: 401, headers: { ...corsHeaders, "Content-Type": "application/json" } },
-        );
-      }
-    }
+    const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
+    const supabaseKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
+    const supabase = createClient(supabaseUrl, supabaseKey);
+
+    const asaasApiKey = Deno.env.get("ASAAS_API_KEY") ?? "";
 
     const body = await req.json();
-    const event: string = body.event ?? body.Event ?? "";
-    const paymentId: string = body.payment?.id ?? body.Payment?.id ?? body.id ?? "";
-    const eventId: string = body.id ?? "";
+    const { event, payment, invoice } = body;
 
-    if (!event) {
-      return new Response(
-        JSON.stringify({ error: "Missing event type" }),
-        { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } },
-      );
-    }
-
-    // --- Idempotency check ---
-    if (eventId) {
-      const { data: existing } = await supabase
-        .from("admin_logs")
-        .select("id")
-        .eq("source", "asaas_webhook")
-        .eq("payload->>event_id", eventId)
-        .maybeSingle();
-      if (existing) {
-        return new Response(
-          JSON.stringify({ success: true, duplicate: true }),
-          { headers: { ...corsHeaders, "Content-Type": "application/json" } },
-        );
-      }
-    }
-
-    // --- Invoice events ---
-    if (INVOICE_EVENTS.has(event)) {
-      const invoiceId: string = body.invoice?.id ?? body.Invoice?.id ?? "";
-      const invoiceStatus: string = body.invoice?.status ?? body.Invoice?.status ?? "";
-      const paymentRef: string = body.invoice?.payment ?? body.Invoice?.payment ?? "";
+    // --- NFS-e invoice events (INVOICE_CREATED, INVOICE_AUTHORIZED, INVOICE_ERROR, etc.) ---
+    if (INVOICE_EVENTS.has(event) && invoice) {
+      const invoiceId: string = invoice.id ?? "";
+      const invoiceStatus: string = invoice.status ?? "";
+      const paymentRef: string = invoice.payment ?? "";
 
       let companyId: string | null = null;
       if (paymentRef) {
-        const { data: company } = await supabase
-          .from("companies")
-          .select("id")
+        const { data: inv } = await supabase
+          .from("subscription_invoices")
+          .select("company_id")
           .eq("asaas_payment_id", String(paymentRef))
           .maybeSingle();
-        companyId = company?.id ?? null;
+        companyId = inv?.company_id ?? null;
       }
 
       const level = event === "INVOICE_AUTHORIZED" ? "info" : event === "INVOICE_ERROR" ? "error" : "info";
@@ -106,149 +72,226 @@ Deno.serve(async (req: Request) => {
         source: "asaas_webhook",
         level,
         message: `Evento fiscal: ${event} — NFSe ${invoiceId} (status: ${invoiceStatus})`,
-        payload: { event_id: eventId, event, invoice_id: invoiceId, invoice_status: invoiceStatus, payment_id: paymentRef },
+        payload: { event, invoice_id: invoiceId, invoice_status: invoiceStatus, payment_id: paymentRef },
       });
 
-      return new Response(
-        JSON.stringify({ success: true, event, invoice_id: invoiceId }),
-        { headers: { ...corsHeaders, "Content-Type": "application/json" } },
-      );
+      return new Response(JSON.stringify({ success: true, event, invoice_id: invoiceId }), {
+        status: 200,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
     }
 
     // --- Payment events ---
-    if (!PAYMENT_EVENTS.has(event)) {
-      return new Response(
-        JSON.stringify({ success: true, ignored: true, reason: `Event ${event} not handled` }),
-        { headers: { ...corsHeaders, "Content-Type": "application/json" } },
-      );
+    if (!payment || !payment.id) {
+      return new Response(JSON.stringify({ error: "Invalid webhook payload" }), {
+        status: 400,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
     }
 
-    if (!paymentId) {
-      return new Response(
-        JSON.stringify({ error: "Missing payment id" }),
-        { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } },
-      );
-    }
+    const paymentId: string = payment.id;
+    const asaasStatus: string = payment.status || "";
+    const externalRef: string = payment.externalReference || "";
 
-    // Find company by asaas_payment_id
-    const { data: company } = await supabase
-      .from("companies")
-      .select("id, slug, name, plan_id, asaas_payment_id, asaas_customer_id, expires_at")
-      .eq("asaas_payment_id", String(paymentId))
+    // Look up subscription_invoice by asaas_payment_id, then by externalReference (slug)
+    let subInvoice: {
+      id: string;
+      company_id: string;
+      plan_id: string | null;
+      cycle: string;
+      status: string;
+    } | null = null;
+
+    const { data: invByPayment } = await supabase
+      .from("subscription_invoices")
+      .select("id, company_id, plan_id, cycle, status")
+      .eq("asaas_payment_id", paymentId)
       .maybeSingle();
+    subInvoice = invByPayment ?? null;
 
-    if (!company) {
-      // Not all payment events belong to a company tracked here
-      return new Response(
-        JSON.stringify({ error: "Company not found for this payment" }),
-        { status: 404, headers: { ...corsHeaders, "Content-Type": "application/json" } },
-      );
+    if (!subInvoice && externalRef) {
+      const { data: invByRef } = await supabase
+        .from("subscription_invoices")
+        .select("id, company_id, plan_id, cycle, status")
+        .eq("company_id", externalRef)
+        .maybeSingle();
+      subInvoice = invByRef ?? null;
     }
 
-    // Only activate license on actual confirmation
-    if (event === "PAYMENT_RECEIVED" || event === "PAYMENT_CONFIRMED") {
-      // Fetch plan to determine extension days
-      const { data: plan } = await supabase
-        .from("subscription_plans")
-        .select("billing_period, name")
-        .eq("id", company.plan_id)
+    // If not found in subscription_invoices, try matching directly on companies
+    if (!subInvoice) {
+      const { data: company } = await supabase
+        .from("companies")
+        .select("id, slug, name, plan_id, asaas_customer_id, expires_at")
+        .eq("asaas_payment_id", paymentId)
         .maybeSingle();
 
-      const extensionDays = plan ? (PERIOD_DAYS[plan.billing_period] ?? 30) : 30;
+      if (company) {
+        // Fetch plan for cycle info
+        const { data: plan } = await supabase
+          .from("subscription_plans")
+          .select("id, billing_period, name")
+          .eq("id", company.plan_id)
+          .maybeSingle();
 
-      const baseDate = company.expires_at ? new Date(company.expires_at) : new Date();
-      if (baseDate < new Date()) {
-        baseDate.setTime(Date.now());
+        const cycle = plan?.billing_period ?? "monthly";
+
+        // Create a subscription_invoice record on-the-fly
+        const { data: newInv } = await supabase
+          .from("subscription_invoices")
+          .insert({
+            company_id: company.id,
+            plan_id: company.plan_id,
+            cycle,
+            amount: payment.value ?? 0,
+            status: "pending",
+            asaas_payment_id: paymentId,
+            asaas_status: asaasStatus,
+            due_date: payment.dueDate ? new Date(payment.dueDate).toISOString() : new Date().toISOString(),
+          })
+          .select("id, company_id, plan_id, cycle, status")
+          .single();
+
+        subInvoice = newInv ?? null;
       }
-      const newExpiry = new Date(baseDate.getTime() + extensionDays * 24 * 60 * 60 * 1000);
+    }
 
+    if (!subInvoice) {
+      return new Response(JSON.stringify({ message: "No invoice or company found for this payment" }), {
+        status: 200,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
+    }
+
+    const isConfirmed =
+      CONFIRMED_EVENTS.includes(event) || CONFIRMED_STATUSES.includes(asaasStatus);
+
+    if (isConfirmed) {
+      // Mark invoice as paid
       await supabase
-        .from("companies")
+        .from("subscription_invoices")
         .update({
-          status: "active",
-          expires_at: newExpiry.toISOString(),
+          status: "paid",
+          asaas_status: asaasStatus,
+          paid_at: new Date().toISOString(),
           updated_at: new Date().toISOString(),
         })
-        .eq("id", company.id);
+        .eq("id", subInvoice.id);
 
-      // Try to issue NFS-e automatically via Asaas API
-      let invoiceResult: string | null = null;
-      if (ASAAS_API_KEY && company.asaas_customer_id) {
-        try {
-          const invoiceRes = await fetch(`${ASAAS_API_URL}/v3/invoices`, {
-            method: "POST",
-            headers: {
-              "Content-Type": "application/json",
-              "access_token": ASAAS_API_KEY,
-            },
-            body: JSON.stringify({
-              payment: paymentId,
-            }),
-          });
+      // Update company: extend expiration and set status to active
+      const cycleDays = PERIOD_DAYS[subInvoice.cycle] ?? 30;
 
-          if (invoiceRes.ok) {
-            const invoiceData = await invoiceRes.json();
-            invoiceResult = invoiceData.id ?? null;
-          } else {
-            const errBody = await invoiceRes.text();
-            invoiceResult = null;
+      const { data: company } = await supabase
+        .from("companies")
+        .select("id, expires_at, plan_id, asaas_customer_id")
+        .eq("id", subInvoice.company_id)
+        .maybeSingle();
+
+      if (company) {
+        const currentExpiry = company.expires_at ? new Date(company.expires_at) : new Date();
+        const baseDate = currentExpiry > new Date() ? currentExpiry : new Date();
+        const newExpiry = new Date(baseDate.getTime() + cycleDays * 24 * 60 * 60 * 1000);
+
+        await supabase
+          .from("companies")
+          .update({
+            status: "active",
+            expires_at: newExpiry.toISOString(),
+            plan_id: subInvoice.plan_id || company.plan_id,
+            updated_at: new Date().toISOString(),
+          })
+          .eq("id", company.id);
+
+        // Try to issue NFS-e automatically via Asaas API
+        let nfseId: string | null = null;
+        if (asaasApiKey) {
+          try {
+            const { data: plan } = await supabase
+              .from("subscription_plans")
+              .select("name")
+              .eq("id", subInvoice.plan_id)
+              .maybeSingle();
+
+            const invoiceRes = await fetch(`${ASAAS_API_URL}/v3/invoices`, {
+              method: "POST",
+              headers: {
+                "Content-Type": "application/json",
+                "access_token": asaasApiKey,
+              },
+              body: JSON.stringify({
+                payment: paymentId,
+                description: `Licenciamento de software / Assinatura Veloov Mob (${plan?.name ?? "Plano"})`,
+                observations: "Referente à assinatura de plataforma de tecnologia de mobilidade Veloov Mob.",
+              }),
+            });
+
+            if (invoiceRes.ok) {
+              const invoiceData = await invoiceRes.json();
+              nfseId = invoiceData.id ?? null;
+            } else {
+              const errBody = await invoiceRes.text();
+              await supabase.from("admin_logs").insert({
+                company_id: company.id,
+                source: "asaas_webhook",
+                level: "warning",
+                message: `Falha ao emitir NFSe para pagamento ${paymentId}: ${errBody}`,
+                payload: { event, payment_id: paymentId, invoice_error: errBody },
+              });
+            }
+          } catch (nfseErr) {
+            const msg = nfseErr instanceof Error ? nfseErr.message : "Unknown error";
             await supabase.from("admin_logs").insert({
               company_id: company.id,
               source: "asaas_webhook",
               level: "warning",
-              message: `Falha ao emitir NFSe para pagamento ${paymentId}: ${errBody}`,
-              payload: { event_id: eventId, event, payment_id: paymentId, invoice_error: errBody },
+              message: `Erro de conexão ao emitir NFSe: ${msg}`,
+              payload: { event, payment_id: paymentId, invoice_error: msg },
             });
           }
-        } catch (invoiceErr) {
-          const msg = invoiceErr instanceof Error ? invoiceErr.message : "Unknown error";
-          await supabase.from("admin_logs").insert({
-            company_id: company.id,
-            source: "asaas_webhook",
-            level: "warning",
-            message: `Erro de conexão ao emitir NFSe: ${msg}`,
-            payload: { event_id: eventId, event, payment_id: paymentId, invoice_error: msg },
-          });
         }
+
+        await supabase.from("admin_logs").insert({
+          company_id: company.id,
+          source: "asaas_webhook",
+          level: "info",
+          message: `Pagamento confirmado (${event}). Licença estendida por ${cycleDays} dias. NFSe: ${nfseId ?? "não emitida"}. Nova expiração: ${newExpiry.toISOString()}`,
+          payload: { event, payment_id: paymentId, cycle_days: cycleDays, nfse_id: nfseId },
+        });
       }
 
-      await supabase.from("admin_logs").insert({
-        company_id: company.id,
-        source: "asaas_webhook",
-        level: "info",
-        message: `Pagamento confirmado (${event}). Licença estendida por ${extensionDays} dias. NFSe: ${invoiceResult ?? "não emitida"}. Nova expiração: ${newExpiry.toISOString()}`,
-        payload: { event_id: eventId, event, payment_id: paymentId, extension_days: extensionDays, invoice_id: invoiceResult },
+      return new Response(JSON.stringify({ success: true, event, invoice_id: subInvoice.id }), {
+        status: 200,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
       });
-
-      return new Response(
-        JSON.stringify({
-          success: true,
-          company_id: company.id,
-          new_expires_at: newExpiry.toISOString(),
-          invoice_id: invoiceResult,
-        }),
-        { headers: { ...corsHeaders, "Content-Type": "application/json" } },
-      );
     }
 
-    // Other payment events (CREATED, UPDATED, OVERDUE) — just log
+    // Non-confirmed payment event — update status only
+    await supabase
+      .from("subscription_invoices")
+      .update({
+        asaas_status: asaasStatus,
+        status: asaasStatus.toLowerCase(),
+        updated_at: new Date().toISOString(),
+      })
+      .eq("id", subInvoice.id);
+
     await supabase.from("admin_logs").insert({
-      company_id: company.id,
+      company_id: subInvoice.company_id,
       source: "asaas_webhook",
       level: "info",
-      message: `Evento de pagamento: ${event} (pagamento ${paymentId})`,
-      payload: { event_id: eventId, event, payment_id: paymentId },
+      message: `Evento de pagamento: ${event} (pagamento ${paymentId}, status: ${asaasStatus})`,
+      payload: { event, payment_id: paymentId, asaas_status: asaasStatus },
     });
 
-    return new Response(
-      JSON.stringify({ success: true, event, payment_id: paymentId }),
-      { headers: { ...corsHeaders, "Content-Type": "application/json" } },
-    );
+    return new Response(JSON.stringify({ success: true, event, invoice_id: subInvoice.id }), {
+      status: 200,
+      headers: { ...corsHeaders, "Content-Type": "application/json" },
+    });
   } catch (err) {
     const msg = err instanceof Error ? err.message : "Internal server error";
-    return new Response(
-      JSON.stringify({ error: msg }),
-      { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } },
-    );
+    return new Response(JSON.stringify({ error: msg }), {
+      status: 500,
+      headers: { ...corsHeaders, "Content-Type": "application/json" },
+    });
   }
 });
