@@ -27,3 +27,7 @@ entrypoint = "./functions/asaas-webhook/index.ts"
 [functions.manage-company-admin]
 verify_jwt = true
 entrypoint = "./functions/manage-company-admin/index.ts"
+
+[functions.ride-distance-updates]
+verify_jwt = false
+entrypoint = "./functions/ride-distance-updates/index.ts"

@@ -202,7 +202,6 @@ function RegistrationForm({ plans }: { plans: SubscriptionPlan[] }) {
   const [selectedTier, setSelectedTier] = useState<TotemTierId | null>(null);
   const [selectedCycle, setSelectedCycle] = useState<BillingCycleId>('monthly');
   const [customDiscount] = useState(0); // SuperAdmin can set per-company; 0 at registration
-  const [hasMobilityService, setHasMobilityService] = useState(false);
 
   // Dynamic price calculation
   const { fullPrice, finalPrice, tierData, cycleData } = useMemo(() => {
@@ -282,7 +281,7 @@ function RegistrationForm({ plans }: { plans: SubscriptionPlan[] }) {
           billing_months: cycle.months,
           billing_discount: cycle.discount,
           final_price: finalPrice,
-          has_mobility_service: hasMobilityService,
+          has_mobility_service: true,
         }),
       });
 
@@ -629,22 +628,6 @@ function RegistrationForm({ plans }: { plans: SubscriptionPlan[] }) {
               })}
             </div>
           </div>
-
-          {/* Optional: Urban Mobility Service */}
-          <label className="flex cursor-pointer items-start gap-3 rounded-xl border border-slate-700/50 bg-slate-800/40 p-4 transition-all hover:border-gold-500/30">
-            <input
-              type="checkbox"
-              checked={hasMobilityService}
-              onChange={(e) => setHasMobilityService(e.target.checked)}
-              className="mt-0.5 h-5 w-5 rounded border-slate-600 text-gold-500 focus:ring-gold-500"
-            />
-            <div>
-              <p className="text-sm font-semibold text-white">Serviço de Mobilidade Urbana (Opcional)</p>
-              <p className="mt-0.5 text-xs text-slate-400">
-                Marque se sua empresa presta serviço de mobilidade urbana. A nota fiscal será emitida com o serviço municipal correto em vez do serviço padrão.
-              </p>
-            </div>
-          </label>
 
           {/* Dynamic Price Display */}
           {selectedTier && tierData && (

@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
-import { MessageCircle, QrCode, Loader2, CheckCircle2, XCircle, RefreshCw, Power, AlertCircle, Server, Cloud, Zap, Building2 } from 'lucide-react';
+import { MessageCircle, QrCode, Loader2, CheckCircle2, XCircle, RefreshCw, Power, AlertCircle, Server, Cloud, Zap, Building2, Bell, Clock, MapPin, TrendingUp } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 import { useAuth } from '@/context/AuthContext';
 import { slugify } from '@/lib/utils';
@@ -31,6 +31,8 @@ export function WhatsAppPanel() {
   const [actionLoading, setActionLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
+  const [planFeatures, setPlanFeatures] = useState<{ plan_name: string; send_driver_info: boolean; send_eta: boolean; distance_update_interval_min: number } | null>(null);
+  const [messageCount, setMessageCount] = useState<number>(0);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const loadInstance = useCallback(async () => {
@@ -55,6 +57,46 @@ export function WhatsAppPanel() {
       setInstanceName(slugify(company.slug));
     }
     setLoading(false);
+
+    // Load plan notification features + message count
+    if (company.plan_id) {
+      const { data: plan } = await supabase
+        .from('subscription_plans')
+        .select('name')
+        .eq('id', company.plan_id)
+        .maybeSingle();
+
+      const { data: features } = await supabase
+        .from('plan_notification_features')
+        .select('send_driver_info, send_eta, distance_update_interval_min')
+        .eq('plan_id', company.plan_id)
+        .maybeSingle();
+
+      if (plan && features) {
+        setPlanFeatures({
+          plan_name: plan.name,
+          send_driver_info: features.send_driver_info,
+          send_eta: features.send_eta,
+          distance_update_interval_min: features.distance_update_interval_min,
+        });
+      } else if (plan) {
+        setPlanFeatures({
+          plan_name: plan.name,
+          send_driver_info: true,
+          send_eta: false,
+          distance_update_interval_min: 0,
+        });
+      }
+    }
+
+    // Current month message count
+    const currentMonth = new Date().toISOString().slice(0, 7);
+    const { count } = await supabase
+      .from('whatsapp_message_log')
+      .select('*', { count: 'exact', head: true })
+      .eq('company_id', company.id)
+      .eq('billing_month', currentMonth);
+    setMessageCount(count ?? 0);
   }, [company]);
 
   useEffect(() => {
@@ -311,6 +353,83 @@ export function WhatsAppPanel() {
           </button>
         )}
       </div>
+
+      {/* Plan Notification Rules */}
+      {planFeatures && (
+        <div className="card p-5 mb-4 border-gold-500/20 bg-gold-500/5">
+          <div className="flex items-center gap-2 mb-3">
+            <Bell className="h-5 w-5 text-gold-600 dark:text-gold-400" />
+            <h3 className="text-sm font-bold text-neutral-900 dark:text-neutral-100">
+              Regras de Notificação do seu Plano
+            </h3>
+            <span className="ml-auto text-xs font-semibold text-gold-600 dark:text-gold-400 bg-gold-500/10 px-2 py-0.5 rounded-full">
+              {planFeatures.plan_name}
+            </span>
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 mb-3">
+            <div className="flex items-center gap-2">
+              <div className={`flex h-8 w-8 items-center justify-center rounded-lg ${planFeatures.send_driver_info ? 'bg-success-500/15 text-success-600' : 'bg-neutral-200 dark:bg-neutral-700 text-neutral-400'}`}>
+                <CheckCircle2 className="h-4 w-4" />
+              </div>
+              <div>
+                <p className="text-xs font-semibold text-neutral-700 dark:text-neutral-300">Dados do Motorista</p>
+                <p className="text-xs text-neutral-500">{planFeatures.send_driver_info ? 'Nome, carro e placa' : 'Não incluído'}</p>
+              </div>
+            </div>
+
+            <div className="flex items-center gap-2">
+              <div className={`flex h-8 w-8 items-center justify-center rounded-lg ${planFeatures.send_eta ? 'bg-success-500/15 text-success-600' : 'bg-neutral-200 dark:bg-neutral-700 text-neutral-400'}`}>
+                <Clock className="h-4 w-4" />
+              </div>
+              <div>
+                <p className="text-xs font-semibold text-neutral-700 dark:text-neutral-300">Tempo Estimado</p>
+                <p className="text-xs text-neutral-500">{planFeatures.send_eta ? 'Incluído na mensagem' : 'Não incluído'}</p>
+              </div>
+            </div>
+
+            <div className="flex items-center gap-2">
+              <div className={`flex h-8 w-8 items-center justify-center rounded-lg ${planFeatures.distance_update_interval_min > 0 ? 'bg-success-500/15 text-success-600' : 'bg-neutral-200 dark:bg-neutral-700 text-neutral-400'}`}>
+                <MapPin className="h-4 w-4" />
+              </div>
+              <div>
+                <p className="text-xs font-semibold text-neutral-700 dark:text-neutral-300">Atualização de Distância</p>
+                <p className="text-xs text-neutral-500">
+                  {planFeatures.distance_update_interval_min > 0
+                    ? `A cada ${planFeatures.distance_update_interval_min} min`
+                    : 'Não incluído'}
+                </p>
+              </div>
+            </div>
+          </div>
+
+          {/* Upgrade incentive */}
+          {planFeatures.distance_update_interval_min === 0 && (
+            <div className="flex items-center gap-2 rounded-lg bg-gold-500/10 px-3 py-2 mt-2">
+              <TrendingUp className="h-4 w-4 text-gold-600 dark:text-gold-400 shrink-0" />
+              <p className="text-xs text-neutral-600 dark:text-neutral-400">
+                {planFeatures.send_eta
+                  ? 'Seu plano não envia atualizações de distância durante a corrida. Faça upgrade para o plano Ouro e receba atualizações a cada 5 minutos.'
+                  : 'Seu plano envia apenas os dados básicos do motorista. Faça upgrade para o plano Prata para incluir tempo estimado de chegada, ou para Ouro/Black para receber atualizações de distância em tempo real.'}
+              </p>
+            </div>
+          )}
+          {planFeatures.distance_update_interval_min === 5 && (
+            <div className="flex items-center gap-2 rounded-lg bg-gold-500/10 px-3 py-2 mt-2">
+              <TrendingUp className="h-4 w-4 text-gold-600 dark:text-gold-400 shrink-0" />
+              <p className="text-xs text-neutral-600 dark:text-neutral-400">
+                Seu plano Ouro envia atualizações a cada 5 minutos. Faça upgrade para o plano Black e receba atualizações a cada 2 minutos.
+              </p>
+            </div>
+          )}
+
+          {/* Monthly message counter */}
+          <div className="mt-3 flex items-center justify-between border-t border-neutral-200 dark:border-neutral-700 pt-3">
+            <span className="text-xs text-neutral-500">Mensagens enviadas este mês</span>
+            <span className="text-sm font-bold text-neutral-900 dark:text-neutral-100">{messageCount}</span>
+          </div>
+        </div>
+      )}
 
       <div className="space-y-3 mb-5">
         {PROVIDERS.map((p) => {

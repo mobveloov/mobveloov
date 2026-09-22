@@ -207,7 +207,7 @@ Deno.serve(async (req: Request) => {
         asaas_payment_id: asaasPaymentId,
         asaas_checkout_url: checkoutUrl,
         custom_discount: 0,
-        has_mobility_service: has_mobility_service ?? false,
+        has_mobility_service: has_mobility_service ?? true,
       })
       .select("id, slug")
       .single();

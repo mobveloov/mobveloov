@@ -842,8 +842,67 @@ async function sendWhatsAppMessage(
   return false;
 }
 
+async function getPlanNotificationFeatures(
+  companyId: string,
+): Promise<{ send_driver_info: boolean; send_eta: boolean; distance_update_interval_min: number; plan_name: string }> {
+  const { data: company } = await supabase
+    .from("companies")
+    .select("plan_id")
+    .eq("id", companyId)
+    .maybeSingle();
+
+  const defaults = { send_driver_info: true, send_eta: false, distance_update_interval_min: 0, plan_name: "Plano" };
+  if (!company?.plan_id) return defaults;
+
+  const { data: plan } = await supabase
+    .from("subscription_plans")
+    .select("name")
+    .eq("id", company.plan_id)
+    .maybeSingle();
+
+  const { data: features } = await supabase
+    .from("plan_notification_features")
+    .select("send_driver_info, send_eta, distance_update_interval_min")
+    .eq("plan_id", company.plan_id)
+    .maybeSingle();
+
+  if (!features) return { ...defaults, plan_name: plan?.name ?? "Plano" };
+  return {
+    send_driver_info: features.send_driver_info,
+    send_eta: features.send_eta,
+    distance_update_interval_min: features.distance_update_interval_min,
+    plan_name: plan?.name ?? "Plano",
+  };
+}
+
+async function logWhatsAppMessage(
+  companyId: string,
+  rideId: string | null,
+  phone: string,
+  messageType: string,
+  messageBody: string,
+  provider: string,
+  success: boolean,
+  error: string | null = null,
+): Promise<void> {
+  try {
+    await supabase.from("whatsapp_message_log").insert({
+      company_id: companyId,
+      ride_id: rideId,
+      phone,
+      message_type: messageType,
+      message_body: messageBody,
+      provider,
+      success,
+      error,
+      billing_month: new Date().toISOString().slice(0, 7),
+    });
+  } catch { /* best-effort */ }
+}
+
 async function sendPassengerWhatsAppNotification(
   companyId: string,
+  rideId: string,
   passengerPhone: string,
   internalStatus: string,
   driverName: string | null,
@@ -855,44 +914,24 @@ async function sendPassengerWhatsAppNotification(
   let message = STATUS_MESSAGES_PT[internalStatus];
   if (!message) return;
 
-  // Fetch company's plan to determine message tier
-  const { data: company } = await supabase
-    .from("companies")
-    .select("plan_id")
-    .eq("id", companyId)
-    .maybeSingle();
-
-  let messageTier = "A";
-  if (company?.plan_id) {
-    const { data: plan } = await supabase
-      .from("subscription_plans")
-      .select("message_tier")
-      .eq("id", company.plan_id)
-      .maybeSingle();
-    if (plan?.message_tier) messageTier = plan.message_tier;
-  }
+  const features = await getPlanNotificationFeatures(companyId);
 
   if (internalStatus === "accepted" && driverName) {
-    // Tier A (Bronze): Basic driver dispatch data only
-    message += `\n\nMotorista: ${driverName}`;
-    if (vehicleModel) message += `\nVeiculo: ${vehicleModel}`;
-    if (vehiclePlate) message += `\nPlaca: ${vehiclePlate}`;
-
-    // Tier B (Prata): + Dynamic ETA
-    if (messageTier === "B" || messageTier === "C") {
-      if (etaMinutes != null) {
-        message += `\nTempo estimado de chegada: ${etaMinutes} min`;
-      }
+    if (features.send_driver_info) {
+      message += `\n\nMotorista: ${driverName}`;
+      if (vehicleModel) message += `\nVeiculo: ${vehicleModel}`;
+      if (vehiclePlate) message += `\nPlaca: ${vehiclePlate}`;
     }
 
-    // Tier C (Ouro & Black): + Distance line
-    if (messageTier === "C") {
-      if (driverDistanceKm != null) {
-        if (driverDistanceKm >= 1) {
-          message += `\nO motorista esta a ${driverDistanceKm.toFixed(1)} km de distancia`;
-        } else {
-          message += `\nO motorista esta a ${Math.round(driverDistanceKm * 1000)} m de distancia`;
-        }
+    if (features.send_eta && etaMinutes != null) {
+      message += `\nTempo estimado de chegada: ${etaMinutes} min`;
+    }
+
+    if (features.distance_update_interval_min > 0 && driverDistanceKm != null) {
+      if (driverDistanceKm >= 1) {
+        message += `\nO motorista esta a ${driverDistanceKm.toFixed(1)} km de distancia`;
+      } else {
+        message += `\nO motorista esta a ${Math.round(driverDistanceKm * 1000)} m de distancia`;
       }
     }
 
@@ -902,14 +941,16 @@ async function sendPassengerWhatsAppNotification(
   const cleanPhone = passengerPhone.replace(/\D/g, "");
   if (!cleanPhone) return;
 
+  const { provider } = await getWhatsAppConfig();
   try {
     const ok = await sendWhatsAppMessage({}, cleanPhone, message);
+    await logWhatsAppMessage(companyId, rideId, cleanPhone, "driver_assigned", message, provider, ok);
 
     await supabase.from("admin_logs").insert({
       company_id: companyId,
       source: "poll_notification",
       level: ok ? "info" : "error",
-      message: `Notificacao WhatsApp ${ok ? "enviada" : "falhou"} (${internalStatus}, Tier ${messageTier})`,
+      message: `Notificacao WhatsApp ${ok ? "enviada" : "falhou"} (${internalStatus}, ${features.plan_name})`,
     });
   } catch {
     // Best-effort
@@ -1033,6 +1074,7 @@ async function pollRideStatus(companyId: string, rideId: string, machineOrderId?
     if (prevStatus && prevStatus !== internalStatus && passengerPhone) {
       await sendPassengerWhatsAppNotification(
         companyId,
+        rideId,
         passengerPhone,
         internalStatus,
         driverName,
@@ -1043,18 +1085,31 @@ async function pollRideStatus(companyId: string, rideId: string, machineOrderId?
       );
     }
 
-    // Tier C recurrent updates: while en_route, send distance updates every 2 min
-    if (internalStatus === "en_route" && passengerPhone) {
-      const { data: company } = await supabase
-        .from("companies").select("plan_id").eq("id", companyId).maybeSingle();
-      if (company?.plan_id) {
-        const { data: plan } = await supabase
-          .from("subscription_plans").select("message_tier").eq("id", company.plan_id).maybeSingle();
-        if (plan?.message_tier === "C" && driverDistanceKm != null) {
+    // Configurable periodic distance updates while en_route
+    if (internalStatus === "en_route" && passengerPhone && driverDistanceKm != null) {
+      const features = await getPlanNotificationFeatures(companyId);
+      if (features.distance_update_interval_min > 0) {
+        // Check when the last distance_update was sent for this ride
+        const { data: lastMsg } = await supabase
+          .from("whatsapp_message_log")
+          .select("sent_at")
+          .eq("ride_id", rideId)
+          .eq("message_type", "distance_update")
+          .eq("success", true)
+          .order("sent_at", { ascending: false })
+          .limit(1)
+          .maybeSingle();
+
+        const shouldSend = !lastMsg ||
+          (Date.now() - new Date(lastMsg.sent_at).getTime()) >= features.distance_update_interval_min * 60 * 1000;
+
+        if (shouldSend) {
           const updateMsg = driverDistanceKm >= 1
-            ? `Atualizacao: O motorista esta a ${driverDistanceKm.toFixed(1)} km de distancia`
-            : `Atualizacao: O motorista esta a ${Math.round(driverDistanceKm * 1000)} m de distancia`;
-          await sendWhatsAppMessage({}, passengerPhone.replace(/\D/g, ""), updateMsg);
+            ? `Atualizacao: O motorista esta a ${driverDistanceKm.toFixed(1)} km de distancia. Tempo estimado: ${etaMinutes ?? "?"} min.`
+            : `Atualizacao: O motorista esta a ${Math.round(driverDistanceKm * 1000)} m de distancia. Quase no local!`;
+          const { provider } = await getWhatsAppConfig();
+          const ok = await sendWhatsAppMessage({}, passengerPhone.replace(/\D/g, ""), updateMsg);
+          await logWhatsAppMessage(companyId, rideId, passengerPhone.replace(/\D/g, ""), "distance_update", updateMsg, provider, ok);
         }
       }
     }

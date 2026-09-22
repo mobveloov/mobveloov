@@ -217,22 +217,9 @@ Deno.serve(async (req: Request) => {
             // from system_settings instead of the account's default service.
             const invoicePayload: Record<string, unknown> = {
               payment: paymentId,
-              description: `Licenciamento de software / Assinatura Veloov Mob (${plan?.name ?? "Plano"})`,
+              description: `Disponibilização, hospedagem e processamento de dados de plataforma e aplicativo de mobilidade urbana e gestão de motoristas parceiros Veloov Mob (SaaS). Referente à assinatura do plano ${plan?.name ?? "contratado"}.`,
               observations: "Referente à assinatura de plataforma de tecnologia de mobilidade Veloov Mob.",
             };
-
-            if (company.has_mobility_service) {
-              const { data: mobilitySetting } = await supabase
-                .from("system_settings")
-                .select("key_value")
-                .eq("key_name", "asaas_mobility_service_id")
-                .maybeSingle();
-
-              const mobilityServiceId = mobilitySetting?.key_value?.trim() ?? "";
-              if (mobilityServiceId) {
-                invoicePayload.municipalServiceId = mobilityServiceId;
-              }
-            }
 
             const invoiceRes = await fetch(`${ASAAS_API_URL}/v3/invoices`, {
               method: "POST",
