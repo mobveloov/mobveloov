@@ -28,6 +28,7 @@ interface RegisterBody {
   billing_months: number;
   billing_discount: number;
   final_price: number;
+  has_mobility_service: boolean;
 }
 
 Deno.serve(async (req: Request) => {
@@ -51,6 +52,7 @@ Deno.serve(async (req: Request) => {
       billing_months,
       billing_discount,
       final_price,
+      has_mobility_service,
     } = body;
 
     if (!company_name || !cnpj || !responsible_name || !responsible_email || !slug || !totem_tier || !billing_cycle) {
@@ -205,6 +207,7 @@ Deno.serve(async (req: Request) => {
         asaas_payment_id: asaasPaymentId,
         asaas_checkout_url: checkoutUrl,
         custom_discount: 0,
+        has_mobility_service: has_mobility_service ?? false,
       })
       .select("id, slug")
       .single();
@@ -234,8 +237,8 @@ Deno.serve(async (req: Request) => {
       company_id: company.id,
       source: "registration",
       level: asaasError ? "warning" : "info",
-      message: `Empresa "${company_name}" cadastrada (status: ${companyStatus}). Tier: ${totem_tier} (${totem_limit} totens), Ciclo: ${billing_cycle}, Preço: R$ ${safeFinalPrice.toFixed(2)}. Asaas: ${asaasCustomerId ? "OK" : "FALHOU"}`,
-      payload: { totem_tier, totem_limit, billing_cycle, final_price: safeFinalPrice, asaas_customer_id: asaasCustomerId, asaas_error: asaasError, status: companyStatus },
+      message: `Empresa "${company_name}" cadastrada (status: ${companyStatus}). Tier: ${totem_tier} (${totem_limit} totens), Ciclo: ${billing_cycle}, Preço: R$ ${safeFinalPrice.toFixed(2)}. Mobilidade: ${has_mobility_service ? "SIM" : "NÃO"}. Asaas: ${asaasCustomerId ? "OK" : "FALHOU"}`,
+      payload: { totem_tier, totem_limit, billing_cycle, final_price: safeFinalPrice, asaas_customer_id: asaasCustomerId, asaas_error: asaasError, status: companyStatus, has_mobility_service: has_mobility_service ?? false },
     });
 
     // Create superadmin notification

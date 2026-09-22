@@ -183,7 +183,7 @@ Deno.serve(async (req: Request) => {
 
       const { data: company } = await supabase
         .from("companies")
-        .select("id, expires_at, plan_id, asaas_customer_id")
+        .select("id, expires_at, plan_id, asaas_customer_id, has_mobility_service")
         .eq("id", subInvoice.company_id)
         .maybeSingle();
 
@@ -212,17 +212,35 @@ Deno.serve(async (req: Request) => {
               .eq("id", subInvoice.plan_id)
               .maybeSingle();
 
+            // Determine which municipal service to use
+            // If the company has the mobility service add-on, use the mobility service ID
+            // from system_settings instead of the account's default service.
+            const invoicePayload: Record<string, unknown> = {
+              payment: paymentId,
+              description: `Licenciamento de software / Assinatura Veloov Mob (${plan?.name ?? "Plano"})`,
+              observations: "Referente à assinatura de plataforma de tecnologia de mobilidade Veloov Mob.",
+            };
+
+            if (company.has_mobility_service) {
+              const { data: mobilitySetting } = await supabase
+                .from("system_settings")
+                .select("key_value")
+                .eq("key_name", "asaas_mobility_service_id")
+                .maybeSingle();
+
+              const mobilityServiceId = mobilitySetting?.key_value?.trim() ?? "";
+              if (mobilityServiceId) {
+                invoicePayload.municipalServiceId = mobilityServiceId;
+              }
+            }
+
             const invoiceRes = await fetch(`${ASAAS_API_URL}/v3/invoices`, {
               method: "POST",
               headers: {
                 "Content-Type": "application/json",
                 "access_token": asaasApiKey,
               },
-              body: JSON.stringify({
-                payment: paymentId,
-                description: `Licenciamento de software / Assinatura Veloov Mob (${plan?.name ?? "Plano"})`,
-                observations: "Referente à assinatura de plataforma de tecnologia de mobilidade Veloov Mob.",
-              }),
+              body: JSON.stringify(invoicePayload),
             });
 
             if (invoiceRes.ok) {
@@ -254,8 +272,8 @@ Deno.serve(async (req: Request) => {
           company_id: company.id,
           source: "asaas_webhook",
           level: "info",
-          message: `Pagamento confirmado (${event}). Licença estendida por ${cycleDays} dias. NFSe: ${nfseId ?? "não emitida"}. Nova expiração: ${newExpiry.toISOString()}`,
-          payload: { event, payment_id: paymentId, cycle_days: cycleDays, nfse_id: nfseId },
+          message: `Pagamento confirmado (${event}). Licença estendida por ${cycleDays} dias. NFSe: ${nfseId ?? "não emitida"}${company.has_mobility_service ? " (serviço: mobilidade)" : ""}. Nova expiração: ${newExpiry.toISOString()}`,
+          payload: { event, payment_id: paymentId, cycle_days: cycleDays, nfse_id: nfseId, mobility_service: company.has_mobility_service },
         });
       }
 
