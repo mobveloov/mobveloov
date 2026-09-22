@@ -24,6 +24,10 @@ entrypoint = "./functions/auto-cancel-rides/index.ts"
 verify_jwt = false
 entrypoint = "./functions/asaas-webhook/index.ts"
 
+[functions.integration-qr]
+verify_jwt = true
+entrypoint = "./functions/integration-qr/index.ts"
+
 [functions.manage-company-admin]
 verify_jwt = true
 entrypoint = "./functions/manage-company-admin/index.ts"

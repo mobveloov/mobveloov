@@ -110,77 +110,29 @@ export function IntegrationsModule({ success, error: toastError }: ModuleProps) 
     setQrData(null);
     setConnected(false);
 
-    if (config.provider === 'evolution') {
-      const url = config.fields.evo_url ?? '';
-      const token = config.fields.evo_token ?? '';
-      if (!url || !token) {
-        setQrError('Configure a URL e o token da Evolution API antes de gerar o QR Code.');
-        setQrLoading(false);
-        return;
-      }
-
-      const instance = config.fields.evo_instance || 'veloov';
-      try {
-        const resp = await fetch(`${url}/instance/connect/${instance}`, {
-          method: 'GET',
-          headers: { apikey: token },
-        });
-
-        if (!resp.ok) {
-          const body = await resp.text();
-          setQrError(`Falha ao conectar (${resp.status}): ${body.slice(0, 200)}`);
-          setQrLoading(false);
-          return;
-        }
-
-        const data = await resp.json();
-        const qr = data?.base64?.replace(/^data:image\/[a-z]+;base64,/, '')
-          ?? data?.qrcode?.base64
-          ?? data?.code
-          ?? null;
-
-        if (qr && qr.length > 100) {
-          setQrData(qr);
-        } else if (data?.status === 'CONNECTED' || data?.instance?.state === 'open') {
-          setConnected(true);
-        } else {
-          setQrError('Resposta da Evolution não contém QR Code. Verifique se a instância existe.');
-        }
-      } catch (err) {
-        setQrError('Erro de conexão: ' + (err instanceof Error ? err.message : 'desconhecido'));
-      }
+    if (config.provider !== 'evolution' && config.provider !== 'zapi' && config.provider !== 'zpro') {
+      setQrError('QR Code não está disponível para este provedor.');
       setQrLoading(false);
-    } else if (config.provider === 'zapi' || config.provider === 'zpro') {
-      const url = config.fields[`${config.provider === 'zapi' ? 'zapi' : 'zpro'}_url`] ?? '';
-      const instanceId = config.fields[`${config.provider === 'zapi' ? 'zapi' : 'zpro'}_instance_id`] ?? '';
-      const instanceToken = config.fields[`${config.provider === 'zapi' ? 'zapi' : 'zpro'}_instance_token`] ?? '';
-      if (!url || !instanceId || !instanceToken) {
-        setQrError('Configure URL, Instance ID e Instance Token antes de gerar o QR Code.');
-        setQrLoading(false);
-        return;
+      return;
+    }
+
+    try {
+      const { data, error } = await supabase.functions.invoke('integration-qr', {
+        body: {},
+      });
+
+      if (error) {
+        setQrError('Não foi possível conectar ao gateway. Verifique a URL, o token e o nome da instância.');
+      } else if (data?.connected) {
+        setConnected(true);
+      } else if (typeof data?.base64 === 'string' && data.base64.length > 100) {
+        setQrData(data.base64.replace(/^data:image\/[a-z0-9.+-]+;base64,/i, ''));
+      } else {
+        setQrError('O gateway não retornou um QR Code válido.');
       }
-      try {
-        const resp = await fetch(`${url}/instances/${instanceId}/token/${instanceToken}/qr-code`, {
-          method: 'GET',
-        });
-        if (!resp.ok) {
-          setQrError(`Falha ao obter QR (${resp.status})`);
-          setQrLoading(false);
-          return;
-        }
-        const data = await resp.json();
-        const qr = data?.qrcode?.base64 ?? data?.base64 ?? data?.qr ?? null;
-        if (qr && qr.length > 100) {
-          setQrData(qr.replace(/^data:image\/[a-z]+;base64,/, ''));
-        } else {
-          setQrError('Resposta não contém QR Code válido.');
-        }
-      } catch (err) {
-        setQrError('Erro de conexão: ' + (err instanceof Error ? err.message : 'desconhecido'));
-      }
-      setQrLoading(false);
-    } else {
-      setQrError('QR Code não disponível para este provedor. Conecte manualmente conforme a documentação.');
+    } catch {
+      setQrError('Não foi possível conectar ao gateway. Verifique a configuração e tente novamente.');
+    } finally {
       setQrLoading(false);
     }
   };
