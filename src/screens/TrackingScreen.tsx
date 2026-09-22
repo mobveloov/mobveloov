@@ -1,0 +1,433 @@
+import { useState, useEffect, useRef } from 'react';
+import { Clock, MapPin, Navigation, Phone, X, CheckCircle2, Car, Bell, Loader2 } from 'lucide-react';
+import { supabase } from '@/lib/supabase';
+import { useTenant } from '@/context/TenantContext';
+import { useNav } from '@/context/NavContext';
+import { dispatchRide, cancelRide, pollRideStatus, calculateCategoryPricing } from '@/lib/machineApi';
+import { MapView } from '@/components/MapView';
+import { formatCurrency, haversineDistance } from '@/lib/utils';
+import type { GeoPoint, OrderStatus, Ride, VehicleCategory } from '@/types';
+
+const STATUS_FLOW: OrderStatus[] = ['pending', 'accepted', 'en_route', 'in_progress', 'completed'];
+
+const STATUS_LABELS: Record<OrderStatus, { label: string; color: string; icon: typeof Clock }> = {
+  pending: { label: 'Aguardando motorista', color: 'text-warning-500', icon: Clock },
+  accepted: { label: 'Motorista aceitou', color: 'text-primary-500', icon: CheckCircle2 },
+  en_route: { label: 'Motorista a caminho', color: 'text-primary-500', icon: Car },
+  in_progress: { label: 'Viagem em andamento', color: 'text-gold-600', icon: Navigation },
+  completed: { label: 'Viagem concluída', color: 'text-success-600', icon: CheckCircle2 },
+  canceled: { label: 'Viagem cancelada', color: 'text-error-500', icon: X },
+};
+
+interface TrackingScreenProps {
+  origin: GeoPoint;
+  destination: GeoPoint;
+  passengerName: string;
+  passengerPhone: string;
+}
+
+export function TrackingScreen({ origin, destination, passengerName, passengerPhone }: TrackingScreenProps) {
+  const { company, settings, categories, location } = useTenant();
+  const { goPassenger, selectedCategoryId, machineDistance, machineDuration } = useNav();
+
+  const [ride, setRide] = useState<Ride | null>(null);
+  const [creating, setCreating] = useState(true);
+  const [apiError, setApiError] = useState<string | null>(null);
+  const [statusIndex, setStatusIndex] = useState(0);
+  const [driverDistance, setDriverDistance] = useState<number | null>(null);
+  const [kioskReleased, setKioskReleased] = useState(false);
+
+  const createdRef = useRef(false);
+  const rideRef = useRef<string | null>(null);
+  const releaseTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const selectedCategory: VehicleCategory | null = categories.find((c) => c.id === selectedCategoryId) ?? null;
+
+  const localPricing = settings
+    ? selectedCategory
+      ? calculateCategoryPricing(origin, destination, selectedCategory, settings.surge_multiplier)
+      : null
+    : null;
+
+  // Use Machine API distance/duration when available, otherwise fall back to local haversine
+  const effectiveDistance = machineDistance ?? localPricing?.distance ?? 0;
+  const effectiveDuration = machineDuration ?? localPricing?.duration ?? 0;
+  const pricing = localPricing
+    ? { ...localPricing, distance: effectiveDistance, duration: effectiveDuration }
+    : null;
+
+  const categoryLabel = selectedCategory?.label ?? settings?.category_label ?? 'Econômico';
+  const estimatedPrice = pricing?.pricing.final_price ?? settings?.min_fee ?? 0;
+
+  useEffect(() => {
+    if (createdRef.current || !company || !settings) return;
+    createdRef.current = true;
+
+    (async () => {
+      const insertPayload = {
+        company_id: company.id,
+        location_id: location?.id ?? null,
+        passenger_name: passengerName,
+        passenger_phone: passengerPhone,
+        origin_label: origin.label,
+        origin_lat: origin.lat,
+        origin_lng: origin.lng,
+        destination_label: destination.label,
+        destination_lat: destination.lat,
+        destination_lng: destination.lng,
+        distance_km: pricing?.distance ?? 0,
+        duration_min: pricing?.duration ?? 0,
+        category_label: categoryLabel,
+        estimated_price: estimatedPrice,
+        status: 'pending',
+      };
+
+      const { data: dbRide, error: dbErr } = await supabase
+        .from('rides')
+        .insert(insertPayload)
+        .select()
+        .single();
+
+      if (dbErr || !dbRide) {
+        setApiError('Falha ao criar pedido');
+        setCreating(false);
+        return;
+      }
+
+      const typedRide = dbRide as Ride;
+      rideRef.current = typedRide.id;
+      setRide(typedRide);
+
+      const integrationMode = settings.integration_mode ?? 'manual';
+
+      if (integrationMode === 'manual') {
+        // Manual mode: ride stays pending for internal dispatch board.
+        // No external API call needed. Log to admin_logs for visibility.
+        await supabase.from('admin_logs').insert({
+          company_id: company.id,
+          source: 'dispatch',
+          level: 'info',
+          message: `Nova corrida manual #${typedRide.id.slice(0, 8)} aguardando designação`,
+          ride_id: typedRide.id,
+        });
+        setCreating(false);
+        return;
+      }
+
+      // Machine API or Webhook mode: call edge function
+      // Use machine_category_id when available so Machine API prices match exactly
+      const categoryValue = selectedCategory?.machine_category_id || categoryLabel;
+      const dispatchPayload = {
+        companySlug: company.slug,
+        integrationMode,
+        rideId: typedRide.id,
+        passenger_name: passengerName,
+        passenger_phone: passengerPhone,
+        origin: { lat: origin.lat, lng: origin.lng, address: origin.label },
+        destination: { lat: destination.lat, lng: destination.lng, address: destination.label },
+        category: categoryValue,
+        price: estimatedPrice,
+        distance: pricing?.distance ?? 0,
+        simulation_mode: settings?.simulation_mode ?? false,
+      };
+
+      const result = await dispatchRide(dispatchPayload);
+
+      if (!result.success) {
+        await supabase.from('admin_logs').insert({
+          company_id: company.id,
+          source: integrationMode === 'machine' ? 'machine_api' : 'webhook',
+          level: 'error',
+          message: result.error ?? 'Unknown dispatch error',
+          ride_id: typedRide.id,
+          payload: { request: dispatchPayload },
+        });
+        setApiError(result.error ?? null);
+      }
+
+      setCreating(false);
+    })();
+  }, [company, settings, pricing, origin, destination, passengerName, passengerPhone, categoryLabel, estimatedPrice]);
+
+  // Kiosk release: 5-minute rolling timer to unlock the screen for the next passenger
+  useEffect(() => {
+    if (!creating) {
+      releaseTimerRef.current = setTimeout(() => {
+        setKioskReleased(true);
+      }, 5 * 60 * 1000);
+    }
+    return () => {
+      if (releaseTimerRef.current) clearTimeout(releaseTimerRef.current);
+    };
+  }, [creating]);
+
+  // Unlock immediately when ride is accepted or driver is en route
+  useEffect(() => {
+    if (ride && (ride.status === 'accepted' || ride.status === 'en_route' || ride.status === 'in_progress' || ride.status === 'completed' || ride.status === 'canceled')) {
+      setKioskReleased(true);
+    }
+  }, [ride?.status]);
+
+  // Realtime subscription for status updates (works for all modes)
+  useEffect(() => {
+    if (!rideRef.current) return;
+
+    const channel = supabase
+      .channel(`ride-${rideRef.current}`)
+      .on(
+        'postgres_changes',
+        {
+          event: 'UPDATE',
+          schema: 'public',
+          table: 'rides',
+          filter: `id=eq.${rideRef.current}`,
+        },
+        (payload) => {
+          const updated = payload.new as Ride;
+          setRide(updated);
+          const idx = STATUS_FLOW.indexOf(updated.status as OrderStatus);
+          if (idx >= 0) setStatusIndex(idx);
+        }
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, []);
+
+  // Poll Machine API for status updates every 10s (fallback when webhook not configured)
+  useEffect(() => {
+    if (creating || !ride || !company) return;
+    if (ride.status === 'completed' || ride.status === 'canceled') return;
+    if (settings?.integration_mode !== 'machine') return;
+
+    const interval = setInterval(async () => {
+      if (!rideRef.current || !company) return;
+      await pollRideStatus(company.slug, rideRef.current, ride.machine_order_id);
+    }, 10000);
+
+    return () => clearInterval(interval);
+  }, [creating, ride, company, settings]);
+
+  // Poll driver position every 2 minutes and calculate distance to pickup
+  useEffect(() => {
+    if (creating || !ride || !company) return;
+    if (ride.status === 'completed' || ride.status === 'canceled') return;
+    if (ride.status === 'pending') return; // no driver assigned yet
+    if (settings?.integration_mode !== 'machine') return;
+
+    const fetchPosition = async () => {
+      if (!rideRef.current) return;
+      const { data: pos } = await supabase
+        .from('ride_driver_positions')
+        .select('lat, lng, updated_at')
+        .eq('ride_id', rideRef.current)
+        .single();
+
+      if (pos) {
+        const dist = haversineDistance(origin.lat, origin.lng, pos.lat, pos.lng);
+        setDriverDistance(parseFloat(dist.toFixed(2)));
+      }
+    };
+
+    fetchPosition();
+    const interval = setInterval(fetchPosition, 120000); // 2 minutes
+    return () => clearInterval(interval);
+  }, [creating, ride, company, settings, origin]);
+
+  const currentStatus = ride?.status ?? 'pending';
+  const statusInfo = STATUS_LABELS[currentStatus];
+  const StatusIcon = statusInfo.icon;
+  const isCompleted = currentStatus === 'completed';
+  const isCanceled = currentStatus === 'canceled';
+
+  const handleCancel = async () => {
+    if (!rideRef.current || !company) return;
+
+    const integrationMode = settings?.integration_mode ?? 'manual';
+
+    if (integrationMode === 'machine' && ride?.machine_order_id) {
+      await cancelRide(company.slug, rideRef.current, ride.machine_order_id);
+    } else {
+      await supabase
+        .from('rides')
+        .update({ status: 'canceled', updated_at: new Date().toISOString() })
+        .eq('id', rideRef.current);
+    }
+    setRide((prev) => (prev ? { ...prev, status: 'canceled' } : prev));
+  };
+
+  if (creating) {
+    return (
+      <div className="flex h-[60vh] flex-col items-center justify-center gap-4">
+        <Loader2 className="h-10 w-10 animate-spin text-gold-500" />
+        <p className="text-sm font-medium text-neutral-600 dark:text-neutral-400">
+          Solicitando seu motorista...
+        </p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="animate-slide-up">
+      {!isCompleted && !isCanceled && (
+        <button
+          onClick={() => goPassenger('destination')}
+          className="mb-4 text-sm font-medium text-neutral-600 dark:text-neutral-400"
+        >
+          ← Voltar
+        </button>
+      )}
+
+      <div className="mb-4 h-48 overflow-hidden rounded-2xl border border-neutral-200 dark:border-neutral-700">
+        <MapView origin={origin} destination={destination} className="h-full w-full" />
+      </div>
+
+      <div className={`card p-5 mb-4 ${isCompleted ? 'border-success-500/30' : ''}`}>
+        <div className="flex items-center gap-3 mb-4">
+          <div className={`flex h-12 w-12 items-center justify-center rounded-xl ${
+            isCompleted ? 'bg-success-500/15' : 'bg-gold-500/15'
+          }`}>
+            <StatusIcon className={`h-6 w-6 ${statusInfo.color}`} />
+          </div>
+          <div>
+            <p className="text-lg font-bold text-neutral-900 dark:text-neutral-100">
+              {statusInfo.label}
+            </p>
+            <p className="text-xs text-neutral-500 dark:text-neutral-400">
+              {origin.label.slice(0, 30)} → {destination.label.slice(0, 30)}
+            </p>
+          </div>
+        </div>
+
+        <div className="flex items-center gap-1.5">
+          {STATUS_FLOW.map((s, i) => {
+            const active = i <= statusIndex && !isCanceled;
+            return (
+              <div
+                key={s}
+                className={`h-2 flex-1 rounded-full transition-all duration-500 ${
+                  active
+                    ? s === 'completed' ? 'bg-success-500' : 'bg-gold-500'
+                    : 'bg-neutral-200 dark:bg-neutral-700'
+                }`}
+              />
+            );
+          })}
+        </div>
+        <div className="mt-1.5 flex justify-between text-[10px] text-neutral-400">
+          <span>Pedido</span>
+          <span>Aceito</span>
+          <span>A caminho</span>
+          <span>Em viagem</span>
+          <span>Concluído</span>
+        </div>
+      </div>
+
+      {pricing && (
+        <div className="card p-5 mb-4">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <Car className="h-5 w-5 text-neutral-500" />
+              <span className="text-sm font-semibold text-neutral-700 dark:text-neutral-300">
+                {categoryLabel}
+              </span>
+            </div>
+            <span className="text-2xl font-extrabold text-gold-600 dark:text-gold-400">
+              {formatCurrency(estimatedPrice)}
+            </span>
+          </div>
+          <div className="mt-2 flex gap-4 text-sm text-neutral-500 dark:text-neutral-400">
+            <span className="flex items-center gap-1">
+              <MapPin className="h-4 w-4" />
+              {(pricing.distance).toFixed(1)} km
+            </span>
+            <span className="flex items-center gap-1">
+              <Clock className="h-4 w-4" />
+              ~{pricing.duration} min
+            </span>
+          </div>
+        </div>
+      )}
+
+      {ride?.driver_name && currentStatus !== 'pending' && currentStatus !== 'canceled' && (
+        <div className="card p-4 mb-4 animate-fade-in">
+          <div className="flex items-center justify-between">
+            <div>
+              <p className="text-xs text-neutral-400 mb-0.5">Seu motorista</p>
+              <p className="text-base font-bold text-neutral-900 dark:text-neutral-100">
+                {ride.driver_name}
+              </p>
+              <p className="text-sm text-neutral-500 dark:text-neutral-400">
+                {ride.vehicle_model} · {ride.vehicle_plate}
+              </p>
+            </div>
+            <a
+              href={`tel:${ride.driver_phone ?? ''}`}
+              className="flex h-12 w-12 items-center justify-center rounded-full bg-success-500/15 text-success-600 hover:bg-success-500/25 transition-colors"
+            >
+              <Phone className="h-5 w-5" />
+            </a>
+          </div>
+          {driverDistance !== null && (currentStatus === 'accepted' || currentStatus === 'en_route') && (
+            <div className="mt-3 flex items-center gap-2 rounded-lg bg-gold-500/10 px-3 py-2">
+              <Navigation className="h-4 w-4 text-gold-600 dark:text-gold-400" />
+              <span className="text-sm font-semibold text-gold-700 dark:text-gold-300">
+                {driverDistance >= 1
+                  ? `Motorista a ${driverDistance.toFixed(1)} km do ponto de embarque`
+                  : `Motorista a ${Math.round(driverDistance * 1000)} m do ponto de embarque`}
+              </span>
+            </div>
+          )}
+        </div>
+      )}
+
+      {apiError && (
+        <div className="card p-4 mb-4 border-error-500/30 bg-error-500/5">
+          <div className="flex items-start gap-2">
+            <X className="h-5 w-5 shrink-0 text-error-500" />
+            <div>
+              <p className="text-sm font-semibold text-error-600 dark:text-error-500">
+                Erro de comunicação com a central
+              </p>
+              <p className="text-xs text-neutral-500 dark:text-neutral-400 mt-1">
+                Seu pedido foi registrado e será processado.
+              </p>
+            </div>
+          </div>
+        </div>
+      )}
+
+      <div className="flex gap-3">
+        {!isCompleted && !isCanceled && (
+          <button onClick={handleCancel} className="btn-secondary flex-1 text-error-500">
+            Cancelar
+          </button>
+        )}
+        {(isCompleted || isCanceled) && (
+          <button onClick={() => goPassenger('identify')} className="btn-primary flex-1 text-base">
+            Nova viagem
+          </button>
+        )}
+      </div>
+
+      {kioskReleased && !isCompleted && !isCanceled && (
+        <div className="mt-4 rounded-2xl border border-gold-500/30 bg-gold-500/10 p-4 text-center animate-fade-in">
+          <p className="text-sm font-semibold text-gold-700 dark:text-gold-300">
+            Tela liberada para o próximo passageiro
+          </p>
+          <p className="mt-1 text-xs text-neutral-500 dark:text-neutral-400">
+            Acompanhe o status da corrida atual ou inicie uma nova solicitação.
+          </p>
+          <button
+            onClick={() => goPassenger('identify')}
+            className="btn-primary mt-3 w-full text-sm"
+          >
+            Solicitar nova viagem
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}

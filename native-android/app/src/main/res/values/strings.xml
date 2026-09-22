@@ -1,0 +1,11 @@
+<resources>
+    <string name="app_name">Veloov Totem</string>
+    <string name="loading">Carregando...</string>
+    <string name="no_connection">Sem conexão, tentando reconectar...</string>
+    <string name="device_locked">Este totem já está em uso em outro dispositivo. Peça ao administrador para liberar o vínculo no painel.</string>
+    <string name="config_title">Configuração do Totem</string>
+    <string name="config_hint">Digite o caminho da empresa (ex: upcorridas/hospital)</string>
+    <string name="config_button">Salvar e iniciar</string>
+    <string name="config_base_url">https://mob.veloov.com/</string>
+    <string name="reconfig_hint">Toque longo no canto por 5 segundos para reconfigurar</string>
+</resources>

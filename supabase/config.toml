@@ -1,0 +1,29 @@
+project_id = "mshxunqqyecwpspnxiph"
+
+[functions.dispatch-ride]
+verify_jwt = false
+entrypoint = "./functions/dispatch-ride/index.ts"
+
+[functions.whatsapp-webhook]
+verify_jwt = false
+entrypoint = "./functions/whatsapp-webhook/index.ts"
+
+[functions.machine-webhook]
+verify_jwt = false
+entrypoint = "./functions/machine-webhook/index.ts"
+
+[functions.register-company]
+verify_jwt = false
+entrypoint = "./functions/register-company/index.ts"
+
+[functions.auto-cancel-rides]
+verify_jwt = false
+entrypoint = "./functions/auto-cancel-rides/index.ts"
+
+[functions.asaas-webhook]
+verify_jwt = false
+entrypoint = "./functions/asaas-webhook/index.ts"
+
+[functions.manage-company-admin]
+verify_jwt = true
+entrypoint = "./functions/manage-company-admin/index.ts"
