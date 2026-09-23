@@ -599,7 +599,7 @@ async function handleDriverNotification(
     : provider === "zapi"
     ? !!(f["zapi_url"] && f["zapi_instance_token"])
     : provider === "zpro"
-    ? !!(f["zpro_url"] && f["zpro_instance_id"] && f["zpro_instance_token"])
+    ? !!(f["zpro_url"] && f["zpro_instance_token"])
     : provider === "meta_cloud"
     ? !!(f["meta_token"] && f["meta_phone_id"])
     : provider === "custom_webhook"
@@ -1176,14 +1176,17 @@ async function pollRideStatus(companyId: string, rideId: string, machineOrderId?
       const detailJson = await detailResp.json();
       const d = detailJson?.response ?? detailJson?.data ?? null;
       if (d) {
-        driverName = d.nome_condutor ?? d.driver?.nome ?? null;
-        driverPhone = d.telefone_condutor ?? d.driver?.telefone ?? null;
-        vehiclePlate = d.placa_veiculo ?? d.driver?.veiculo_placa ?? null;
-        vehicleModel = d.veiculo ?? d.driver?.veiculo_modelo ?? null;
-        vehicleColor = d.cor_veiculo ?? d.driver?.veiculo_cor ?? null;
+        const r = d as Record<string, unknown>;
+        const dr = (r.driver as Record<string, unknown>) ?? {};
+        const str = (v: unknown): string | null => { const s = v != null ? String(v).trim() : ""; return s || null; };
+        driverName = str(r.nome_condutor) ?? str(dr.nome);
+        driverPhone = str(r.telefone_condutor) ?? str(dr.telefone);
+        vehiclePlate = str(r.placa_veiculo) ?? str(dr.veiculo_placa);
+        vehicleModel = str(r.veiculo) ?? str(dr.veiculo_modelo);
+        vehicleColor = str(r.cor_veiculo) ?? str(dr.veiculo_cor);
         // Fallback status from detalhes if /status failed
-        if (!statusCode && d.status_solicitacao) {
-          statusCode = String(d.status_solicitacao);
+        if (!statusCode && r.status_solicitacao) {
+          statusCode = String(r.status_solicitacao);
         }
       }
     }
@@ -1354,7 +1357,7 @@ async function pollRideStatus(companyId: string, rideId: string, machineOrderId?
     }
 
     // Configurable periodic distance updates while en_route
-    if (internalStatus === "en_route" && passengerPhone && driverDistanceKm != null) {
+    if ((internalStatus === "en_route" || internalStatus === "accepted") && passengerPhone && driverDistanceKm != null) {
       const features = await getPlanNotificationFeatures(companyId);
       if (features.distance_update_interval_min > 0) {
         // Check when the last distance_update was sent for this ride

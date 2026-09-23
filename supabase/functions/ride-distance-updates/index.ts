@@ -1,5 +1,5 @@
-// ride-distance-updates — periodic WhatsApp distance/ETA updates for en_route rides.
-// Triggered by pg_cron every minute. Finds all en_route rides whose plan
+// ride-distance-updates — periodic WhatsApp distance/ETA updates for accepted/en_route rides.
+// Triggered by pg_cron every minute. Finds all accepted+en_route rides whose plan
 // has distance_update_interval_min > 0, fetches driver position (from local table
 // or Machine API), sends a WhatsApp message with current distance/ETA, and logs it.
 import { createClient } from "npm:@supabase/supabase-js@2.57.4";
@@ -48,6 +48,7 @@ async function getCompanyWhatsAppConfig(supabase: ReturnType<typeof createClient
     if (instance.instance_name) fields["evo_instance"] = instance.instance_name;
     if (instance.provider_api_url) fields["zapi_url"] = instance.provider_api_url;
     if (instance.provider_token) fields["zapi_instance_token"] = instance.provider_token;
+    if (instance.provider_waba_id) fields["zapi_client_token"] = instance.provider_waba_id;
     if (instance.provider_token) fields["meta_token"] = instance.provider_token;
     if (instance.provider_phone_id) fields["meta_phone_id"] = instance.provider_phone_id;
     if (instance.provider_waba_id) fields["meta_waba_id"] = instance.provider_waba_id;
@@ -73,34 +74,32 @@ async function sendWhatsAppMessage(
     const resp = await fetch(`${url}/message/sendText/${instance}`, {
       method: "POST",
       headers: { "Content-Type": "application/json", apikey: token },
-      body: JSON.stringify({ number: cleanPhone, text: message }),
+      body: JSON.stringify({ number: cleanPhone, text: message, delay: 1200, presence: "available" }),
     });
     return { ok: resp.ok, provider };
   }
 
   if (provider === "zapi") {
-    const url = f["zapi_url"] ?? "";
-    const instanceId = f["zapi_instance_id"] ?? "";
+    const url = (f["zapi_url"] ?? "").replace(/\/+$/, "");
     const instanceToken = f["zapi_instance_token"] ?? "";
     const clientToken = f["zapi_client_token"] ?? "";
-    if (!url || !instanceId || !instanceToken) return { ok: false, provider };
-    const resp = await fetch(`${url}/instances/${instanceId}/token/${instanceToken}/send-text`, {
+    if (!url || !instanceToken) return { ok: false, provider };
+    const resp = await fetch(`${url}/token/${instanceToken}/send-text`, {
       method: "POST",
-      headers: { "Content-Type": "application/json", "Client-Token": clientToken },
+      headers: { "Content-Type": "application/json", ...(clientToken ? { "Client-Token": clientToken } : {}) },
       body: JSON.stringify({ phone: cleanPhone, message }),
     });
     return { ok: resp.ok, provider };
   }
 
   if (provider === "zpro") {
-    const url = f["zpro_url"] ?? "";
-    const instanceId = f["zpro_instance_id"] ?? "";
+    const url = (f["zpro_url"] ?? "").replace(/\/+$/, "");
     const instanceToken = f["zpro_instance_token"] ?? "";
     const clientToken = f["zpro_client_token"] ?? "";
-    if (!url || !instanceId || !instanceToken) return { ok: false, provider };
-    const resp = await fetch(`${url}/instances/${instanceId}/token/${instanceToken}/send-text`, {
+    if (!url || !instanceToken) return { ok: false, provider };
+    const resp = await fetch(`${url}/token/${instanceToken}/send-text`, {
       method: "POST",
-      headers: { "Content-Type": "application/json", "Client-Token": clientToken },
+      headers: { "Content-Type": "application/json", ...(clientToken ? { "Client-Token": clientToken } : {}) },
       body: JSON.stringify({ phone: cleanPhone, message }),
     });
     return { ok: resp.ok, provider };
@@ -274,11 +273,11 @@ Deno.serve(async (req: Request) => {
     const supabaseKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
     const supabase = createClient(supabaseUrl, supabaseKey);
 
-    // Find all en_route rides with passenger phone and machine_order_id
+    // Find all accepted + en_route rides with passenger phone
     const { data: rides } = await supabase
       .from("rides")
-      .select("id, company_id, passenger_phone, origin_lat, origin_lng, machine_order_id")
-      .eq("status", "en_route")
+      .select("id, company_id, passenger_phone, origin_lat, origin_lng, machine_order_id, status")
+      .in("status", ["accepted", "en_route"])
       .not("passenger_phone", "is", null);
 
     if (!rides || rides.length === 0) {
@@ -334,9 +333,9 @@ Deno.serve(async (req: Request) => {
         .maybeSingle();
 
       if (localPos) {
-        // If position is stale (>5 min old), try refreshing from Machine API
+        // If position is stale (>2 min old), try refreshing from Machine API
         const posAge = Date.now() - new Date(localPos.updated_at).getTime();
-        if (posAge > 5 * 60 * 1000 && ride.machine_order_id) {
+        if (posAge > 2 * 60 * 1000 && ride.machine_order_id) {
           pos = await fetchDriverPositionFromMachine(supabase, ride.company_id, ride.machine_order_id, ride.id);
           if (!pos) pos = { lat: localPos.lat, lng: localPos.lng };
         } else {
@@ -353,8 +352,8 @@ Deno.serve(async (req: Request) => {
       const etaMin = Math.max(1, Math.round(distanceKm * 2.5));
 
       const updateMsg = distanceKm >= 1
-        ? `Atualizacao: O motorista esta a ${distanceKm.toFixed(1)} km de distancia. Tempo estimado: ${etaMin} min.`
-        : `Atualizacao: O motorista esta a ${Math.round(distanceKm * 1000)} m de distancia. Quase no local!`;
+        ? `Atualização: O motorista está a ${distanceKm.toFixed(1)} km de distância. Tempo estimado: ${etaMin} min.`
+        : `Atualização: O motorista está a ${Math.round(distanceKm * 1000)} m de distância. Quase no local!`;
 
       const cleanPhone = toBrazilianWhatsAppNumber(ride.passenger_phone);
       if (!cleanPhone) { skippedCount++; continue; }
@@ -382,7 +381,7 @@ Deno.serve(async (req: Request) => {
           company_id: ride.company_id,
           source: "distance_update",
           level: "info",
-          message: `Atualizacao de distancia enviada (ride ${ride.id}): ${distanceKm.toFixed(1)} km, ETA ${etaMin} min`,
+          message: `Atualização de distância enviada (ride ${ride.id}): ${distanceKm.toFixed(1)} km, ETA ${etaMin} min`,
         });
       }
     }

@@ -297,13 +297,14 @@ async function processWebhook(body: Record<string, unknown>): Promise<void> {
     }
 
     if (internalStatus === "accepted" || internalStatus === "en_route" || internalStatus === "in_progress") {
-      const details = await fetchRideDetails(ride.company_id, machineOrderId);
+      const details = await fetchRideDetailsWithRetry(ride.company_id, machineOrderId);
       if (details) {
-        driverName = details.nome_condutor ?? details.driver?.nome ?? null;
-        driverPhone = details.telefone_condutor ?? details.driver?.telefone ?? null;
-        vehiclePlate = details.placa_veiculo ?? details.driver?.veiculo_placa ?? null;
-        vehicleModel = details.veiculo ?? details.driver?.veiculo_modelo ?? null;
-        vehicleColor = details.cor_veiculo ?? details.driver?.veiculo_cor ?? null;
+        const str = (v: unknown): string | null => { const s = v != null ? String(v).trim() : ""; return s || null; };
+        driverName = str(details.nome_condutor) ?? str(details.driver?.nome);
+        driverPhone = str(details.telefone_condutor) ?? str(details.driver?.telefone);
+        vehiclePlate = str(details.placa_veiculo) ?? str(details.driver?.veiculo_placa);
+        vehicleModel = str(details.veiculo) ?? str(details.driver?.veiculo_modelo);
+        vehicleColor = str(details.cor_veiculo) ?? str(details.driver?.veiculo_cor);
       }
 
       const driverPos = await fetchDriverPosition(ride.company_id, machineOrderId);
@@ -501,6 +502,20 @@ async function fetchRideDetails(companyId: string, machineOrderId: string): Prom
   }
 }
 
+async function fetchRideDetailsWithRetry(companyId: string, machineOrderId: string): Promise<Record<string, unknown> | null> {
+  const str = (v: unknown): string | null => { const s = v != null ? String(v).trim() : ""; return s || null; };
+  let details = await fetchRideDetails(companyId, machineOrderId);
+  const hasDriver = (d: Record<string, unknown> | null): boolean => {
+    if (!d) return false;
+    return !!(str(d.nome_condutor) ?? str((d.driver as Record<string, unknown>)?.nome));
+  };
+  if (!hasDriver(details)) {
+    await new Promise(r => setTimeout(r, 3000));
+    details = await fetchRideDetails(companyId, machineOrderId);
+  }
+  return details;
+}
+
 async function fetchDriverPosition(companyId: string, machineOrderId: string): Promise<{ lat: number; lng: number } | null> {
   const { data: credentials } = await supabase
     .from("company_credentials")
@@ -598,7 +613,7 @@ async function sendWhatsAppNotification(
     : provider === "zapi"
     ? !!(f["zapi_url"] && f["zapi_instance_token"])
     : provider === "zpro"
-    ? !!(f["zpro_url"] && f["zpro_instance_id"] && f["zpro_instance_token"])
+    ? !!(f["zpro_url"] && f["zpro_instance_token"])
     : provider === "meta_cloud"
     ? !!(f["meta_token"] && f["meta_phone_id"])
     : provider === "custom_webhook"
