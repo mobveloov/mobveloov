@@ -1065,7 +1065,7 @@ async function pollRideStatus(companyId: string, rideId: string, machineOrderId?
     // continue to details
   }
 
-  // Fetch details (driver info)
+  // Fetch details (driver info + fallback status)
   let driverName: string | null = null;
   let driverPhone: string | null = null;
   let vehiclePlate: string | null = null;
@@ -1085,6 +1085,10 @@ async function pollRideStatus(companyId: string, rideId: string, machineOrderId?
         driverPhone = d.driver.telefone ?? null;
         vehiclePlate = d.driver.veiculo_placa ?? null;
         vehicleModel = d.driver.veiculo_modelo ?? null;
+      }
+      // Fallback: if /status endpoint failed, use short_code from /detalhes
+      if (!statusCode && d?.short_code) {
+        statusCode = d.short_code;
       }
     }
   } catch {

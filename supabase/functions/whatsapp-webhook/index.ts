@@ -11,7 +11,7 @@ const supabaseServiceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
 
 const supabase = createClient(supabaseUrl, supabaseServiceKey);
 
-// whatsapp-webhook: handles Evolution API events + incoming "cancelar" messages from passengers
+// whatsapp-webhook: handles Evolution API events + incoming "cancelar" messages from passengers (v2)
 
 async function getWhatsAppConfig(): Promise<{ provider: string; fields: Record<string, string> }> {
   const { data } = await supabase
@@ -28,14 +28,13 @@ async function getWhatsAppConfig(): Promise<{ provider: string; fields: Record<s
   return { provider: "evolution", fields: {} };
 }
 
-async function sendWhatsAppMessage(
-  _wa: Record<string, unknown>,
+async function sendWhatsAppMessageWithProvider(
+  provider: string,
+  f: Record<string, string>,
   cleanPhone: string,
   message: string,
 ): Promise<boolean> {
-  const { provider, fields: f } = await getWhatsAppConfig();
-
-  if (provider === "evolution") {
+  if (provider === "evolution" || provider === "veloov") {
     const url = f["evo_url"] ?? "";
     const token = f["evo_token"] ?? "";
     if (!url || !token) return false;
@@ -125,11 +124,38 @@ Deno.serve(async (req: Request) => {
     const { event, instance, data } = body;
 
     // Find the whatsapp instance by instance_name
-    const { data: waInstance } = await supabase
+    let { data: waInstance } = await supabase
       .from("whatsapp_instances")
       .select("id, company_id, instance_name")
       .eq("instance_name", instance)
-      .single();
+      .maybeSingle();
+
+    // If not found by name, check if this is the global Veloov instance
+    if (!waInstance) {
+      const { data: globalConfig } = await supabase
+        .from("system_settings")
+        .select("key_value")
+        .eq("key_name", "GLOBAL_WHATSAPP_CONFIG")
+        .maybeSingle();
+
+      if (globalConfig?.key_value) {
+        try {
+          const config = JSON.parse(globalConfig.key_value);
+          const globalInstanceName = config?.fields?.evo_instance ?? config?.fields?.instance;
+          if (globalInstanceName === instance) {
+            // This is the global Veloov instance — find any company that uses "veloov" provider
+            const { data: veloovInstance } = await supabase
+              .from("whatsapp_instances")
+              .select("id, company_id, instance_name")
+              .eq("whatsapp_provider", "veloov")
+              .maybeSingle();
+            if (veloovInstance) {
+              waInstance = veloovInstance;
+            }
+          }
+        } catch { /* ignore parse error */ }
+      }
+    }
 
     if (!waInstance) {
       return new Response(JSON.stringify({ error: "Instance not found" }), {
@@ -174,7 +200,7 @@ Deno.serve(async (req: Request) => {
 
     // Handle incoming messages from passengers (e.g. "cancelar")
     if (event === "messages.upsert" || event === "message.receive") {
-      await handleIncomingMessage(waInstance.company_id, data);
+      await handleIncomingMessage(waInstance.company_id, data, instance);
     }
 
     // Handle ride status updates from Machine API
@@ -209,7 +235,8 @@ Deno.serve(async (req: Request) => {
         if (message) {
           const cleanPhone = String(data.passenger_phone).replace(/\D/g, "");
           try {
-            await sendWhatsAppMessage({}, cleanPhone, message);
+            const { provider, fields: f } = await getWhatsAppConfig();
+            await sendWhatsAppMessageWithProvider(provider, f, cleanPhone, message);
           } catch {
             // Silent — notification is best-effort
           }
@@ -229,7 +256,7 @@ Deno.serve(async (req: Request) => {
   }
 });
 
-async function handleIncomingMessage(companyId: string, data: Record<string, unknown>): Promise<void> {
+async function handleIncomingMessage(companyId: string, data: Record<string, unknown>, _instanceName?: string): Promise<void> {
   // Evolution API v1 sends: { key: { remoteJid: "5516999998888@s.whatsapp.net" }, message: { conversation: "cancelar" } }
   // Evolution API v2 sends: { message: { text: "cancelar" }, key: { remoteJid: "..." } }
   // Some versions: { from: "5516999998888", body: { text: "cancelar" } }
@@ -264,8 +291,8 @@ async function handleIncomingMessage(companyId: string, data: Record<string, unk
   // Only handle "cancelar" (and variations like "cancelar corrida", "cancela")
   if (!normalizedText.includes("cancel")) return;
 
-  // Find the passenger's active ride by phone number
-  // Try matching with and without country code (55 prefix)
+  // Find the passenger's active ride by phone number across ALL companies
+  // (the global Veloov instance serves all companies)
   const phoneVariants = [
     cleanPhone,
     cleanPhone.replace(/^55/, ""),
@@ -278,12 +305,11 @@ async function handleIncomingMessage(companyId: string, data: Record<string, unk
     const { data: found } = await supabase
       .from("rides")
       .select("id, machine_order_id, company_id, passenger_name")
-      .eq("company_id", companyId)
       .eq("passenger_phone", phone)
       .in("status", ["pending", "accepted", "en_route"])
       .order("created_at", { ascending: false })
       .limit(1)
-      .single();
+      .maybeSingle();
 
     if (found) {
       ride = found;
@@ -368,11 +394,8 @@ async function handleIncomingMessage(companyId: string, data: Record<string, unk
 
   // Send confirmation message back to passenger via global WhatsApp provider
   try {
-    await sendWhatsAppMessage(
-      {},
-      cleanPhone,
-      "Sua corrida foi cancelada com sucesso. Para solicitar uma nova viagem, use o totem.",
-    );
+    const { provider, fields: f } = await getWhatsAppConfig();
+    await sendWhatsAppMessageWithProvider(provider, f, cleanPhone, "Sua corrida foi cancelada com sucesso. Para solicitar uma nova viagem, use o totem.");
   } catch {
     // Best-effort
   }
