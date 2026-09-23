@@ -145,6 +145,13 @@ export function TrackingScreen({ origin, destination, passengerName, passengerPh
           payload: { request: dispatchPayload },
         });
         setApiError(result.error ?? null);
+      } else if (result.data) {
+        const d = result.data as Record<string, unknown>;
+        const inner = (d.data ?? d) as Record<string, unknown>;
+        const mchId = inner?.id_mch ? String(inner.id_mch) : inner?.id ? String(inner.id) : null;
+        if (mchId) {
+          setRide((prev) => prev ? { ...prev, machine_order_id: mchId } : prev);
+        }
       }
 
       setCreating(false);
@@ -227,6 +234,16 @@ export function TrackingScreen({ origin, destination, passengerName, passengerPh
     const interval = setInterval(async () => {
       if (!rideRef.current || !company) return;
       await pollRideStatus(company.slug, rideRef.current, ride.machine_order_id);
+      const { data: fresh } = await supabase
+        .from('rides')
+        .select('*')
+        .eq('id', rideRef.current)
+        .single();
+      if (fresh) {
+        setRide(fresh as Ride);
+        const idx = STATUS_FLOW.indexOf((fresh as Ride).status as OrderStatus);
+        if (idx >= 0) setStatusIndex(idx);
+      }
     }, 10000);
 
     return () => clearInterval(interval);
@@ -269,8 +286,8 @@ export function TrackingScreen({ origin, destination, passengerName, passengerPh
 
     const integrationMode = settings?.integration_mode ?? 'manual';
 
-    if (integrationMode === 'machine' && ride?.machine_order_id) {
-      await cancelRide(company.slug, rideRef.current, ride.machine_order_id);
+    if (integrationMode === 'machine') {
+      await cancelRide(company.slug, rideRef.current, ride?.machine_order_id ?? null);
     } else {
       await supabase
         .from('rides')
