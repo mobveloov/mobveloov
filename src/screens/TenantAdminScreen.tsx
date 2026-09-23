@@ -17,6 +17,7 @@ import { PricingPanel } from '@/screens/PricingPanel';
 import { RideLogsPanel } from '@/screens/RideLogsPanel';
 import { WhatsAppPanel } from '@/screens/WhatsAppPanel';
 import { ChatsModule } from '@/screens/admin/ChatsModule';
+import { BotPanel } from '@/screens/admin/BotPanel';
 import { DriversPanel } from '@/screens/DriversPanel';
 import { DispatchBoard } from '@/screens/DispatchBoard';
 import { LocationsPanel } from '@/screens/LocationsPanel';
@@ -71,6 +72,7 @@ export function TenantAdminScreen() {
       {adminScreen === 'drivers' && <DriversPanel />}
       {adminScreen === 'rides' && <RideLogsPanel />}
       {adminScreen === 'whatsapp' && <WhatsAppPanel />}
+      {adminScreen === 'bot' && <BotPanel />}
       {adminScreen === 'chats' && <ChatsModule />}
       {adminScreen === 'settings' && <SettingsModule />}
       {adminScreen === 'users' && <UsersModule />}

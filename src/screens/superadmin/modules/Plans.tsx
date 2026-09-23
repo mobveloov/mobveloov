@@ -84,6 +84,9 @@ export function PlansModule({ success, error, logAction }: ModuleProps) {
                 <div className="flex justify-between"><span>Totens</span><span className="text-white font-bold">{p.totem_limit}</span></div>
                 <div className="flex justify-between"><span>Tier WhatsApp</span><span className="text-[#D4AF37] font-bold">{p.message_tier ?? 'A'}</span></div>
                 <div className="flex justify-between"><span>Empresas</span><span className="text-white font-bold">{countCompanies(p.id)}</span></div>
+                <div className="h-px bg-slate-800 my-2" />
+                <div className="flex justify-between items-center"><span>Bot WhatsApp</span><span className={`font-bold ${p.bot_incluso ? 'text-emerald-400' : 'text-slate-500'}`}>{p.bot_incluso ? 'Incluso' : 'Não incluso'}</span></div>
+                {p.bot_incluso && <div className="flex justify-between"><span>Limite Conexões Bot</span><span className="text-[#D4AF37] font-bold">{p.limite_conexoes_bot}</span></div>}
               </div>
               <div className="flex gap-2 mt-4">
                 <button onClick={() => setEditPlan(p)} className="flex-1 bg-slate-800 hover:bg-slate-700 border border-slate-700 text-white font-bold py-2 rounded-lg text-[11px] transition-colors">Editar</button>
@@ -150,6 +153,8 @@ function PlanFormModal({ plan, onClose, onSaved, onError, onLog }: {
   const [messageTier, setMessageTier] = useState(plan?.message_tier ?? 'A');
   const [isActive, setIsActive] = useState(plan?.is_active ?? true);
   const [sortOrder, setSortOrder] = useState(plan?.sort_order?.toString() ?? '0');
+  const [botIncluso, setBotIncluso] = useState(plan?.bot_incluso ?? false);
+  const [limiteConexoesBot, setLimiteConexoesBot] = useState(plan?.limite_conexoes_bot?.toString() ?? '0');
   const [saving, setSaving] = useState(false);
 
   const handleSave = async (e: React.FormEvent) => {
@@ -170,6 +175,8 @@ function PlanFormModal({ plan, onClose, onSaved, onError, onLog }: {
       sort_order: parseInt(sortOrder) || 0,
       billing_period: 'monthly',
       price: parseFloat(baseMonthly) || 0,
+      bot_incluso: botIncluso,
+      limite_conexoes_bot: parseInt(limiteConexoesBot) || 0,
     };
     if (plan) {
       const { error: err } = await supabase.from('subscription_plans').update(payload).eq('id', plan.id);
@@ -237,6 +244,19 @@ function PlanFormModal({ plan, onClose, onSaved, onError, onLog }: {
               <option value="true">Sim</option>
               <option value="false">Não</option>
             </select>
+          </div>
+        </div>
+        <div className="border-t border-slate-800 pt-3">
+          <label className={labelCls}>Bot de WhatsApp</label>
+          <div className="grid grid-cols-2 gap-3 mt-2">
+            <select className={inputCls} value={botIncluso ? 'true' : 'false'} onChange={(e) => setBotIncluso(e.target.value === 'true')}>
+              <option value="false">Não incluso</option>
+              <option value="true">Incluso no plano</option>
+            </select>
+            <div>
+              <label className={labelCls}>Limite de Conexões</label>
+              <input type="number" className={inputCls} value={limiteConexoesBot} onChange={(e) => setLimiteConexoesBot(e.target.value)} min="0" disabled={!botIncluso} />
+            </div>
           </div>
         </div>
         <div className="flex gap-3 justify-end pt-2">

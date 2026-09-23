@@ -22,9 +22,8 @@ function toBrazilianWhatsAppNumber(raw: string): string {
 
 // whatsapp-webhook: handles Evolution API events + incoming messages from passengers (v2)
 // Saves all incoming and outgoing messages to whatsapp_chats / whatsapp_messages tables.
-// Updated: fix token check + replace rpc with direct query for Evolution API v2.3.7. v2
 // Also routes passenger messages to ride_messages table for driver chat.
-// v3: forwards passenger messages to Machine API (POST /mensagens/condutor/{id}) when ride has machine_driver_id.
+// Bot: when no active ride exists, intercepts messages to run a ride-request flow.
 
 async function saveMessage(
   companyId: string,
@@ -218,6 +217,408 @@ async function sendWhatsAppMessageWithProvider(
   return false;
 }
 
+// ── Bot: WhatsApp ride-request flow ──
+// State machine: inicio → aguardando_endereco → aguardando_confirmacao → corrida_solicitada
+
+interface BotConversation {
+  id: string;
+  company_id: string;
+  phone: string;
+  passenger_name: string | null;
+  state: string;
+  address_text: string | null;
+  address_lat: number | null;
+  address_lng: number | null;
+  address_formatted: string | null;
+  address_is_fallback: boolean;
+  ride_id: string | null;
+}
+
+async function sendBotMessage(companyId: string, phone: string, message: string): Promise<void> {
+  try {
+    const { provider, fields: f } = await getCompanyWhatsAppConfig(companyId);
+    await sendWhatsAppMessageWithProvider(provider, f, phone, message);
+    await saveMessage(companyId, phone, "outgoing", message);
+  } catch { /* best-effort */ }
+}
+
+async function geocodeAddress(address: string, city?: string, state?: string): Promise<{ lat: number; lng: number; formatted: string } | null> {
+  const q = city ? `${address}, ${city}` : address;
+  const url = `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(q)}&format=json&limit=1&countrycodes=br&addressdetails=1`;
+  try {
+    const resp = await fetch(url, { headers: { "User-Agent": "VeloovBot/1.0" } });
+    if (!resp.ok) return null;
+    const results = await resp.json();
+    if (Array.isArray(results) && results.length > 0) {
+      const r = results[0];
+      return {
+        lat: parseFloat(r.lat),
+        lng: parseFloat(r.lon),
+        formatted: r.display_name ?? address,
+      };
+    }
+  } catch { /* ignore */ }
+  return null;
+}
+
+async function reverseGeocode(lat: number, lng: number): Promise<string | null> {
+  const url = `https://nominatim.openstreetmap.org/reverse?lat=${lat}&lon=${lng}&format=json&addressdetails=1`;
+  try {
+    const resp = await fetch(url, { headers: { "User-Agent": "VeloovBot/1.0" } });
+    if (!resp.ok) return null;
+    const data = await resp.json();
+    return data?.display_name ?? null;
+  } catch { /* ignore */ }
+  return null;
+}
+
+async function transcribeAudio(audioBase64OrUrl: string, mimetype: string): Promise<string | null> {
+  const groqKey = Deno.env.get("GROQ_API_KEY");
+  const openaiKey = Deno.env.get("OPENAI_API_KEY");
+  if (!groqKey && !openaiKey) return null;
+
+  const apiUrl = groqKey
+    ? "https://api.groq.com/openai/v1/audio/transcriptions"
+    : "https://api.openai.com/v1/audio/transcriptions";
+  const authKey = groqKey || openaiKey;
+
+  try {
+    let audioBlob: Blob;
+    if (audioBase64OrUrl.startsWith("data:")) {
+      const base64Data = audioBase64OrUrl.split(",")[1] ?? audioBase64OrUrl;
+      const binaryStr = atob(base64Data);
+      const bytes = new Uint8Array(binaryStr.length);
+      for (let i = 0; i < binaryStr.length; i++) bytes[i] = binaryStr.charCodeAt(i);
+      audioBlob = new Blob([bytes], { type: mimetype || "audio/ogg" });
+    } else if (audioBase64OrUrl.startsWith("http")) {
+      const resp = await fetch(audioBase64OrUrl);
+      audioBlob = await resp.blob();
+    } else {
+      const binaryStr = atob(audioBase64OrUrl);
+      const bytes = new Uint8Array(binaryStr.length);
+      for (let i = 0; i < binaryStr.length; i++) bytes[i] = binaryStr.charCodeAt(i);
+      audioBlob = new Blob([bytes], { type: mimetype || "audio/ogg" });
+    }
+
+    const formData = new FormData();
+    formData.append("file", audioBlob, "audio.ogg");
+    formData.append("model", groqKey ? "whisper-large-v3" : "whisper-1");
+    formData.append("language", "pt");
+
+    const resp = await fetch(apiUrl, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${authKey}` },
+      body: formData,
+    });
+
+    if (!resp.ok) return null;
+    const data = await resp.json();
+    return data?.text ?? null;
+  } catch { return null; }
+}
+
+async function getCompanyLocationInfo(companyId: string): Promise<{ city: string | null; state: string | null; lat: number | null; lng: number | null; slug: string | null }> {
+  const { data: cred } = await supabase
+    .from("company_credentials")
+    .select("city, state, lat, lng")
+    .eq("company_id", companyId)
+    .maybeSingle();
+
+  const { data: company } = await supabase
+    .from("companies")
+    .select("slug")
+    .eq("id", companyId)
+    .maybeSingle();
+
+  return {
+    city: cred?.city ?? null,
+    state: cred?.state ?? null,
+    lat: cred?.lat ?? null,
+    lng: cred?.lng ?? null,
+    slug: company?.slug ?? null,
+  };
+}
+
+async function getFirstActiveCategory(companyId: string): Promise<{ id: string; label: string; machine_category_id: string | null } | null> {
+  const { data: cat } = await supabase
+    .from("vehicle_categories")
+    .select("id, label, machine_category_id")
+    .eq("company_id", companyId)
+    .eq("is_active", true)
+    .order("sort_order", { ascending: true })
+    .limit(1)
+    .maybeSingle();
+
+  return cat ? { id: cat.id, label: cat.label, machine_category_id: cat.machine_category_id } : null;
+}
+
+async function createAndDispatchRide(
+  companyId: string,
+  companySlug: string,
+  passengerName: string,
+  passengerPhone: string,
+  origin: { lat: number; lng: number; address: string },
+  categoryLabel: string,
+  machineCategoryId: string | null,
+): Promise<{ rideId: string; success: boolean; error?: string }> {
+  const { data: ride, error: rideErr } = await supabase
+    .from("rides")
+    .insert({
+      company_id: companyId,
+      passenger_name: passengerName,
+      passenger_phone: passengerPhone,
+      origin_label: origin.address,
+      origin_lat: origin.lat,
+      origin_lng: origin.lng,
+      category_label: categoryLabel,
+      status: "pending",
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    })
+    .select("id")
+    .single();
+
+  if (rideErr || !ride) {
+    return { rideId: "", success: false, error: "Failed to create ride" };
+  }
+
+  try {
+    const dispatchUrl = `${supabaseUrl}/functions/v1/dispatch-ride`;
+    const dispatchResp = await fetch(dispatchUrl, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": `Bearer ${supabaseServiceKey}`,
+      },
+      body: JSON.stringify({
+        companySlug,
+        integrationMode: "machine",
+        rideId: ride.id,
+        passenger_name: passengerName,
+        passenger_phone: passengerPhone,
+        origin,
+        category: machineCategoryId || categoryLabel,
+      }),
+    });
+
+    if (!dispatchResp.ok) {
+      const errBody = await dispatchResp.text().catch(() => "");
+      return { rideId: ride.id, success: false, error: `Dispatch failed: ${errBody.slice(0, 200)}` };
+    }
+
+    const dispatchData = await dispatchResp.json().catch(() => ({}));
+    if (dispatchData?.success === false) {
+      return { rideId: ride.id, success: false, error: dispatchData.error ?? "Dispatch failed" };
+    }
+
+    return { rideId: ride.id, success: true };
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : "Dispatch request failed";
+    return { rideId: ride.id, success: false, error: msg };
+  }
+}
+
+async function handleBotMessage(
+  companyId: string,
+  cleanPhone: string,
+  text: string | null,
+  pushName: string | null,
+  location: { lat: number; lng: number } | null,
+  audio: { data: string; mimetype: string } | null,
+): Promise<void> {
+  const { data: existingConv } = await supabase
+    .from("bot_conversas")
+    .select("*")
+    .eq("company_id", companyId)
+    .eq("phone", cleanPhone)
+    .maybeSingle();
+
+  let conv = existingConv as BotConversation | null;
+
+  if (!conv) {
+    const { data: newConv } = await supabase
+      .from("bot_conversas")
+      .insert({
+        company_id: companyId,
+        phone: cleanPhone,
+        passenger_name: pushName,
+        state: "inicio",
+      })
+      .select("*")
+      .single();
+    conv = newConv as BotConversation;
+
+    await sendBotMessage(companyId, cleanPhone, "Ola! Voce quer solicitar uma corrida? Responda SIM para continuar.");
+    return;
+  }
+
+  if (!conv.passenger_name && pushName) {
+    await supabase.from("bot_conversas")
+      .update({ passenger_name: pushName, updated_at: new Date().toISOString() })
+      .eq("id", conv.id);
+    conv.passenger_name = pushName;
+  }
+
+  const normalizedText = (text ?? "").trim().toLowerCase();
+
+  switch (conv.state) {
+    case "inicio": {
+      if (["sim", "sim.", "quero", "1", "corrida", "viagem", "sim!"].includes(normalizedText)) {
+        await supabase.from("bot_conversas")
+          .update({ state: "aguardando_endereco", updated_at: new Date().toISOString() })
+          .eq("id", conv.id);
+        await sendBotMessage(companyId, cleanPhone, "Perfeito! Qual e o endereco de embarque? Voce pode digitar o endereco, enviar sua localizacao ou mandar um audio.");
+      } else if (["nao", "nao.", "cancelar", "n"].includes(normalizedText)) {
+        await supabase.from("bot_conversas")
+          .update({ state: "corrida_solicitada", updated_at: new Date().toISOString() })
+          .eq("id", conv.id);
+        await sendBotMessage(companyId, cleanPhone, "Tudo bem! Quando precisar de uma corrida, e so nos mandar uma mensagem.");
+      } else {
+        await sendBotMessage(companyId, cleanPhone, "Voce quer solicitar uma corrida? Responda SIM para continuar.");
+      }
+      break;
+    }
+
+    case "aguardando_endereco": {
+      let addressText: string | null = null;
+      let lat: number | null = null;
+      let lng: number | null = null;
+
+      if (location) {
+        lat = location.lat;
+        lng = location.lng;
+        const reversed = await reverseGeocode(lat, lng);
+        addressText = reversed ?? `Localizacao: ${lat}, ${lng}`;
+      } else if (audio) {
+        const transcribed = await transcribeAudio(audio.data, audio.mimetype);
+        if (transcribed) {
+          addressText = transcribed.trim();
+          await sendBotMessage(companyId, cleanPhone, `Entendi: "${addressText}". Validando o endereco...`);
+        } else {
+          await sendBotMessage(companyId, cleanPhone, "Nao consegui transcrever o audio. Por favor, digite o endereco de embarque ou envie sua localizacao.");
+          return;
+        }
+      } else if (text) {
+        addressText = text.trim();
+      }
+
+      if (!addressText) {
+        await sendBotMessage(companyId, cleanPhone, "Por favor, envie o endereco de embarque. Voce pode digitar, enviar sua localizacao ou mandar um audio.");
+        return;
+      }
+
+      const companyLoc = await getCompanyLocationInfo(companyId);
+      const geocoded = await geocodeAddress(addressText, companyLoc.city ?? undefined, companyLoc.state ?? undefined);
+
+      let finalLat: number;
+      let finalLng: number;
+      let finalAddress: string;
+      let isFallback = false;
+
+      if (geocoded) {
+        finalLat = geocoded.lat;
+        finalLng = geocoded.lng;
+        finalAddress = geocoded.formatted;
+      } else {
+        if (companyLoc.lat != null && companyLoc.lng != null) {
+          finalLat = companyLoc.lat;
+          finalLng = companyLoc.lng;
+          finalAddress = addressText;
+          isFallback = true;
+        } else {
+          await sendBotMessage(companyId, cleanPhone, "Nao consegui encontrar esse endereco. Tente enviar um endereco mais completo (ex: Rua, numero, bairro, cidade) ou compartilhe sua localizacao.");
+          return;
+        }
+      }
+
+      await supabase.from("bot_conversas")
+        .update({
+          state: "aguardando_confirmacao",
+          address_text: addressText,
+          address_lat: finalLat,
+          address_lng: finalLng,
+          address_formatted: finalAddress,
+          address_is_fallback: isFallback,
+          updated_at: new Date().toISOString(),
+        })
+        .eq("id", conv.id);
+
+      const fallbackNote = isFallback ? " (nao foi possivel localizar no mapa, usando localizacao aproximada da cidade)" : "";
+      await sendBotMessage(companyId, cleanPhone, `Confirma que o embarque e em: ${finalAddress}${fallbackNote}?\n\nResponda SIM para confirmar ou NAO para corrigir.`);
+      break;
+    }
+
+    case "aguardando_confirmacao": {
+      if (["sim", "sim.", "s", "confirmo", "confirmar", "sim!"].includes(normalizedText)) {
+        const companyLoc = await getCompanyLocationInfo(companyId);
+        if (!companyLoc.slug) {
+          await sendBotMessage(companyId, cleanPhone, "Erro: empresa nao configurada corretamente. Tente novamente mais tarde.");
+          return;
+        }
+
+        const category = await getFirstActiveCategory(companyId);
+        const passengerName = conv.passenger_name || "Passageiro";
+        const origin = {
+          lat: conv.address_lat!,
+          lng: conv.address_lng!,
+          address: conv.address_formatted || conv.address_text || "Endereco nao informado",
+        };
+
+        const result = await createAndDispatchRide(
+          companyId,
+          companyLoc.slug,
+          passengerName,
+          cleanPhone,
+          origin,
+          category?.label ?? "Padrao",
+          category?.machine_category_id ?? null,
+        );
+
+        if (result.success) {
+          await supabase.from("bot_conversas")
+            .update({
+              state: "corrida_solicitada",
+              ride_id: result.rideId,
+              updated_at: new Date().toISOString(),
+            })
+            .eq("id", conv.id);
+
+          await sendBotMessage(companyId, cleanPhone, "Corrida solicitada com sucesso! Um motorista vai aceitar em breve. Aguarde.");
+
+          await supabase.from("admin_logs").insert({
+            company_id: companyId,
+            source: "whatsapp_bot",
+            level: "info",
+            message: `Corrida solicitada via bot por ${passengerName} (${cleanPhone}) — endereco: ${origin.address}`,
+            ride_id: result.rideId,
+          });
+        } else {
+          await sendBotMessage(companyId, cleanPhone, `Houve um erro ao solicitar a corrida: ${result.error ?? "erro desconhecido"}. Tente novamente enviando o endereco.`);
+          await supabase.from("bot_conversas")
+            .update({ state: "aguardando_endereco", updated_at: new Date().toISOString() })
+            .eq("id", conv.id);
+        }
+      } else if (["nao", "nao.", "n", "errado", "nao!"].includes(normalizedText)) {
+        await supabase.from("bot_conversas")
+          .update({ state: "aguardando_endereco", updated_at: new Date().toISOString() })
+          .eq("id", conv.id);
+        await sendBotMessage(companyId, cleanPhone, "Sem problema! Qual e o endereco correto de embarque? Voce pode digitar, enviar sua localizacao ou mandar um audio.");
+      } else {
+        await sendBotMessage(companyId, cleanPhone, "Por favor, responda SIM para confirmar o endereco ou NAO para corrigir.");
+      }
+      break;
+    }
+
+    case "corrida_solicitada": {
+      await supabase.from("bot_conversas")
+        .update({ state: "inicio", updated_at: new Date().toISOString() })
+        .eq("id", conv.id);
+      await sendBotMessage(companyId, cleanPhone, "Ola! Voce quer solicitar uma nova corrida? Responda SIM para continuar.");
+      break;
+    }
+  }
+}
+
 Deno.serve(async (req: Request) => {
   if (req.method === "OPTIONS") {
     return new Response(null, { status: 200, headers: corsHeaders });
@@ -245,6 +646,60 @@ Deno.serve(async (req: Request) => {
       .select("id, company_id, instance_name")
       .eq("instance_name", instance)
       .maybeSingle();
+
+    // Check if this is a bot WhatsApp connection (separate from the main instance)
+    let isBotInstance = false;
+    if (!waInstance) {
+      const { data: botConn } = await supabase
+        .from("bot_whatsapp_conexoes")
+        .select("id, company_id, instance_name, connection_status, evolution_api_url, evolution_global_token")
+        .eq("instance_name", instance)
+        .maybeSingle();
+
+      if (botConn) {
+        isBotInstance = true;
+        // Update connection status on connection events
+        if (event === "connection.update" || event === "CONNECTION_UPDATE" || event === "status.connect") {
+          const state = data?.state ?? data?.status ?? "";
+          if (state === "open" || state === "CONNECTED") {
+            await supabase.from("bot_whatsapp_conexoes")
+              .update({ connection_status: "connected", qr_code: null, updated_at: new Date().toISOString() })
+              .eq("id", botConn.id);
+          } else if (state === "close" || state === "DISCONNECTED") {
+            await supabase.from("bot_whatsapp_conexoes")
+              .update({ connection_status: "disconnected", updated_at: new Date().toISOString() })
+              .eq("id", botConn.id);
+          }
+        }
+
+        // Handle incoming messages via bot flow
+        if (event === "messages.upsert" || event === "MESSAGES_UPSERT" || event === "message.receive") {
+          const key = data?.key as Record<string, unknown> | undefined;
+          const msg = data?.message as Record<string, unknown> | undefined;
+          let rawPhone: string | null = key?.remoteJid ? String(key.remoteJid).replace(/@.*$/, "") : (data?.from ? String(data.from) : null);
+          let text: string | null = msg?.conversation ? String(msg.conversation) : (msg?.text ? String(msg.text) : null);
+          if (typeof data?.body === "string") text = data.body;
+          else if (data?.body && typeof data.body === "object") text = String((data.body as Record<string, unknown>).text ?? "");
+
+          if (!text && msg?.locationMessage) {
+            const loc = msg.locationMessage as Record<string, unknown>;
+            text = `[Localizacao: ${loc.degreesLatitude}, ${loc.degreesLongitude}]`;
+          }
+          if (!text && msg?.audioMessage) {
+            text = `[Audio recebido]`;
+          }
+
+          if (rawPhone && text) {
+            await saveMessage(botConn.company_id, rawPhone, "incoming", text, body);
+          }
+          await handleIncomingMessage(botConn.company_id, data, instance);
+        }
+
+        return new Response(JSON.stringify({ success: true, bot: true }), {
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+    }
 
     // If not found by name, check if this is the global Veloov instance
     if (!waInstance) {
@@ -323,6 +778,15 @@ Deno.serve(async (req: Request) => {
       let text: string | null = msg?.conversation ? String(msg.conversation) : (msg?.text ? String(msg.text) : null);
       if (typeof data?.body === "string") text = data.body;
       else if (data?.body && typeof data.body === "object") text = String((data.body as Record<string, unknown>).text ?? "");
+
+      // Extract location and audio for display in chat history
+      if (!text && msg?.locationMessage) {
+        const loc = msg.locationMessage as Record<string, unknown>;
+        text = `[Localizacao: ${loc.degreesLatitude}, ${loc.degreesLongitude}]`;
+      }
+      if (!text && msg?.audioMessage) {
+        text = `[Audio recebido]`;
+      }
 
       if (rawPhone && text) {
         await saveMessage(waInstance.company_id, rawPhone, "incoming", text, body);
@@ -426,10 +890,32 @@ async function handleIncomingMessage(companyId: string, data: Record<string, unk
     text = data.body;
   }
 
-  if (!rawPhone || !text) return;
+  // Extract pushName (passenger profile name from WhatsApp)
+  const pushName = (data?.pushName ? String(data.pushName) : null) ?? (key?.pushName ? String(key.pushName) : null);
+
+  // Extract location data (WhatsApp location share)
+  let location: { lat: number; lng: number } | null = null;
+  if (message?.locationMessage) {
+    const loc = message.locationMessage as Record<string, unknown>;
+    const lat = loc.degreesLatitude != null ? Number(loc.degreesLatitude) : null;
+    const lng = loc.degreesLongitude != null ? Number(loc.degreesLongitude) : null;
+    if (lat != null && lng != null) location = { lat, lng };
+  }
+
+  // Extract audio data
+  let audio: { data: string; mimetype: string } | null = null;
+  if (message?.audioMessage) {
+    const aud = message.audioMessage as Record<string, unknown>;
+    const audioData = aud.base64 ? String(aud.base64) : (aud.url ? String(aud.url) : null);
+    const mimetype = aud.mimetype ? String(aud.mimetype) : "audio/ogg";
+    if (audioData) audio = { data: audioData, mimetype };
+  }
+
+  if (!rawPhone) return;
+  if (!text && !location && !audio) return;
 
   const cleanPhone = rawPhone.replace(/\D/g, "");
-  const normalizedText = text.trim().toLowerCase();
+  const normalizedText = (text ?? "").trim().toLowerCase();
 
   // Find the passenger's active ride by phone number, scoped to this company
   const normalizedQueryDigits = cleanPhone.replace(/^55/, "");
@@ -452,32 +938,45 @@ async function handleIncomingMessage(companyId: string, data: Record<string, unk
 
   // If there's an active ride, save the message to ride_messages (chat)
   if (ride) {
-    await supabase.from("ride_messages").insert({
-      ride_id: ride.id,
-      company_id: companyId,
-      sender: "passageiro",
-      content: text.trim(),
-      status: "entregue",
-    });
+    if (text) {
+      await supabase.from("ride_messages").insert({
+        ride_id: ride.id,
+        company_id: companyId,
+        sender: "passageiro",
+        content: text.trim(),
+        status: "entregue",
+      });
 
-    // If the ride has a Machine driver ID, forward the message to the driver via Machine API
-    if (ride.machine_driver_id) {
-      try {
-        await forwardMessageToMachineDriver(companyId, ride.machine_driver_id, text.trim(), ride.machine_order_id);
-      } catch {
-        // best-effort — message is saved in ride_messages regardless
+      if (ride.machine_driver_id) {
+        try {
+          await forwardMessageToMachineDriver(companyId, ride.machine_driver_id, text.trim(), ride.machine_order_id);
+        } catch { /* best-effort */ }
       }
     }
   }
 
-  // If no active ride found, log the unmatched message
+  // If no active ride, route to bot for ride-request flow (only for bot instances)
   if (!ride) {
-    await supabase.from("admin_logs").insert({
-      company_id: companyId,
-      source: "whatsapp_webhook",
-      level: "info",
-      message: `Mensagem recebida de ${cleanPhone}: "${text.trim().slice(0, 100)}" — nenhuma corrida ativa vinculada a este número`,
-    });
+    // Check if this company's plan includes bot
+    const { data: company } = await supabase
+      .from("companies")
+      .select("plan_id")
+      .eq("id", companyId)
+      .maybeSingle();
+
+    let botAllowed = false;
+    if (company?.plan_id) {
+      const { data: plan } = await supabase
+        .from("subscription_plans")
+        .select("bot_incluso")
+        .eq("id", company.plan_id)
+        .maybeSingle();
+      botAllowed = plan?.bot_incluso ?? false;
+    }
+
+    if (botAllowed) {
+      await handleBotMessage(companyId, cleanPhone, text, pushName, location, audio);
+    }
     return;
   }
 

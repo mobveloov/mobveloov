@@ -214,6 +214,8 @@ export interface SubscriptionPlan {
   message_tier: string;
   is_active: boolean;
   sort_order: number;
+  bot_incluso: boolean;
+  limite_conexoes_bot: number;
   created_at: string;
   updated_at: string;
 }
@@ -342,6 +344,19 @@ export interface WhatsAppMessage {
   raw_payload: Record<string, unknown> | null;
   sent_at: string;
   created_at: string;
+}
+
+export interface BotWhatsappConexao {
+  id: string;
+  company_id: string;
+  instance_name: string;
+  phone_number: string | null;
+  connection_status: string;
+  qr_code: string | null;
+  evolution_api_url: string | null;
+  evolution_global_token: string | null;
+  created_at: string;
+  updated_at: string;
 }
 
 export interface RideMessage {

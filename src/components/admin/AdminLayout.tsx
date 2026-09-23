@@ -1,11 +1,12 @@
-import { useState, type ReactNode } from 'react';
+import { useState, useEffect, type ReactNode } from 'react';
 import {
   LayoutDashboard, MapPin, Plug, DollarSign, Radio, Users, Car,
-  MessageCircle, MessagesSquare, BookOpen, Settings, UserCog, Bell, ScrollText,
+  MessageCircle, MessagesSquare, BookOpen, Settings, UserCog, Bell, ScrollText, Bot,
   BarChart3, Wallet, LogOut, Menu, X, ChevronRight, Crown,
 } from 'lucide-react';
 import { useAuth } from '@/context/AuthContext';
 import { useNav, type AdminScreen } from '@/context/NavContext';
+import { supabase } from '@/lib/supabase';
 
 interface NavItem {
   key: AdminScreen;
@@ -23,6 +24,7 @@ const NAV_ITEMS: NavItem[] = [
   { key: 'pricing', label: 'Preços', icon: DollarSign, group: 'Configuração' },
   { key: 'integration', label: 'Integração', icon: Plug, group: 'Configuração' },
   { key: 'whatsapp', label: 'WhatsApp', icon: MessageCircle, group: 'Configuração' },
+  { key: 'bot', label: 'Bot de Corridas', icon: Bot, group: 'Configuração' },
   { key: 'chats', label: 'Conversas', icon: MessagesSquare, group: 'Configuração' },
   { key: 'settings', label: 'Dados da Empresa', icon: Settings, group: 'Configuração' },
   { key: 'subscription', label: 'Assinatura', icon: Crown, group: 'Configuração' },
@@ -40,6 +42,21 @@ export function AdminLayout({ children, modeLabel }: { children: ReactNode; mode
   const { company, signOut } = useAuth();
   const { adminScreen, goAdmin, navigate } = useNav();
   const [mobileOpen, setMobileOpen] = useState(false);
+  const [botEnabled, setBotEnabled] = useState(false);
+
+  useEffect(() => {
+    if (!company?.plan_id) return;
+    (async () => {
+      const { data: plan } = await supabase
+        .from('subscription_plans')
+        .select('bot_incluso')
+        .eq('id', company.plan_id)
+        .maybeSingle();
+      setBotEnabled(plan?.bot_incluso ?? false);
+    })();
+  }, [company]);
+
+  const visibleItems = botEnabled ? NAV_ITEMS : NAV_ITEMS.filter((i) => i.key !== 'bot');
 
   const handleNav = (key: AdminScreen) => {
     goAdmin(key);
@@ -60,7 +77,7 @@ export function AdminLayout({ children, modeLabel }: { children: ReactNode; mode
 
       <nav className="flex-1 overflow-y-auto px-3 py-4">
         {GROUP_ORDER.map((group) => {
-          const items = NAV_ITEMS.filter((i) => i.group === group);
+          const items = visibleItems.filter((i) => i.group === group);
           if (items.length === 0) return null;
           return (
             <div key={group} className="mb-5">
