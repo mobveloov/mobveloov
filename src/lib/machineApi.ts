@@ -112,7 +112,7 @@ export async function pollRideStatus(
   companySlug: string,
   rideId: string,
   machineOrderId?: string | null
-): Promise<{ success: boolean; status?: string; driver_name?: string | null; driver_phone?: string | null; vehicle_plate?: string | null; vehicle_model?: string | null }> {
+): Promise<{ success: boolean; status?: string; driver_name?: string | null; driver_phone?: string | null; vehicle_plate?: string | null; vehicle_model?: string | null; vehicle_color?: string | null }> {
   const supabaseUrl = import.meta.env.VITE_SUPABASE_URL as string;
   const anonKey = import.meta.env.VITE_SUPABASE_ANON_KEY as string;
 
@@ -140,6 +140,7 @@ export async function pollRideStatus(
       driver_phone: data.driver_phone ?? null,
       vehicle_plate: data.vehicle_plate ?? null,
       vehicle_model: data.vehicle_model ?? null,
+      vehicle_color: data.vehicle_color ?? null,
     };
   } catch {
     return { success: false };
