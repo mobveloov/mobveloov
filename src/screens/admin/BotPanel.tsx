@@ -1,8 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
-import { Bot, QrCode, Loader2, CheckCircle2, XCircle, RefreshCw, Trash2, Plus, AlertCircle, Phone, Wifi, WifiOff, MapPin, MessageSquare, Settings, ChevronDown, ChevronRight, Edit3, Save, Plug, Mic, Check } from 'lucide-react';
+import { Bot, QrCode, Loader2, CheckCircle2, XCircle, RefreshCw, Trash2, Plus, AlertCircle, Phone, Wifi, WifiOff, MapPin, MessageSquare, Settings, ChevronDown, ChevronRight, Edit3, Save, Mic, Check } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 import { useAuth } from '@/context/AuthContext';
-import { useNav } from '@/context/NavContext';
 import { slugify } from '@/lib/utils';
 import { PageHeader, Card, Input, Button, LoadingState } from '@/components/admin/ui';
 import type { BotWhatsappConexao } from '@/types';
@@ -57,7 +56,6 @@ const MESSAGE_KEYS = [
 
 export function BotPanel() {
   const { company } = useAuth();
-  const { goAdmin } = useNav();
   const [connections, setConnections] = useState<BotWhatsappConexao[]>([]);
   const [planLimit, setPlanLimit] = useState(0);
   const [planName, setPlanName] = useState('');
@@ -107,36 +105,20 @@ export function BotPanel() {
 
   if (loading) return <LoadingState />;
 
-  // Block if using Veloov shared instance
-  if (usingVeloovShared) {
-    return (
-      <div className="animate-slide-up space-y-5">
-        <PageHeader icon={Bot} title="Bot de Corridas" subtitle="Atendimento automático via WhatsApp" />
-        <Card className="p-8">
-          <div className="flex flex-col items-center text-center max-w-md mx-auto">
-            <div className="flex h-14 w-14 items-center justify-center rounded-xl bg-amber-500/15 text-amber-400 mb-4">
-              <AlertCircle className="h-7 w-7" />
-            </div>
-            <h3 className="text-sm font-bold text-slate-200 mb-2">O bot exige uma instância própria de WhatsApp</h3>
-            <p className="text-xs text-slate-500 mb-5 leading-relaxed">
-              Você está usando a instância compartilhada Veloov (API Veloov). Como ela é compartilhada entre várias empresas, não é possível identificar de qual empresa é cada mensagem recebida — o que impede o funcionamento do bot.
-              <br /><br />
-              Conecte sua própria instância de WhatsApp na aba de Integração para usar o bot.
-            </p>
-            <Button onClick={() => goAdmin('integration')}>
-              <Plug className="h-4 w-4" /> Ir para Integração
-            </Button>
-          </div>
-        </Card>
-      </div>
-    );
-  }
-
   const atLimit = connections.length >= planLimit;
 
   return (
     <div className="animate-slide-up space-y-5">
       <PageHeader icon={Bot} title="Bot de Corridas" subtitle={`Conexões WhatsApp do bot — Plano ${planName} (${connections.length}/${planLimit})`} />
+
+      {usingVeloovShared && (
+        <div className="flex items-start gap-2 text-sm text-amber-400 bg-amber-500/10 rounded-lg px-4 py-3">
+          <AlertCircle className="h-4 w-4 shrink-0 mt-0.5" />
+          <span>
+            A instância compartilhada da Veloov não pode ser usada para o bot — ela atende várias empresas ao mesmo tempo e não dá para separar de quem é cada mensagem. O Totem continua funcionando normalmente com ela. Para o bot, conecte um número de WhatsApp próprio abaixo.
+          </span>
+        </div>
+      )}
 
       {error && (
         <div className="flex items-center gap-2 text-sm text-error-400 bg-error-500/10 rounded-lg px-4 py-3">
@@ -155,7 +137,6 @@ export function BotPanel() {
         <div className="flex items-center gap-2 text-sm text-amber-400 bg-amber-500/10 rounded-lg px-4 py-3">
           <AlertCircle className="h-4 w-4 shrink-0" />
           A API Machine ainda não está configurada. O bot reutiliza as credenciais já cadastradas na aba Integração.
-          <button onClick={() => goAdmin('integration')} className="font-bold underline hover:text-amber-300 ml-1">Configurar agora</button>
         </div>
       )}
 
