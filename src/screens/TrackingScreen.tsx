@@ -36,6 +36,7 @@ export function TrackingScreen({ origin, destination, passengerName, passengerPh
   const [statusIndex, setStatusIndex] = useState(0);
   const [driverDistance, setDriverDistance] = useState<number | null>(null);
   const [kioskReleased, setKioskReleased] = useState(false);
+  const [cancelReason, setCancelReason] = useState<string | null>(null);
 
   const createdRef = useRef(false);
   const rideRef = useRef<string | null>(null);
@@ -187,6 +188,14 @@ export function TrackingScreen({ origin, destination, passengerName, passengerPh
           setRide(updated);
           const idx = STATUS_FLOW.indexOf(updated.status as OrderStatus);
           if (idx >= 0) setStatusIndex(idx);
+          if (updated.status === 'canceled' && rideRef.current) {
+            const elapsed = Date.now() - new Date(updated.created_at).getTime();
+            if (elapsed < 60_000) {
+              setCancelReason('A central não encontrou motoristas disponíveis no momento.');
+            } else {
+              setCancelReason('A corrida foi cancelada pela central.');
+            }
+          }
         }
       )
       .subscribe();
@@ -383,16 +392,16 @@ export function TrackingScreen({ origin, destination, passengerName, passengerPh
         </div>
       )}
 
-      {apiError && (
+      {(isCanceled || apiError) && (
         <div className="card p-4 mb-4 border-error-500/30 bg-error-500/5">
           <div className="flex items-start gap-2">
             <X className="h-5 w-5 shrink-0 text-error-500" />
             <div>
               <p className="text-sm font-semibold text-error-600 dark:text-error-500">
-                Erro de comunicação com a central
+                {isCanceled ? 'Não foi possível encontrar motorista' : 'Erro de comunicação com a central'}
               </p>
               <p className="text-xs text-neutral-500 dark:text-neutral-400 mt-1">
-                {apiError || 'Seu pedido foi registrado e será processado.'}
+                {cancelReason || apiError || 'Seu pedido foi registrado e será processado.'}
               </p>
             </div>
           </div>
@@ -407,7 +416,7 @@ export function TrackingScreen({ origin, destination, passengerName, passengerPh
         )}
         {(isCompleted || isCanceled) && (
           <button onClick={() => goPassenger('identify')} className="btn-primary flex-1 text-base">
-            Nova viagem
+            {isCanceled && cancelReason ? 'Tentar novamente' : 'Nova viagem'}
           </button>
         )}
       </div>

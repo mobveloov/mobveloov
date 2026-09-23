@@ -290,7 +290,7 @@ async function dispatchToMachine(
     forma_pagamento: "D",
     partida: {
       endereco: data.origin?.address || "Endereço não informado",
-      bairro: "Centro",
+      bairro: extractBairro(data.origin?.address) || "Centro",
       ...(data.origin?.lat != null ? { lat: data.origin.lat } : {}),
       ...(data.origin?.lng != null ? { lng: data.origin.lng } : {}),
     },
@@ -299,7 +299,7 @@ async function dispatchToMachine(
   if (data.destination?.address) {
     v2Payload.desejado = {
       endereco: data.destination.address,
-      bairro: "Centro",
+      bairro: extractBairro(data.destination.address) || "Centro",
       ...(data.destination.lat != null ? { lat: data.destination.lat } : {}),
       ...(data.destination.lng != null ? { lng: data.destination.lng } : {}),
     };
@@ -398,6 +398,13 @@ async function dispatchToMachine(
   return new Response(JSON.stringify({ success: true, data: dispatchData }), {
     headers: { ...corsHeaders, "Content-Type": "application/json" },
   });
+}
+
+function extractBairro(address?: string): string | null {
+  if (!address) return null;
+  const parts = address.split(",").map((s) => s.trim());
+  if (parts.length >= 3) return parts[parts.length - 2] || null;
+  return null;
 }
 
 async function dispatchToWebhook(
