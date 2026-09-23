@@ -327,6 +327,24 @@ async function processWebhook(body: Record<string, unknown>): Promise<void> {
       await supabase.from("rides").update(driverUpdate).eq("id", ride.id);
     }
 
+    // When ride completes, fetch the real/final price from the Machine receipt endpoint
+    if (internalStatus === "completed") {
+      const receipt = await fetchRideReceipt(ride.company_id, machineOrderId);
+      const priceUpdate: Record<string, unknown> = {};
+      if (receipt.valor != null) {
+        priceUpdate.final_price = receipt.valor;
+      }
+      if (receipt.distancia != null && receipt.distancia > 0) {
+        priceUpdate.distance_km = receipt.distancia;
+      }
+      if (receipt.duracao != null && receipt.duracao > 0) {
+        priceUpdate.duration_min = Math.round(receipt.duracao);
+      }
+      if (Object.keys(priceUpdate).length > 0) {
+        await supabase.from("rides").update(priceUpdate).eq("id", ride.id);
+      }
+    }
+
     let driverDistanceKm: number | null = null;
     let etaMinutes: number | null = null;
     try {
@@ -386,6 +404,60 @@ async function updateDriverPosition(requestId: string, lat: number, lng: number)
     lng,
     updated_at: new Date().toISOString(),
   }).eq("ride_id", ride.id);
+}
+
+async function fetchRideReceipt(companyId: string, machineOrderId: string): Promise<{ valor: number | null; valorOriginal: number | null; distancia: number | null; duracao: number | null }> {
+  const { data: credentials } = await supabase
+    .from("company_credentials")
+    .select("machine_api_url, machine_api_key, taximetro_username, taximetro_password")
+    .eq("company_id", companyId)
+    .maybeSingle();
+
+  const { data: tenantRows } = await supabase
+    .from("tenant_secrets")
+    .select("secret_name, secret_value")
+    .eq("tenant_id", companyId);
+  const tenantMap = new Map(
+    (tenantRows ?? []).map((r: { secret_name: string; secret_value: string }) => [r.secret_name, r.secret_value])
+  );
+
+  const baseUrl = (credentials?.machine_api_url || "https://api.taximachine.com.br").replace(/\/+$/, "");
+  const apiKey = tenantMap.get("MACHINE_API_KEY") || credentials?.machine_api_key || "";
+  const user = tenantMap.get("TAXIMETRO_USER") || credentials?.taximetro_username || "";
+  const pass = tenantMap.get("TAXIMETRO_PASSWORD") || credentials?.taximetro_password || "";
+
+  if (!apiKey || !user || !pass) return { valor: null, valorOriginal: null, distancia: null, duracao: null };
+
+  try {
+    const resp = await fetch(`${baseUrl}/api/v2/integracao/corridas/${machineOrderId}/recibo`, {
+      method: "GET",
+      headers: {
+        "Content-Type": "application/json",
+        "api-key": apiKey,
+        "Authorization": `Basic ${btoa(`${user}:${pass}`)}`,
+      },
+    });
+
+    if (!resp.ok) return { valor: null, valorOriginal: null, distancia: null, duracao: null };
+    const json = await resp.json();
+    const dados = json?.data?.dados_solicitacao ?? null;
+    if (!dados) return { valor: null, valorOriginal: null, distancia: null, duracao: null };
+
+    const parseNum = (v: unknown): number | null => {
+      if (v == null) return null;
+      const n = parseFloat(String(v).replace(",", "."));
+      return isNaN(n) ? null : n;
+    };
+
+    return {
+      valor: parseNum(dados.valor),
+      valorOriginal: parseNum(dados.valor_original),
+      distancia: parseNum(dados.distancia),
+      duracao: parseNum(dados.duracao),
+    };
+  } catch {
+    return { valor: null, valorOriginal: null, distancia: null, duracao: null };
+  }
 }
 
 async function fetchRideDetails(companyId: string, machineOrderId: string): Promise<Record<string, unknown> | null> {

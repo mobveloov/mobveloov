@@ -1253,6 +1253,37 @@ async function pollRideStatus(companyId: string, rideId: string, machineOrderId?
 
     await supabase.from("rides").update(updatePayload).eq("id", rideId);
 
+    // When ride completes, fetch the real/final price from the Machine receipt endpoint
+    if (internalStatus === "completed" && mchId) {
+      try {
+        const receiptResp = await fetch(`${auth.baseUrl}/api/v2/integracao/corridas/${mchId}/recibo`, {
+          method: "GET",
+          headers: auth.headers,
+        });
+        if (receiptResp.ok) {
+          const receiptJson = await receiptResp.json();
+          const dados = receiptJson?.data?.dados_solicitacao ?? null;
+          if (dados) {
+            const parseNum = (v: unknown): number | null => {
+              if (v == null) return null;
+              const n = parseFloat(String(v).replace(",", "."));
+              return isNaN(n) ? null : n;
+            };
+            const valor = parseNum(dados.valor);
+            const distancia = parseNum(dados.distancia);
+            const duracao = parseNum(dados.duracao);
+            const priceUpdate: Record<string, unknown> = {};
+            if (valor != null) priceUpdate.final_price = valor;
+            if (distancia != null && distancia > 0) priceUpdate.distance_km = distancia;
+            if (duracao != null && duracao > 0) priceUpdate.duration_min = Math.round(duracao);
+            if (Object.keys(priceUpdate).length > 0) {
+              await supabase.from("rides").update(priceUpdate).eq("id", rideId);
+            }
+          }
+        }
+      } catch { /* best-effort */ }
+    }
+
     // Fetch driver position for distance calculation (Tier C)
     let driverDistanceKm: number | null = null;
     let etaMinutes: number | null = null;

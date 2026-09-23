@@ -149,6 +149,7 @@ export interface Ride {
   vehicle_model: string | null;
   vehicle_color: string | null;
   machine_order_id: string | null;
+  final_price: number | null;
   webhook_events: WebhookEvent[];
   created_at: string;
   updated_at: string;
