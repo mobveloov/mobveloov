@@ -11,13 +11,14 @@ interface NavContextValue {
   passengerScreen: PassengerScreen;
   adminScreen: AdminScreen;
   selectedCategoryId: string | null;
+  selectedCategoryPrice: number | null;
   machineDistance: number | null;
   machineDuration: number | null;
   setTenantSlug: (slug: string, locationSlug?: string) => void;
   navigate: (view: AppView) => void;
   goPassenger: (screen: PassengerScreen) => void;
   goAdmin: (screen: AdminScreen) => void;
-  selectCategory: (id: string, distance?: number | null, duration?: number | null) => void;
+  selectCategory: (id: string, distance?: number | null, duration?: number | null, price?: number | null) => void;
 }
 
 const NavContext = createContext<NavContextValue | undefined>(undefined);
@@ -87,6 +88,7 @@ export function NavProvider({ children }: { children: ReactNode }) {
   const [passengerScreen, setPassengerScreen] = useState<PassengerScreen>('identify');
   const [adminScreen, setAdminScreen] = useState<AdminScreen>(initial.adminScreen);
   const [selectedCategoryId, setSelectedCategoryId] = useState<string | null>(null);
+  const [selectedCategoryPrice, setSelectedCategoryPrice] = useState<number | null>(null);
   const [machineDistance, setMachineDistance] = useState<number | null>(null);
   const [machineDuration, setMachineDuration] = useState<number | null>(null);
 
@@ -133,10 +135,11 @@ export function NavProvider({ children }: { children: ReactNode }) {
     window.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
-  const selectCategory = (id: string, distance?: number | null, duration?: number | null) => {
+  const selectCategory = (id: string, distance?: number | null, duration?: number | null, price?: number | null) => {
     setSelectedCategoryId(id);
     setMachineDistance(distance ?? null);
     setMachineDuration(duration ?? null);
+    setSelectedCategoryPrice(price ?? null);
   };
 
   return (
@@ -148,6 +151,7 @@ export function NavProvider({ children }: { children: ReactNode }) {
         passengerScreen,
         adminScreen,
         selectedCategoryId,
+        selectedCategoryPrice,
         machineDistance,
         machineDuration,
         setTenantSlug,

@@ -28,7 +28,7 @@ interface TrackingScreenProps {
 
 export function TrackingScreen({ origin, destination, passengerName, passengerPhone }: TrackingScreenProps) {
   const { company, settings, categories, location } = useTenant();
-  const { goPassenger, selectedCategoryId, machineDistance, machineDuration } = useNav();
+  const { goPassenger, selectedCategoryId, selectedCategoryPrice, machineDistance, machineDuration } = useNav();
 
   const [ride, setRide] = useState<Ride | null>(null);
   const [creating, setCreating] = useState(true);
@@ -58,7 +58,7 @@ export function TrackingScreen({ origin, destination, passengerName, passengerPh
     : null;
 
   const categoryLabel = selectedCategory?.label ?? settings?.category_label ?? 'Econômico';
-  const calculatedPrice = pricing?.pricing.final_price ?? settings?.min_fee ?? 0;
+  const calculatedPrice = selectedCategoryPrice ?? pricing?.pricing.final_price ?? settings?.min_fee ?? 0;
   const estimatedPrice = ride?.estimated_price != null ? Number(ride.estimated_price) : calculatedPrice;
 
   useEffect(() => {

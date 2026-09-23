@@ -10,9 +10,7 @@ const corsHeaders = {
   "Access-Control-Allow-Headers": "Content-Type, Authorization, X-Client-Info, Apikey",
 };
 
-async function verifyMachineSignature(req: Request): Promise<boolean> {
-  const rawBody = await req.clone().text();
-  const signature = req.headers.get("Signature-V2");
+async function verifyMachineSignatureRaw(rawBody: string, signature: string): Promise<boolean> {
   if (!signature) return false;
 
   let bodyJson: { request_id?: string; company_id?: string; data?: Array<{ company_id?: string; request_id?: string }> } = {};
@@ -149,35 +147,38 @@ Deno.serve(async (req: Request) => {
     return new Response(null, { status: 200, headers: corsHeaders });
   }
 
-  const sigHeader = req.headers.get("Signature-V2");
-  if (sigHeader) {
-    const sigValid = await verifyMachineSignature(req);
-    if (!sigValid) {
-      return new Response(JSON.stringify({ error: "Invalid signature" }), {
-        status: 401,
-        headers: { ...corsHeaders, "Content-Type": "application/json" },
-      });
-    }
-  }
-
-  let body: Record<string, unknown>;
-  try {
-    body = await req.json();
-  } catch {
-    return new Response(JSON.stringify({ success: true, note: "empty body" }), {
-      headers: { ...corsHeaders, "Content-Type": "application/json" },
-    });
-  }
-
-  // Respond 200 IMMEDIATELY — all processing goes to background.
+  // Respond 200 IMMEDIATELY — no synchronous work at all.
   // The Machine API has a short timeout (~5s) and blocks webhooks after
-  // consecutive failures. Returning fast prevents blocking.
-  EdgeRuntime.waitUntil(processWebhook(body));
+  // consecutive failures. Even signature verification (DB lookups) was
+  // causing timeouts. All work — including signature verification — goes
+  // to the background.
+  const sigHeader = req.headers.get("Signature-V2");
+  const rawBody = await req.text().catch(() => "");
+
+  let body: Record<string, unknown> = {};
+  if (rawBody) {
+    try { body = JSON.parse(rawBody); } catch { /* empty */ }
+  }
+
+  EdgeRuntime.waitUntil(processWebhookWithSig(body, sigHeader, rawBody));
 
   return new Response(JSON.stringify({ success: true }), {
     headers: { ...corsHeaders, "Content-Type": "application/json" },
   });
 });
+
+async function processWebhookWithSig(
+  body: Record<string, unknown>,
+  sigHeader: string | null,
+  rawBody: string,
+): Promise<void> {
+  // Verify signature in background — skip processing if invalid
+  if (sigHeader) {
+    const sigValid = await verifyMachineSignatureRaw(rawBody, sigHeader);
+    if (!sigValid) return;
+  }
+  await processWebhook(body);
+}
 
 async function processWebhook(body: Record<string, unknown>): Promise<void> {
   try {

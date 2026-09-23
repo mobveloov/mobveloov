@@ -230,6 +230,7 @@ export function CategoryScreen({ origin, destination }: CategoryScreenProps) {
                   cat.id,
                   useMachineDist ? machineDistance : undefined,
                   useMachineDist ? machineDuration : undefined,
+                  cat.final_price,
                 );
                 goPassenger('tracking');
               }}

@@ -753,7 +753,7 @@ async function cancelRideOnMachine(companyId: string, rideId: string, machineOrd
     const resp = await fetch(`${auth.baseUrl}/api/v2/integracao/corridas/${mchId}/cancelar`, {
       method: "POST",
       headers: auth.headers,
-      body: JSON.stringify({ motivo_id: 3 }),
+      body: JSON.stringify({ motivo_id: 1 }),
     });
 
     if (!resp.ok) {
