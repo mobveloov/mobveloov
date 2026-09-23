@@ -59,7 +59,7 @@ export function TrackingScreen({ origin, destination, passengerName, passengerPh
 
   const categoryLabel = selectedCategory?.label ?? settings?.category_label ?? 'Econômico';
   const calculatedPrice = pricing?.pricing.final_price ?? settings?.min_fee ?? 0;
-  const estimatedPrice = ride?.estimated_price ?? calculatedPrice;
+  const estimatedPrice = ride?.estimated_price != null ? Number(ride.estimated_price) : calculatedPrice;
 
   useEffect(() => {
     if (createdRef.current || !company || !settings) return;
@@ -156,7 +156,8 @@ export function TrackingScreen({ origin, destination, passengerName, passengerPh
 
       setCreating(false);
     })();
-  }, [company, settings, pricing, origin, destination, passengerName, passengerPhone, categoryLabel, estimatedPrice]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [company, settings, origin, destination, passengerName, passengerPhone, categoryLabel]);
 
   // Kiosk release: 5-minute rolling timer to unlock the screen for the next passenger
   useEffect(() => {
