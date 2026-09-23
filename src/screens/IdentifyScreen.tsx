@@ -21,6 +21,21 @@ interface SearchResult {
   lat: number;
   lng: number;
   label: string;
+  housenumber?: string;
+}
+
+function extractHouseNumber(value: string): string {
+  const commaPart = value.split(',').map((p) => p.trim()).find((p) => /^\d+[A-Za-z]?$/.test(p));
+  if (commaPart) return commaPart;
+  const match = value.match(/(?:^|,|\s)\d+[A-Za-z]?(?=,|\s|$)/);
+  return match?.[0].trim().replace(/^,\s*/, '') ?? '';
+}
+
+function addHouseNumber(label: string, houseNumber: string): string {
+  const number = houseNumber.trim();
+  if (!number || label.split(',').some((p) => p.trim() === number)) return label;
+  const parts = label.split(',').map((p) => p.trim()).filter(Boolean);
+  return parts.length > 0 ? [parts[0], number, ...parts.slice(1)].join(', ') : `${label}, ${number}`;
 }
 
 
@@ -32,6 +47,7 @@ export function IdentifyScreen({ onIdentify, origin, destination, onDestinationC
   const [destQuery, setDestQuery] = useState(destination?.label ?? '');
   const [destResults, setDestResults] = useState<SearchResult[]>([]);
   const [searching, setSearching] = useState(false);
+  const [destNumber, setDestNumber] = useState('');
   const [formError, setFormError] = useState<string | null>(null);
   const searchTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -56,7 +72,7 @@ export function IdentifyScreen({ onIdentify, origin, destination, onDestinationC
         const p = f.properties;
         const parts = [p.name, p.housenumber ? `${p.housenumber} ${p.street ?? ''}`.trim() : p.street, p.city, p.state, p.country].filter(Boolean);
         const label = parts.join(', ');
-        return { lat: f.geometry.coordinates[1], lng: f.geometry.coordinates[0], label };
+        return { lat: f.geometry.coordinates[1], lng: f.geometry.coordinates[0], label, housenumber: p.housenumber };
       });
       setDestResults(results);
     } catch {
@@ -72,10 +88,15 @@ export function IdentifyScreen({ onIdentify, origin, destination, onDestinationC
     searchTimer.current = setTimeout(() => searchAddress(value), 500);
   };
 
-  const selectDestResult = (result: SearchResult) => {
-    const point: GeoPoint = { lat: result.lat, lng: result.lng, label: result.label };
+  const selectDestResult = (result: SearchResult, typedQuery: string) => {
+    const typedNumber = extractHouseNumber(typedQuery);
+    const rawLabel = result.label;
+    const finalLabel = typedNumber ? addHouseNumber(rawLabel, typedNumber) : rawLabel;
+    const numberToSet = typedNumber || result.housenumber || extractHouseNumber(rawLabel);
+    const point: GeoPoint = { lat: result.lat, lng: result.lng, label: finalLabel };
     onDestinationChange(point);
-    setDestQuery(result.label);
+    setDestQuery(finalLabel);
+    setDestNumber(numberToSet);
     setDestResults([]);
   };
 
@@ -302,7 +323,7 @@ export function IdentifyScreen({ onIdentify, origin, destination, onDestinationC
                 {destResults.map((r, i) => (
                   <button
                     key={i}
-                    onClick={() => selectDestResult(r)}
+                    onClick={() => selectDestResult(r, destQuery)}
                     className="flex w-full items-start gap-2 px-4 py-3 text-left hover:bg-neutral-50 dark:hover:bg-neutral-700/50 transition-colors border-b border-neutral-100 dark:border-neutral-700 last:border-0"
                   >
                     <Navigation className="h-4 w-4 mt-0.5 shrink-0 text-primary-500" />
@@ -311,6 +332,29 @@ export function IdentifyScreen({ onIdentify, origin, destination, onDestinationC
                     </span>
                   </button>
                 ))}
+              </div>
+            )}
+            {destination && (
+              <div className="mt-2 flex items-center gap-2">
+                <input
+                  type="text"
+                  value={destNumber}
+                  onChange={(e) => {
+                    const newNumber = e.target.value;
+                    setDestNumber(newNumber);
+                    const baseLabel = destQuery.split(',').map((p) => p.trim()).filter((p) => !/^\d+[A-Za-z]?$/.test(p)).join(', ');
+                    if (newNumber.trim()) {
+                      const updated = addHouseNumber(baseLabel, newNumber);
+                      setDestQuery(updated);
+                      onDestinationChange({ lat: destination.lat, lng: destination.lng, label: updated });
+                    } else {
+                      setDestQuery(baseLabel);
+                      onDestinationChange({ lat: destination.lat, lng: destination.lng, label: baseLabel });
+                    }
+                  }}
+                  placeholder="Numero (opcional)"
+                  className="input-field flex-1 text-sm py-2"
+                />
               </div>
             )}
             {!destination && destQuery.length === 0 && (
