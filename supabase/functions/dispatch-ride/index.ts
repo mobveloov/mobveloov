@@ -528,7 +528,7 @@ async function handleDriverNotification(
   price: number
 ): Promise<Response> {
   // Check if WhatsApp is connected via global provider
-  const { provider, fields: f } = await getWhatsAppConfig();
+  const { provider, fields: f } = await getCompanyWhatsAppConfig(companyId);
   const isConfigured = (provider === "evolution" || provider === "veloov")
     ? !!(f["evo_url"] && f["evo_token"])
     : provider === "zapi"
@@ -563,7 +563,7 @@ async function handleDriverNotification(
   const message = `Nova corrida!\n\nPassageiro: ${passengerName}\nTelefone: ${passengerPhone}\nOrigem: ${origin}\nDestino: ${destination}\nValor: R$ ${price.toFixed(2).replace(".", ",")}\n\nAceite a corrida respondendo SIM.`;
 
   try {
-    const ok = await sendWhatsAppMessage({}, driverPhone.replace(/\D/g, ""), message);
+    const ok = await sendWhatsAppMessage(provider, f, driverPhone.replace(/\D/g, ""), message);
 
     await supabase.from("admin_logs").insert({
       company_id: companyId,
@@ -794,13 +794,35 @@ async function getWhatsAppConfig(): Promise<{ provider: string; fields: Record<s
   return { provider: "evolution", fields: {} };
 }
 
+async function getCompanyWhatsAppConfig(companyId: string): Promise<{ provider: string; fields: Record<string, string> }> {
+  const { data: instance } = await supabase
+    .from("whatsapp_instances")
+    .select("whatsapp_provider, evolution_api_url, evolution_global_token, instance_name, provider_token, provider_phone_id, provider_waba_id, provider_api_url, connection_status")
+    .eq("company_id", companyId)
+    .maybeSingle();
+
+  if (instance && instance.connection_status === "connected" && instance.whatsapp_provider && instance.whatsapp_provider !== "veloov") {
+    const fields: Record<string, string> = {};
+    if (instance.evolution_api_url) fields["evo_url"] = instance.evolution_api_url;
+    if (instance.evolution_global_token) fields["evo_token"] = instance.evolution_global_token;
+    if (instance.instance_name) fields["evo_instance"] = instance.instance_name;
+    if (instance.provider_api_url) fields["zapi_url"] = instance.provider_api_url;
+    if (instance.provider_token) fields["zapi_instance_token"] = instance.provider_token;
+    if (instance.provider_token) fields["meta_token"] = instance.provider_token;
+    if (instance.provider_phone_id) fields["meta_phone_id"] = instance.provider_phone_id;
+    if (instance.provider_waba_id) fields["meta_waba_id"] = instance.provider_waba_id;
+    return { provider: instance.whatsapp_provider, fields };
+  }
+
+  return await getWhatsAppConfig();
+}
+
 async function sendWhatsAppMessage(
-  _wa: Record<string, unknown>,
+  provider: string,
+  f: Record<string, string>,
   cleanPhone: string,
   message: string,
 ): Promise<boolean> {
-  const { provider, fields: f } = await getWhatsAppConfig();
-
   if (provider === "evolution" || provider === "veloov") {
     const url = f["evo_url"] ?? "";
     const token = f["evo_token"] ?? "";
@@ -980,9 +1002,9 @@ async function sendPassengerWhatsAppNotification(
   const cleanPhone = passengerPhone.replace(/\D/g, "");
   if (!cleanPhone) return;
 
-  const { provider } = await getWhatsAppConfig();
+  const { provider, fields: f } = await getCompanyWhatsAppConfig(companyId);
   try {
-    const ok = await sendWhatsAppMessage({}, cleanPhone, message);
+    const ok = await sendWhatsAppMessage(provider, f, cleanPhone, message);
     await logWhatsAppMessage(companyId, rideId, cleanPhone, "driver_assigned", message, provider, ok);
 
     await supabase.from("admin_logs").insert({
@@ -1157,8 +1179,8 @@ async function pollRideStatus(companyId: string, rideId: string, machineOrderId?
           const updateMsg = driverDistanceKm >= 1
             ? `Atualizacao: O motorista esta a ${driverDistanceKm.toFixed(1)} km de distancia. Tempo estimado: ${etaMinutes ?? "?"} min.`
             : `Atualizacao: O motorista esta a ${Math.round(driverDistanceKm * 1000)} m de distancia. Quase no local!`;
-          const { provider } = await getWhatsAppConfig();
-          const ok = await sendWhatsAppMessage({}, passengerPhone.replace(/\D/g, ""), updateMsg);
+          const { provider, fields: f } = await getCompanyWhatsAppConfig(companyId);
+          const ok = await sendWhatsAppMessage(provider, f, passengerPhone.replace(/\D/g, ""), updateMsg);
           await logWhatsAppMessage(companyId, rideId, passengerPhone.replace(/\D/g, ""), "distance_update", updateMsg, provider, ok);
         }
       }

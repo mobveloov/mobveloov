@@ -215,7 +215,7 @@ async function sendWhatsAppNotification(
     message += `\n\nPara cancelar, responda "cancelar".`;
   }
 
-  const { provider, fields: f } = await getWhatsAppConfig();
+  const { provider, fields: f } = await getCompanyWhatsAppConfig(companyId);
 
   const isConfigured = (provider === "evolution" || provider === "veloov")
     ? !!(f["evo_url"] && f["evo_token"])
@@ -269,6 +269,29 @@ async function getWhatsAppConfig(): Promise<{ provider: string; fields: Record<s
     } catch { /* ignore */ }
   }
   return { provider: "evolution", fields: {} };
+}
+
+async function getCompanyWhatsAppConfig(companyId: string): Promise<{ provider: string; fields: Record<string, string> }> {
+  const { data: instance } = await supabase
+    .from("whatsapp_instances")
+    .select("whatsapp_provider, evolution_api_url, evolution_global_token, instance_name, provider_token, provider_phone_id, provider_waba_id, provider_api_url, connection_status")
+    .eq("company_id", companyId)
+    .maybeSingle();
+
+  if (instance && instance.connection_status === "connected" && instance.whatsapp_provider && instance.whatsapp_provider !== "veloov") {
+    const fields: Record<string, string> = {};
+    if (instance.evolution_api_url) fields["evo_url"] = instance.evolution_api_url;
+    if (instance.evolution_global_token) fields["evo_token"] = instance.evolution_global_token;
+    if (instance.instance_name) fields["evo_instance"] = instance.instance_name;
+    if (instance.provider_api_url) fields["zapi_url"] = instance.provider_api_url;
+    if (instance.provider_token) fields["zapi_instance_token"] = instance.provider_token;
+    if (instance.provider_token) fields["meta_token"] = instance.provider_token;
+    if (instance.provider_phone_id) fields["meta_phone_id"] = instance.provider_phone_id;
+    if (instance.provider_waba_id) fields["meta_waba_id"] = instance.provider_waba_id;
+    return { provider: instance.whatsapp_provider, fields };
+  }
+
+  return await getWhatsAppConfig();
 }
 
 async function sendWhatsAppMessage(
