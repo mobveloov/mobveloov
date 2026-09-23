@@ -355,6 +355,8 @@ export interface BotWhatsappConexao {
   qr_code: string | null;
   evolution_api_url: string | null;
   evolution_global_token: string | null;
+  bot_custom_messages: Record<string, string> | null;
+  bot_category_ids: string[] | null;
   created_at: string;
   updated_at: string;
 }

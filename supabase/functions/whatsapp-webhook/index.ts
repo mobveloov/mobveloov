@@ -1,3 +1,4 @@
+// WhatsApp webhook: Evolution API events + bot ride-request flow — v2 with category + transcription
 import { createClient } from "npm:@supabase/supabase-js@2.57.4";
 
 const corsHeaders = {
@@ -272,15 +273,33 @@ async function reverseGeocode(lat: number, lng: number): Promise<string | null> 
   return null;
 }
 
-async function transcribeAudio(audioBase64OrUrl: string, mimetype: string): Promise<string | null> {
-  const groqKey = Deno.env.get("GROQ_API_KEY");
-  const openaiKey = Deno.env.get("OPENAI_API_KEY");
-  if (!groqKey && !openaiKey) return null;
+async function transcribeAudio(audioBase64OrUrl: string, mimetype: string, companyId?: string): Promise<string | null> {
+  // Try per-company transcription config first
+  let apiKey: string | undefined;
+  let provider = "groq";
+  if (companyId) {
+    const { data: config } = await supabase
+      .from("bot_transcription_config")
+      .select("provider, api_key, is_valid")
+      .eq("company_id", companyId)
+      .maybeSingle();
+    if (config?.is_valid && config.api_key) {
+      apiKey = config.api_key;
+      provider = config.provider;
+    }
+  }
+  // Fallback to env vars if no per-company config
+  if (!apiKey) {
+    const groqKey = Deno.env.get("GROQ_API_KEY");
+    const openaiKey = Deno.env.get("OPENAI_API_KEY");
+    if (!groqKey && !openaiKey) return null;
+    apiKey = groqKey || openaiKey;
+    provider = groqKey ? "groq" : "openai";
+  }
 
-  const apiUrl = groqKey
-    ? "https://api.groq.com/openai/v1/audio/transcriptions"
-    : "https://api.openai.com/v1/audio/transcriptions";
-  const authKey = groqKey || openaiKey;
+  const apiUrl = provider === "openai"
+    ? "https://api.openai.com/v1/audio/transcriptions"
+    : "https://api.groq.com/openai/v1/audio/transcriptions";
 
   try {
     let audioBlob: Blob;
@@ -302,12 +321,12 @@ async function transcribeAudio(audioBase64OrUrl: string, mimetype: string): Prom
 
     const formData = new FormData();
     formData.append("file", audioBlob, "audio.ogg");
-    formData.append("model", groqKey ? "whisper-large-v3" : "whisper-1");
+    formData.append("model", provider === "openai" ? "whisper-1" : "whisper-large-v3");
     formData.append("language", "pt");
 
     const resp = await fetch(apiUrl, {
       method: "POST",
-      headers: { Authorization: `Bearer ${authKey}` },
+      headers: { Authorization: `Bearer ${apiKey}` },
       body: formData,
     });
 
@@ -352,6 +371,30 @@ async function getFirstActiveCategory(companyId: string): Promise<{ id: string; 
   return cat ? { id: cat.id, label: cat.label, machine_category_id: cat.machine_category_id } : null;
 }
 
+async function getCategoryForConnection(companyId: string, connectionId?: string): Promise<{ id: string; label: string; machine_category_id: string | null } | null> {
+  if (connectionId) {
+    const { data: conn } = await supabase
+      .from("bot_whatsapp_conexoes")
+      .select("bot_category_ids")
+      .eq("id", connectionId)
+      .maybeSingle();
+    const catIds = conn?.bot_category_ids as string[] | null;
+    if (catIds && catIds.length > 0) {
+      const { data: cat } = await supabase
+        .from("vehicle_categories")
+        .select("id, label, machine_category_id")
+        .eq("company_id", companyId)
+        .eq("is_active", true)
+        .in("id", catIds)
+        .order("sort_order", { ascending: true })
+        .limit(1)
+        .maybeSingle();
+      if (cat) return { id: cat.id, label: cat.label, machine_category_id: cat.machine_category_id };
+    }
+  }
+  return await getFirstActiveCategory(companyId);
+}
+
 async function createAndDispatchRide(
   companyId: string,
   companySlug: string,
@@ -360,7 +403,7 @@ async function createAndDispatchRide(
   origin: { lat: number; lng: number; address: string },
   categoryLabel: string,
   machineCategoryId: string | null,
-): Promise<{ rideId: string; success: boolean; error?: string }> {
+): Promise<{ rideId: string; success: boolean; error?: string; machineMessage?: string }> {
   const { data: ride, error: rideErr } = await supabase
     .from("rides")
     .insert({
@@ -411,7 +454,17 @@ async function createAndDispatchRide(
       return { rideId: ride.id, success: false, error: dispatchData.error ?? "Dispatch failed" };
     }
 
-    return { rideId: ride.id, success: true };
+    // Extract Machine API response message if present
+    const machineMessage: string | undefined =
+      dispatchData?.data?.message ??
+      dispatchData?.data?.mensagem ??
+      dispatchData?.data?.response?.message ??
+      dispatchData?.data?.response?.mensagem ??
+      dispatchData?.message ??
+      dispatchData?.mensagem ??
+      undefined;
+
+    return { rideId: ride.id, success: true, machineMessage };
   } catch (err) {
     const msg = err instanceof Error ? err.message : "Dispatch request failed";
     return { rideId: ride.id, success: false, error: msg };
@@ -425,7 +478,20 @@ async function handleBotMessage(
   pushName: string | null,
   location: { lat: number; lng: number } | null,
   audio: { data: string; mimetype: string } | null,
+  connectionId?: string,
 ): Promise<void> {
+  // Load custom messages for this connection
+  let customMessages: Record<string, string> = {};
+  if (connectionId) {
+    const { data: conn } = await supabase
+      .from("bot_whatsapp_conexoes")
+      .select("bot_custom_messages")
+      .eq("id", connectionId)
+      .maybeSingle();
+    if (conn?.bot_custom_messages) customMessages = conn.bot_custom_messages as Record<string, string>;
+  }
+  const msg = (key: string, fallback: string): string => customMessages[key] || fallback;
+
   const { data: existingConv } = await supabase
     .from("bot_conversas")
     .select("*")
@@ -448,7 +514,7 @@ async function handleBotMessage(
       .single();
     conv = newConv as BotConversation;
 
-    await sendBotMessage(companyId, cleanPhone, "Ola! Voce quer solicitar uma corrida? Responda SIM para continuar.");
+    await sendBotMessage(companyId, cleanPhone, msg("welcome", "Ola! Voce quer solicitar uma corrida? Responda SIM para continuar."));
     return;
   }
 
@@ -467,14 +533,14 @@ async function handleBotMessage(
         await supabase.from("bot_conversas")
           .update({ state: "aguardando_endereco", updated_at: new Date().toISOString() })
           .eq("id", conv.id);
-        await sendBotMessage(companyId, cleanPhone, "Perfeito! Qual e o endereco de embarque? Voce pode digitar o endereco, enviar sua localizacao ou mandar um audio.");
+        await sendBotMessage(companyId, cleanPhone, msg("ask_address", "Perfeito! Qual e o endereco de embarque? Voce pode digitar o endereco, enviar sua localizacao ou mandar um audio."));
       } else if (["nao", "nao.", "cancelar", "n"].includes(normalizedText)) {
         await supabase.from("bot_conversas")
           .update({ state: "corrida_solicitada", updated_at: new Date().toISOString() })
           .eq("id", conv.id);
-        await sendBotMessage(companyId, cleanPhone, "Tudo bem! Quando precisar de uma corrida, e so nos mandar uma mensagem.");
+        await sendBotMessage(companyId, cleanPhone, msg("decline", "Tudo bem! Quando precisar de uma corrida, e so nos mandar uma mensagem."));
       } else {
-        await sendBotMessage(companyId, cleanPhone, "Voce quer solicitar uma corrida? Responda SIM para continuar.");
+        await sendBotMessage(companyId, cleanPhone, msg("welcome_repeat", "Voce quer solicitar uma corrida? Responda SIM para continuar."));
       }
       break;
     }
@@ -490,7 +556,7 @@ async function handleBotMessage(
         const reversed = await reverseGeocode(lat, lng);
         addressText = reversed ?? `Localizacao: ${lat}, ${lng}`;
       } else if (audio) {
-        const transcribed = await transcribeAudio(audio.data, audio.mimetype);
+        const transcribed = await transcribeAudio(audio.data, audio.mimetype, companyId);
         if (transcribed) {
           addressText = transcribed.trim();
           await sendBotMessage(companyId, cleanPhone, `Entendi: "${addressText}". Validando o endereco...`);
@@ -503,31 +569,80 @@ async function handleBotMessage(
       }
 
       if (!addressText) {
-        await sendBotMessage(companyId, cleanPhone, "Por favor, envie o endereco de embarque. Voce pode digitar, enviar sua localizacao ou mandar um audio.");
+        await sendBotMessage(companyId, cleanPhone, msg("address_retry", "Por favor, envie o endereco de embarque. Voce pode digitar, enviar sua localizacao ou mandar um audio."));
         return;
       }
 
-      const companyLoc = await getCompanyLocationInfo(companyId);
-      const geocoded = await geocodeAddress(addressText, companyLoc.city ?? undefined, companyLoc.state ?? undefined);
+      // Check address suggestions first (before geocoding)
+      let suggestionMatch: { address_text: string; lat: number | null; lng: number | null } | null = null;
+      if (connectionId) {
+        const { data: suggestions } = await supabase
+          .from("bot_address_suggestions")
+          .select("nickname, address_text, lat, lng")
+          .eq("connection_id", connectionId);
+        if (suggestions && suggestions.length > 0) {
+          const normalizedInput = addressText.toLowerCase().trim();
+          for (const sug of suggestions) {
+            const nick = (sug.nickname || "").toLowerCase().trim();
+            if (nick && (normalizedInput === nick || normalizedInput.includes(nick) || nick.includes(normalizedInput))) {
+              suggestionMatch = { address_text: sug.address_text, lat: sug.lat, lng: sug.lng };
+              break;
+            }
+          }
+        }
+      }
 
       let finalLat: number;
       let finalLng: number;
       let finalAddress: string;
       let isFallback = false;
 
-      if (geocoded) {
-        finalLat = geocoded.lat;
-        finalLng = geocoded.lng;
-        finalAddress = geocoded.formatted;
-      } else {
-        if (companyLoc.lat != null && companyLoc.lng != null) {
-          finalLat = companyLoc.lat;
-          finalLng = companyLoc.lng;
-          finalAddress = addressText;
-          isFallback = true;
+      if (suggestionMatch) {
+        // Use the suggestion's real address
+        if (suggestionMatch.lat != null && suggestionMatch.lng != null) {
+          finalLat = suggestionMatch.lat;
+          finalLng = suggestionMatch.lng;
         } else {
-          await sendBotMessage(companyId, cleanPhone, "Nao consegui encontrar esse endereco. Tente enviar um endereco mais completo (ex: Rua, numero, bairro, cidade) ou compartilhe sua localizacao.");
-          return;
+          // Geocode the suggestion's real address
+          const companyLoc = await getCompanyLocationInfo(companyId);
+          const geocoded = await geocodeAddress(suggestionMatch.address_text, companyLoc.city ?? undefined, companyLoc.state ?? undefined);
+          if (geocoded) {
+            finalLat = geocoded.lat;
+            finalLng = geocoded.lng;
+          } else if (companyLoc.lat != null && companyLoc.lng != null) {
+            finalLat = companyLoc.lat;
+            finalLng = companyLoc.lng;
+            isFallback = true;
+          } else {
+            await sendBotMessage(companyId, cleanPhone, msg("address_not_found", "Nao consegui encontrar esse endereco. Tente enviar um endereco mais completo (ex: Rua, numero, bairro, cidade) ou compartilhe sua localizacao."));
+            return;
+          }
+        }
+        finalAddress = suggestionMatch.address_text;
+      } else if (location) {
+        // Location was already set above
+        finalLat = lat!;
+        finalLng = lng!;
+        finalAddress = addressText;
+      } else {
+        // Geocode the text address
+        const companyLoc = await getCompanyLocationInfo(companyId);
+        const geocoded = await geocodeAddress(addressText, companyLoc.city ?? undefined, companyLoc.state ?? undefined);
+
+        if (geocoded) {
+          finalLat = geocoded.lat;
+          finalLng = geocoded.lng;
+          finalAddress = geocoded.formatted;
+        } else {
+          if (companyLoc.lat != null && companyLoc.lng != null) {
+            finalLat = companyLoc.lat;
+            finalLng = companyLoc.lng;
+            finalAddress = addressText;
+            isFallback = true;
+          } else {
+            await sendBotMessage(companyId, cleanPhone, msg("address_not_found", "Nao consegui encontrar esse endereco. Tente enviar um endereco mais completo (ex: Rua, numero, bairro, cidade) ou compartilhe sua localizacao."));
+            return;
+          }
         }
       }
 
@@ -544,7 +659,7 @@ async function handleBotMessage(
         .eq("id", conv.id);
 
       const fallbackNote = isFallback ? " (nao foi possivel localizar no mapa, usando localizacao aproximada da cidade)" : "";
-      await sendBotMessage(companyId, cleanPhone, `Confirma que o embarque e em: ${finalAddress}${fallbackNote}?\n\nResponda SIM para confirmar ou NAO para corrigir.`);
+      await sendBotMessage(companyId, cleanPhone, msg("confirm_address", `Confirma que o embarque e em: ${finalAddress}${fallbackNote}?\n\nResponda SIM para confirmar ou NAO para corrigir.`));
       break;
     }
 
@@ -556,7 +671,7 @@ async function handleBotMessage(
           return;
         }
 
-        const category = await getFirstActiveCategory(companyId);
+        const category = await getCategoryForConnection(companyId, connectionId);
         const passengerName = conv.passenger_name || "Passageiro";
         const origin = {
           lat: conv.address_lat!,
@@ -583,7 +698,9 @@ async function handleBotMessage(
             })
             .eq("id", conv.id);
 
-          await sendBotMessage(companyId, cleanPhone, "Corrida solicitada com sucesso! Um motorista vai aceitar em breve. Aguarde.");
+          // Prioritize Machine API response message, then custom, then default
+          const successMsg = result.machineMessage || msg("ride_success", "Corrida solicitada com sucesso! Um motorista vai aceitar em breve. Aguarde.");
+          await sendBotMessage(companyId, cleanPhone, successMsg);
 
           await supabase.from("admin_logs").insert({
             company_id: companyId,
@@ -593,7 +710,7 @@ async function handleBotMessage(
             ride_id: result.rideId,
           });
         } else {
-          await sendBotMessage(companyId, cleanPhone, `Houve um erro ao solicitar a corrida: ${result.error ?? "erro desconhecido"}. Tente novamente enviando o endereco.`);
+          await sendBotMessage(companyId, cleanPhone, msg("ride_error", `Houve um erro ao solicitar a corrida: ${result.error ?? "erro desconhecido"}. Tente novamente enviando o endereco.`));
           await supabase.from("bot_conversas")
             .update({ state: "aguardando_endereco", updated_at: new Date().toISOString() })
             .eq("id", conv.id);
@@ -602,9 +719,9 @@ async function handleBotMessage(
         await supabase.from("bot_conversas")
           .update({ state: "aguardando_endereco", updated_at: new Date().toISOString() })
           .eq("id", conv.id);
-        await sendBotMessage(companyId, cleanPhone, "Sem problema! Qual e o endereco correto de embarque? Voce pode digitar, enviar sua localizacao ou mandar um audio.");
+        await sendBotMessage(companyId, cleanPhone, msg("address_correction", "Sem problema! Qual e o endereco correto de embarque? Voce pode digitar, enviar sua localizacao ou mandar um audio."));
       } else {
-        await sendBotMessage(companyId, cleanPhone, "Por favor, responda SIM para confirmar o endereco ou NAO para corrigir.");
+        await sendBotMessage(companyId, cleanPhone, msg("confirm_retry", "Por favor, responda SIM para confirmar o endereco ou NAO para corrigir."));
       }
       break;
     }
@@ -613,7 +730,7 @@ async function handleBotMessage(
       await supabase.from("bot_conversas")
         .update({ state: "inicio", updated_at: new Date().toISOString() })
         .eq("id", conv.id);
-      await sendBotMessage(companyId, cleanPhone, "Ola! Voce quer solicitar uma nova corrida? Responda SIM para continuar.");
+      await sendBotMessage(companyId, cleanPhone, msg("welcome_back", "Ola! Voce quer solicitar uma nova corrida? Responda SIM para continuar."));
       break;
     }
   }
@@ -692,7 +809,7 @@ Deno.serve(async (req: Request) => {
           if (rawPhone && text) {
             await saveMessage(botConn.company_id, rawPhone, "incoming", text, body);
           }
-          await handleIncomingMessage(botConn.company_id, data, instance);
+          await handleIncomingMessage(botConn.company_id, data, instance, botConn.id);
         }
 
         return new Response(JSON.stringify({ success: true, bot: true }), {
@@ -863,7 +980,7 @@ Deno.serve(async (req: Request) => {
   }
 });
 
-async function handleIncomingMessage(companyId: string, data: Record<string, unknown>, _instanceName?: string): Promise<void> {
+async function handleIncomingMessage(companyId: string, data: Record<string, unknown>, _instanceName?: string, connectionId?: string): Promise<void> {
   // Evolution API v1 sends: { key: { remoteJid: "5516999998888@s.whatsapp.net" }, message: { conversation: "cancelar" } }
   // Evolution API v2 sends: { message: { text: "cancelar" }, key: { remoteJid: "..." } }
   // Some versions: { from: "5516999998888", body: { text: "cancelar" } }
@@ -975,7 +1092,7 @@ async function handleIncomingMessage(companyId: string, data: Record<string, unk
     }
 
     if (botAllowed) {
-      await handleBotMessage(companyId, cleanPhone, text, pushName, location, audio);
+      await handleBotMessage(companyId, cleanPhone, text, pushName, location, audio, connectionId);
     }
     return;
   }
@@ -1192,3 +1309,4 @@ async function forwardMessageToMachineDriver(
     });
   }
 }
+
