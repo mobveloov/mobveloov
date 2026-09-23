@@ -352,8 +352,8 @@ Deno.serve(async (req: Request) => {
       const etaMin = Math.max(1, Math.round(distanceKm * 2.5));
 
       const updateMsg = distanceKm >= 1
-        ? `Atualização: O motorista está a ${distanceKm.toFixed(1)} km de distância. Tempo estimado: ${etaMin} min.`
-        : `Atualização: O motorista está a ${Math.round(distanceKm * 1000)} m de distância. Quase no local!`;
+        ? `\u{1F4CD} Atualização: O motorista está a ${distanceKm.toFixed(1)} km de distância. Tempo estimado: ${etaMin} min.`
+        : `\u{1F4CD} Atualização: O motorista está a ${Math.round(distanceKm * 1000)} m de distância. Quase no local!`;
 
       const cleanPhone = toBrazilianWhatsAppNumber(ride.passenger_phone);
       if (!cleanPhone) { skippedCount++; continue; }

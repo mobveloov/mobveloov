@@ -134,12 +134,12 @@ const STATUS_MAP: Record<string, string> = {
 };
 
 const STATUS_MESSAGES_PT: Record<string, string> = {
-  accepted: "Seu motorista aceitou a corrida! Está a caminho do ponto de partida.",
-  en_route: "Seu motorista chegou ao local de embarque! Procure pelo veículo.",
-  in_progress: "Sua viagem está em andamento.",
-  completed: "Sua viagem foi concluída. Obrigado pela preferência!",
-  canceled: "Sua corrida foi cancelada.",
-  pending: "Seu motorista cancelou. Estamos procurando um novo motorista para sua corrida. Aguarde.",
+  accepted: "\u2705 Seu motorista aceitou a corrida! Está a caminho do ponto de partida.",
+  en_route: "\U0001F697 Seu motorista chegou ao local de embarque! Procure pelo veículo.",
+  in_progress: "\U0001F695 Sua viagem está em andamento.",
+  completed: "\U0001F3C6 Sua viagem foi concluída. Obrigado pela preferência!",
+  canceled: "\u274C Sua corrida foi cancelada.",
+  pending: "\U0001F501 Seu motorista cancelou. Estamos procurando um novo motorista para sua corrida. Aguarde.",
 };
 
 Deno.serve(async (req: Request) => {
@@ -552,7 +552,7 @@ async function fetchDriverPosition(companyId: string, machineOrderId: string): P
     const json = await resp.json();
     const data = json?.data;
     if (data?.lat_condutor != null && data?.lng_condutor != null) {
-      return { lat: data.lat_condutor, lng: data.lng_condutor };
+      return { lat: parseFloat(data.lat_condutor), lng: parseFloat(data.lng_condutor) };
     }
     return null;
   } catch {
@@ -583,27 +583,27 @@ async function sendWhatsAppNotification(
     if (features.send_driver_info) {
       const isDriverChange = previousStatus === "accepted" && driverChanged;
       if (isDriverChange) {
-        message = "Seu motorista foi trocado! Um novo motorista aceitou sua corrida.";
+        message = "\U0001F501 Seu motorista foi trocado! Um novo motorista aceitou sua corrida.";
       }
-      message += `\n\nMotorista: ${driverName}`;
-      if (vehicleModel) message += `\nVeículo: ${vehicleModel}`;
-      if (vehicleColor) message += `\nCor: ${vehicleColor}`;
-      if (vehiclePlate) message += `\nPlaca: ${vehiclePlate}`;
+      message += `\n\n\U0001F464 Motorista: ${driverName}`;
+      if (vehicleModel) message += `\n\U0001F697 Veículo: ${vehicleModel}`;
+      if (vehicleColor) message += `\n\U0001F3A8 Cor: ${vehicleColor}`;
+      if (vehiclePlate) message += `\n\U0001F510 Placa: ${vehiclePlate}`;
     }
 
     if (features.send_eta && etaMinutes != null) {
-      message += `\nTempo estimado de chegada: ${etaMinutes} min`;
+      message += `\n\u23F1 Tempo estimado de chegada: ${etaMinutes} min`;
     }
 
     if (features.distance_update_interval_min > 0 && driverDistanceKm != null) {
       if (driverDistanceKm >= 1) {
-        message += `\nO motorista está a ${driverDistanceKm.toFixed(1)} km de distância`;
+        message += `\n\U0001F4CD O motorista está a ${driverDistanceKm.toFixed(1)} km de distância`;
       } else {
-        message += `\nO motorista está a ${Math.round(driverDistanceKm * 1000)} m de distância`;
+        message += `\n\U0001F4CD O motorista está a ${Math.round(driverDistanceKm * 1000)} m de distância`;
       }
     }
 
-    message += `\n\nPara cancelar, responda "cancelar".`;
+    message += `\n\n\u274C Para cancelar, responda "cancelar".`;
   }
 
   const { provider, fields: f } = await getCompanyWhatsAppConfig(companyId);

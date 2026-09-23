@@ -625,7 +625,7 @@ async function handleDriverNotification(
     });
   }
 
-  const message = `Nova corrida!\n\nPassageiro: ${passengerName}\nTelefone: ${passengerPhone}\nOrigem: ${origin}\nDestino: ${destination}\nValor: R$ ${price.toFixed(2).replace(".", ",")}\n\nAceite a corrida respondendo SIM.`;
+  const message = `\u{1F4E2} Nova corrida!\n\n\u{1F464} Passageiro: ${passengerName}\n\u{1F4DE} Telefone: ${passengerPhone}\n\u{1F4CD} Origem: ${origin}\n\u{1F3C3} Destino: ${destination}\n\u{1F4B5} Valor: R$ ${price.toFixed(2).replace(".", ",")}\n\n\u2705 Aceite a corrida respondendo SIM.`;
 
   try {
     const ok = await sendWhatsAppMessage(provider, f, driverPhone.replace(/\D/g, ""), message);
@@ -847,12 +847,12 @@ async function cancelRideByPhone(companyId: string, phone: string): Promise<Resp
 }
 
 const STATUS_MESSAGES_PT: Record<string, string> = {
-  accepted: "Seu motorista aceitou a corrida! Está a caminho do ponto de partida.",
-  en_route: "Seu motorista chegou ao local de embarque! Procure pelo veículo.",
-  in_progress: "Sua viagem está em andamento.",
-  completed: "Sua viagem foi concluída. Obrigado pela preferência!",
-  canceled: "Sua corrida foi cancelada.",
-  pending: "Seu motorista cancelou. Estamos procurando um novo motorista para sua corrida. Aguarde.",
+  accepted: "\u2705 Seu motorista aceitou a corrida! Está a caminho do ponto de partida.",
+  en_route: "\U0001F697 Seu motorista chegou ao local de embarque! Procure pelo veículo.",
+  in_progress: "\U0001F695 Sua viagem está em andamento.",
+  completed: "\U0001F3C6 Sua viagem foi concluída. Obrigado pela preferência!",
+  canceled: "\u274C Sua corrida foi cancelada.",
+  pending: "\U0001F501 Seu motorista cancelou. Estamos procurando um novo motorista para sua corrida. Aguarde.",
 };
 
 async function getWhatsAppConfig(): Promise<{ provider: string; fields: Record<string, string> }> {
@@ -1067,27 +1067,27 @@ async function sendPassengerWhatsAppNotification(
   if (internalStatus === "accepted" && driverName) {
     if (features.send_driver_info) {
       if (driverChanged) {
-        message = "Seu motorista foi trocado! Um novo motorista aceitou sua corrida.";
+        message = "\U0001F501 Seu motorista foi trocado! Um novo motorista aceitou sua corrida.";
       }
-      message += `\n\nMotorista: ${driverName}`;
-      if (vehicleModel) message += `\nVeículo: ${vehicleModel}`;
-      if (vehicleColor) message += `\nCor: ${vehicleColor}`;
-      if (vehiclePlate) message += `\nPlaca: ${vehiclePlate}`;
+      message += `\n\n\U0001F464 Motorista: ${driverName}`;
+      if (vehicleModel) message += `\n\U0001F697 Veículo: ${vehicleModel}`;
+      if (vehicleColor) message += `\n\U0001F3A8 Cor: ${vehicleColor}`;
+      if (vehiclePlate) message += `\n\U0001F510 Placa: ${vehiclePlate}`;
     }
 
     if (features.send_eta && etaMinutes != null) {
-      message += `\nTempo estimado de chegada: ${etaMinutes} min`;
+      message += `\n\u23F1 Tempo estimado de chegada: ${etaMinutes} min`;
     }
 
     if (features.distance_update_interval_min > 0 && driverDistanceKm != null) {
       if (driverDistanceKm >= 1) {
-        message += `\nO motorista está a ${driverDistanceKm.toFixed(1)} km de distância`;
+        message += `\n\U0001F4CD O motorista está a ${driverDistanceKm.toFixed(1)} km de distância`;
       } else {
-        message += `\nO motorista está a ${Math.round(driverDistanceKm * 1000)} m de distância`;
+        message += `\n\U0001F4CD O motorista está a ${Math.round(driverDistanceKm * 1000)} m de distância`;
       }
     }
 
-    message += `\n\nPara cancelar, responda "cancelar".`;
+    message += `\n\n\u274C Para cancelar, responda "cancelar".`;
   }
 
   const cleanPhone = toBrazilianWhatsAppNumber(passengerPhone);
@@ -1204,8 +1204,8 @@ async function pollRideStatus(companyId: string, rideId: string, machineOrderId?
     if (posResp.ok) {
       const posJson = await posResp.json();
       const posData = posJson?.data;
-      const driverLat = posData?.lat_condutor ?? null;
-      const driverLng = posData?.lng_condutor ?? null;
+      const driverLat = posData?.lat_condutor != null ? parseFloat(posData.lat_condutor) : null;
+      const driverLng = posData?.lng_condutor != null ? parseFloat(posData.lng_condutor) : null;
       if (driverLat != null && driverLng != null) {
         await supabase.from("ride_driver_positions").upsert({
           ride_id: rideId,
@@ -1376,8 +1376,8 @@ async function pollRideStatus(companyId: string, rideId: string, machineOrderId?
 
         if (shouldSend) {
           const updateMsg = driverDistanceKm >= 1
-            ? `Atualização: O motorista está a ${driverDistanceKm.toFixed(1)} km de distância. Tempo estimado: ${etaMinutes ?? "?"} min.`
-            : `Atualização: O motorista está a ${Math.round(driverDistanceKm * 1000)} m de distância. Quase no local!`;
+            ? `\U0001F4CD Atualização: O motorista está a ${driverDistanceKm.toFixed(1)} km de distância. Tempo estimado: ${etaMinutes ?? "?"} min.`
+            : `\U0001F4CD Atualização: O motorista está a ${Math.round(driverDistanceKm * 1000)} m de distância. Quase no local!`;
           const { provider, fields: f } = await getCompanyWhatsAppConfig(companyId);
           const ok = await sendWhatsAppMessage(provider, f, toBrazilianWhatsAppNumber(passengerPhone), updateMsg);
           await logWhatsAppMessage(companyId, rideId, toBrazilianWhatsAppNumber(passengerPhone), "distance_update", updateMsg, provider, ok);

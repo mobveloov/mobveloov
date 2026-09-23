@@ -351,10 +351,10 @@ Deno.serve(async (req: Request) => {
       // Send WhatsApp notification to passenger if a global provider is configured
       if (data.passenger_phone) {
         const statusMessages: Record<string, string> = {
-          accepted: "Seu motorista aceitou a corrida! Está a caminho do ponto de partida.",
-          en_route: "Seu motorista chegou ao local de embarque! Procure pelo veículo.",
-          in_progress: "Sua viagem está em andamento.",
-          completed: "Sua viagem foi concluída. Obrigado!",
+          accepted: "\u2705 Seu motorista aceitou a corrida! Está a caminho do ponto de partida.",
+          en_route: "\U0001F697 Seu motorista chegou ao local de embarque! Procure pelo veículo.",
+          in_progress: "\U0001F695 Sua viagem está em andamento.",
+          completed: "\U0001F3C6 Sua viagem foi concluída. Obrigado!",
         };
 
         const message = statusMessages[newStatus];
@@ -466,7 +466,7 @@ async function handleIncomingMessage(companyId: string, data: Record<string, unk
   if (ride.status === "en_route") {
     try {
       const { provider, fields: f } = await getCompanyWhatsAppConfig(companyId);
-      const msg = "Seu motorista já chegou ao local de embarque. Não é possível cancelar neste momento.";
+      const msg = "\u26D4 Seu motorista já chegou ao local de embarque. Não é possível cancelar neste momento.";
       await sendWhatsAppMessageWithProvider(provider, f, cleanPhone, msg);
       await saveMessage(companyId, cleanPhone, "outgoing", msg);
     } catch { /* best-effort */ }
@@ -562,7 +562,7 @@ async function handleIncomingMessage(companyId: string, data: Record<string, unk
   // Send confirmation message back to passenger via global WhatsApp provider
   try {
     const { provider, fields: f } = await getCompanyWhatsAppConfig(companyId);
-    const confirmMsg = "Sua corrida foi cancelada com sucesso. Para solicitar uma nova viagem, use o totem.";
+    const confirmMsg = "\u2705 Sua corrida foi cancelada com sucesso. Para solicitar uma nova viagem, use o totem.";
     await sendWhatsAppMessageWithProvider(provider, f, cleanPhone, confirmMsg);
     await saveMessage(companyId, cleanPhone, "outgoing", confirmMsg);
   } catch {
