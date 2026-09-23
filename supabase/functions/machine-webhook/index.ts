@@ -1,8 +1,9 @@
 import { createClient } from "npm:@supabase/supabase-js@2.57.4";
 import { createHmac } from "node:crypto";
-// machine-webhook: handles Machine API status + position webhooks (v2).
+// machine-webhook: handles Machine API status + position + message webhooks (v2).
 // Responds immediately (200) to avoid Machine API timeout/blocking, then
 // processes heavy work (fetch details, driver position, WhatsApp) in background.
+// v3: saves condutor_id, handles message webhook (driver replies from Machine app).
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -227,6 +228,17 @@ async function processWebhook(body: Record<string, unknown>): Promise<void> {
       return;
     }
 
+    // Handle Machine message webhook (driver sent a message from the Machine app)
+    const msgContent = body.content as string | undefined;
+    const msgSenderId = body.sender_id as number | undefined;
+    const msgTypeCode = body.type_code as string | undefined;
+    const msgRequestId = body.request_id as number | undefined;
+    const msgCompanyId = body.company_id as number | undefined;
+    if (msgContent && msgTypeCode === "DRIVER" && msgRequestId) {
+      await handleMachineDriverMessage(msgRequestId, msgCompanyId ?? 0, msgSenderId ?? 0, msgContent);
+      return;
+    }
+
     if (!request_id || !status_code) return;
 
     const internalStatus = STATUS_MAP[status_code] ?? "pending";
@@ -305,6 +317,10 @@ async function processWebhook(body: Record<string, unknown>): Promise<void> {
         vehiclePlate = str(details.placa_veiculo) ?? str(details.driver?.veiculo_placa);
         vehicleModel = str(details.veiculo) ?? str(details.driver?.veiculo_modelo);
         vehicleColor = str(details.cor_veiculo) ?? str(details.driver?.veiculo_cor);
+        const machineDriverId = str(details.condutor_id) ?? str(details.driver?.id);
+        if (machineDriverId) {
+          await supabase.from("rides").update({ machine_driver_id: machineDriverId }).eq("id", ride.id);
+        }
       }
 
       const driverPos = await fetchDriverPosition(ride.company_id, machineOrderId);
@@ -405,6 +421,70 @@ async function updateDriverPosition(requestId: string, lat: number, lng: number)
     lng,
     updated_at: new Date().toISOString(),
   }).eq("ride_id", ride.id);
+}
+
+async function handleMachineDriverMessage(
+  machineRequestId: number,
+  _machineCompanyId: number,
+  _senderId: number,
+  content: string,
+): Promise<void> {
+  const { data: ride } = await supabase
+    .from("rides")
+    .select("id, company_id, passenger_phone, passenger_name, status, machine_driver_id")
+    .eq("machine_order_id", String(machineRequestId))
+    .maybeSingle();
+
+  if (!ride) {
+    await supabase.from("admin_logs").insert({
+      source: "machine_webhook",
+      level: "info",
+      message: `Driver message for request ${machineRequestId} — no matching ride found`,
+    });
+    return;
+  }
+
+  if (ride.status === "completed" || ride.status === "canceled") {
+    await supabase.from("admin_logs").insert({
+      company_id: ride.company_id,
+      source: "machine_webhook",
+      level: "info",
+      message: `Driver message for ride ${ride.id.slice(0, 8)} ignored — status: ${ride.status}`,
+      ride_id: ride.id,
+    });
+    return;
+  }
+
+  // Save driver message to ride_messages
+  await supabase.from("ride_messages").insert({
+    ride_id: ride.id,
+    company_id: ride.company_id,
+    sender: "motorista",
+    content,
+    status: "entregue",
+    whatsapp_delivered: false,
+  });
+
+  // Forward to passenger via WhatsApp
+  const { provider, fields: f } = await getCompanyWhatsAppConfig(ride.company_id);
+  const cleanPhone = toBrazilianWhatsAppNumber(ride.passenger_phone);
+  let delivered = false;
+  try {
+    delivered = await sendWhatsAppMessage(provider, f, cleanPhone, content);
+  } catch { /* best-effort */ }
+
+  if (delivered) {
+    await supabase
+      .from("ride_messages")
+      .update({ whatsapp_delivered: true })
+      .eq("ride_id", ride.id)
+      .eq("sender", "motorista")
+      .order("created_at", { ascending: false })
+      .limit(1);
+  }
+
+  // Also save to whatsapp_chats for unified history
+  await saveChatMessage(ride.company_id, cleanPhone, "outgoing", content);
 }
 
 async function fetchRideReceipt(companyId: string, machineOrderId: string): Promise<{ valor: number | null; valorOriginal: number | null; distancia: number | null; duracao: number | null }> {

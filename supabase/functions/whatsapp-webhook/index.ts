@@ -24,6 +24,7 @@ function toBrazilianWhatsAppNumber(raw: string): string {
 // Saves all incoming and outgoing messages to whatsapp_chats / whatsapp_messages tables.
 // Updated: fix token check + replace rpc with direct query for Evolution API v2.3.7. v2
 // Also routes passenger messages to ride_messages table for driver chat.
+// v3: forwards passenger messages to Machine API (POST /mensagens/condutor/{id}) when ride has machine_driver_id.
 
 async function saveMessage(
   companyId: string,
@@ -436,7 +437,7 @@ async function handleIncomingMessage(companyId: string, data: Record<string, unk
 
   const { data: activeRides } = await supabase
     .from("rides")
-    .select("id, machine_order_id, company_id, passenger_name, passenger_phone, status")
+    .select("id, machine_order_id, company_id, passenger_name, passenger_phone, status, machine_driver_id")
     .eq("company_id", companyId)
     .in("status", ["pending", "accepted", "en_route", "in_progress"])
     .order("created_at", { ascending: false })
@@ -459,6 +460,15 @@ async function handleIncomingMessage(companyId: string, data: Record<string, unk
       content: text.trim(),
       status: "entregue",
     });
+
+    // If the ride has a Machine driver ID, forward the message to the driver via Machine API
+    if (ride.machine_driver_id) {
+      try {
+        await forwardMessageToMachineDriver(companyId, ride.machine_driver_id, text.trim());
+      } catch {
+        // best-effort — message is saved in ride_messages regardless
+      }
+    }
   }
 
   // If no active ride found, log the unmatched message
@@ -580,5 +590,52 @@ async function handleIncomingMessage(companyId: string, data: Record<string, unk
     await saveMessage(companyId, cleanPhone, "outgoing", confirmMsg);
   } catch {
     // Best-effort
+  }
+}
+
+async function forwardMessageToMachineDriver(
+  companyId: string,
+  machineDriverId: string,
+  message: string,
+): Promise<void> {
+  const { data: credentials } = await supabase
+    .from("company_credentials")
+    .select("machine_api_url, machine_api_key, taximetro_username, taximetro_password")
+    .eq("company_id", companyId)
+    .maybeSingle();
+
+  const { data: tenantRows } = await supabase
+    .from("tenant_secrets")
+    .select("secret_name, secret_value")
+    .eq("tenant_id", companyId);
+  const tenantMap = new Map(
+    (tenantRows ?? []).map((r: { secret_name: string; secret_value: string }) => [r.secret_name, r.secret_value])
+  );
+
+  const baseUrl = (credentials?.machine_api_url || "https://api.taximachine.com.br").replace(/\/+$/, "");
+  const apiKey = tenantMap.get("MACHINE_API_KEY") || credentials?.machine_api_key || "";
+  const user = tenantMap.get("TAXIMETRO_USER") || credentials?.taximetro_username || "";
+  const pass = tenantMap.get("TAXIMETRO_PASSWORD") || credentials?.taximetro_password || "";
+
+  if (!apiKey || !user || !pass) return;
+
+  const resp = await fetch(`${baseUrl}/api/v2/integracao/mensagens/condutor/${machineDriverId}`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "api-key": apiKey,
+      "Authorization": `Basic ${btoa(`${user}:${pass}`)}`,
+    },
+    body: JSON.stringify({ mensagem: message }),
+  });
+
+  if (!resp.ok) {
+    const errorBody = await resp.text().catch(() => "");
+    await supabase.from("admin_logs").insert({
+      company_id: companyId,
+      source: "machine_api",
+      level: "error",
+      message: `Forward chat message to driver ${machineDriverId} failed (${resp.status}): ${errorBody.slice(0, 200)}`,
+    });
   }
 }
