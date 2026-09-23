@@ -1,4 +1,4 @@
-import type { VehicleCategory, GeoPoint, CategoryPricing, CompanySettings, IntegrationMode } from '@/types';
+import type { VehicleCategory, GeoPoint, CategoryPricing, IntegrationMode } from '@/types';
 import { haversineDistance } from './utils';
 
 export function calculateCategoryPricing(
@@ -29,38 +29,6 @@ export function calculateCategoryPricing(
       final_price: parseFloat(finalPrice.toFixed(2)),
       eta_minutes: category.eta_minutes,
       sort_order: category.sort_order,
-    },
-  };
-}
-
-export function calculatePricing(
-  origin: GeoPoint,
-  destination: GeoPoint,
-  settings: CompanySettings
-): { distance: number; duration: number; pricing: CategoryPricing } {
-  const distance = haversineDistance(
-    origin.lat, origin.lng, destination.lat, destination.lng
-  );
-
-  const surge = settings.surge_multiplier;
-  const rawPrice =
-    (settings.base_fee +
-      distance * settings.per_km_rate +
-      (distance * 1.5) * settings.per_min_rate) *
-    surge;
-  const finalPrice = Math.max(settings.min_fee, rawPrice);
-
-  return {
-    distance: parseFloat(distance.toFixed(2)),
-    duration: parseFloat((distance * 1.5).toFixed(0)),
-    pricing: {
-      id: 'default',
-      label: settings.category_label,
-      description: settings.category_description,
-      base_price: parseFloat(rawPrice.toFixed(2)),
-      final_price: parseFloat(finalPrice.toFixed(2)),
-      eta_minutes: settings.eta_minutes,
-      sort_order: 0,
     },
   };
 }
@@ -135,36 +103,6 @@ export async function cancelRide(
 
     const data = await response.json();
     return { success: data.success ?? data.canceled ?? false };
-  } catch {
-    return { success: false };
-  }
-}
-
-export async function cancelRideByPhone(
-  companySlug: string,
-  phone: string
-): Promise<{ success: boolean; error?: string }> {
-  const supabaseUrl = import.meta.env.VITE_SUPABASE_URL as string;
-  const anonKey = import.meta.env.VITE_SUPABASE_ANON_KEY as string;
-
-  try {
-    const response = await fetch(`${supabaseUrl}/functions/v1/dispatch-ride`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${anonKey}`,
-      },
-      body: JSON.stringify({
-        companySlug,
-        integrationMode: 'machine',
-        rideId: 'cancel_by_phone',
-        action: 'cancel_by_phone',
-        passenger_phone: phone,
-      }),
-    });
-
-    const data = await response.json();
-    return { success: data.success ?? data.canceled ?? false, error: data.error };
   } catch {
     return { success: false };
   }

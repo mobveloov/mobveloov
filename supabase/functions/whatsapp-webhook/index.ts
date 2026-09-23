@@ -300,13 +300,13 @@ async function handleIncomingMessage(companyId: string, data: Record<string, unk
   // Only handle "cancelar" (and variations like "cancelar corrida", "cancela")
   if (!normalizedText.includes("cancel")) return;
 
-  // Find the passenger's active ride by phone number across ALL companies
-  // (the global Veloov instance serves all companies)
+  // Find the passenger's active ride by phone number, scoped to this company
   const normalizedQueryDigits = cleanPhone.replace(/^55/, "");
 
   const { data: activeRides } = await supabase
     .from("rides")
     .select("id, machine_order_id, company_id, passenger_name, passenger_phone, status")
+    .eq("company_id", companyId)
     .in("status", ["pending", "accepted", "en_route"])
     .order("created_at", { ascending: false })
     .limit(50);
@@ -329,8 +329,8 @@ async function handleIncomingMessage(companyId: string, data: Record<string, unk
     return;
   }
 
-  // Block cancellation when driver has arrived (en_route) or ride is in progress
-  if (ride.status === "en_route" || ride.status === "in_progress") {
+  // Block cancellation when driver has arrived (en_route)
+  if (ride.status === "en_route") {
     try {
       const { provider, fields: f } = await getWhatsAppConfig();
       const msg = ride.status === "en_route"

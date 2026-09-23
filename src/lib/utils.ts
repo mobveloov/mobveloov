@@ -21,16 +21,6 @@ export function formatCurrency(value: number, currency = 'BRL'): string {
   return `${symbol} ${value.toFixed(2).replace('.', ',')}`;
 }
 
-export function getDeviceId(): string {
-  const key = 'veloov_device_id';
-  let id = localStorage.getItem(key);
-  if (!id) {
-    id = `dev_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
-    localStorage.setItem(key, id);
-  }
-  return id;
-}
-
 export function haversineDistance(
   lat1: number, lng1: number, lat2: number, lng2: number
 ): number {
@@ -85,16 +75,6 @@ export function isCpfCnpj(value: string): boolean {
   if (d.length === 11) return isValidCpf(d);
   if (d.length === 14) return isValidCnpj(d);
   return false;
-}
-
-export function isCpf(value: string): boolean {
-  const d = value.replace(/\D/g, '');
-  return d.length === 11 && isValidCpf(d);
-}
-
-export function isCnpj(value: string): boolean {
-  const d = value.replace(/\D/g, '');
-  return d.length === 14 && isValidCnpj(d);
 }
 
 export function docLabel(value: string): string {

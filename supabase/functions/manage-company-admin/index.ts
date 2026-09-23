@@ -43,7 +43,7 @@ Deno.serve(async (req: Request) => {
       });
     }
 
-    const token = authHeader.replace("Bearer ", "");
+    const token = authHeader.replace(/^Bearer\s+/i, "");
     const { data: userData, error: authErr } = await supabase.auth.getUser(token);
     if (authErr || !userData.user) {
       return new Response(JSON.stringify({ error: "Não autorizado" }), {
@@ -126,11 +126,23 @@ Deno.serve(async (req: Request) => {
             headers: { ...corsHeaders, "Content-Type": "application/json" },
           });
         }
+      } else if (existingAdmin.user_id !== userId) {
+        // Replace existing admin: update the existing row to point to the new user
+        const { error: replaceErr } = await supabase.from("company_admins").update({
+          user_id: userId,
+          force_password_change: body.force_password_change ?? true,
+        }).eq("company_id", company_id).eq("user_id", existingAdmin.user_id);
+        if (replaceErr) {
+          return new Response(JSON.stringify({ error: "Erro ao substituir admin da empresa: " + replaceErr.message }), {
+            status: 500,
+            headers: { ...corsHeaders, "Content-Type": "application/json" },
+          });
+        }
       } else {
-        // Update force_password_change flag
+        // Same user — just update force_password_change flag, scoped to this company
         await supabase.from("company_admins").update({
           force_password_change: body.force_password_change ?? true,
-        }).eq("user_id", userId);
+        }).eq("company_id", company_id).eq("user_id", userId);
       }
 
       return new Response(JSON.stringify({ success: true, user_id: userId }), {
@@ -209,7 +221,7 @@ Deno.serve(async (req: Request) => {
 
         await supabase.from("company_admins").update({
           force_password_change: body.force_password_change ?? true,
-        }).eq("user_id", userId);
+        }).eq("company_id", company_id).eq("user_id", userId);
       }
 
       return new Response(JSON.stringify({ success: true, user_id: userId }), {

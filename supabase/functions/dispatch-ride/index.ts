@@ -37,7 +37,6 @@ interface DispatchBody {
   driverPhone?: string;
   driverName?: string;
   machineOrderId?: string;
-  passenger_phone?: string;
   city?: string;
   state?: string;
   address?: string;
@@ -277,7 +276,9 @@ async function dispatchToMachine(
 
   // Parse passenger phone into area code and number
   // Expected formats: (16) 99999-8888 or 16999998888
-  const cleanPhone = (data.passenger_phone || "").replace(/\D/g, "");
+  const rawPhone = (data.passenger_phone || "").replace(/\D/g, "");
+  // Strip Brazilian country code 55 if present (e.g. 5516999998888 → 16999998888)
+  const cleanPhone = rawPhone.startsWith("55") && rawPhone.length >= 12 ? rawPhone.slice(2) : rawPhone;
   const codigoPais = 55;
   const codigoArea = cleanPhone.length >= 10 ? parseInt(cleanPhone.slice(0, 2)) : 16;
   const telefone = cleanPhone.length >= 10 ? cleanPhone.slice(2) : cleanPhone;
@@ -389,7 +390,7 @@ async function dispatchToMachine(
 
   // On successful dispatch (200/201), keep status as pending — the Machine API
   // will notify us via webhook (or the client polls) when a driver accepts.
-  if (apiResponse.status === 200 || apiResponse.status === 201) {
+  if (apiResponse.status >= 200 && apiResponse.status < 300) {
     updatePayload.status = "pending";
 
     const d = dispatchData?.data ?? dispatchData;

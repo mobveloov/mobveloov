@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
-import { Bell, CheckCheck, Check, X, BellOff } from 'lucide-react';
+import { Bell, CheckCheck, Check, BellOff } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 import type { SuperadminNotification } from '@/types';
 

@@ -22,7 +22,7 @@ Deno.serve(async (req: Request) => {
     // Find all rides still pending/searching for more than 10 minutes
     const { data: staleRides, error: fetchErr } = await supabase
       .from("rides")
-      .select("id, company_id, passenger_name, passenger_phone, machine_order_id, integration_mode")
+      .select("id, company_id, passenger_phone, machine_order_id, integration_mode")
       .in("status", ["pending", "searching"])
       .lt("created_at", tenMinutesAgo);
 
@@ -52,7 +52,7 @@ Deno.serve(async (req: Request) => {
         if (creds?.machine_api_url && creds?.machine_api_key && creds?.taximetro_username && creds?.taximetro_password) {
           try {
             const baseUrl = creds.machine_api_url.replace(/\/+$/, "");
-            await fetch(`${baseUrl}/api/v2/integracao/corridas/${ride.machine_order_id}/cancelar`, {
+            const cancelResp = await fetch(`${baseUrl}/api/v2/integracao/corridas/${ride.machine_order_id}/cancelar`, {
               method: "POST",
               headers: {
                 "Content-Type": "application/json",
@@ -61,8 +61,25 @@ Deno.serve(async (req: Request) => {
               },
               body: JSON.stringify({ motivo_id: 3 }),
             });
-          } catch {
-            // Best-effort cancel; DB update proceeds regardless
+            if (!cancelResp.ok) {
+              const errBody = await cancelResp.text().catch(() => "");
+              await supabase.from("admin_logs").insert({
+                company_id: ride.company_id,
+                source: "auto_cancel",
+                level: "error",
+                message: `Machine API cancel failed (${cancelResp.status}): ${errBody.slice(0, 200)}`,
+                ride_id: ride.id,
+              });
+            }
+          } catch (cancelErr) {
+            const errMsg = cancelErr instanceof Error ? cancelErr.message : "unknown";
+            await supabase.from("admin_logs").insert({
+              company_id: ride.company_id,
+              source: "auto_cancel",
+              level: "error",
+              message: `Machine API cancel exception: ${errMsg}`,
+              ride_id: ride.id,
+            });
           }
         }
       }

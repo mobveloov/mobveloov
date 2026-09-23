@@ -100,7 +100,7 @@ Deno.serve(async (req: Request) => {
           .from("rides")
           .select("driver_name, driver_phone, vehicle_plate")
           .eq("id", ride.id)
-          .single();
+          .maybeSingle();
         if (existingRide) {
           const newDetails = await fetchRideDetails(ride.company_id, machineOrderId);
           const newDriverName = newDetails?.driver?.nome ?? null;
@@ -147,10 +147,19 @@ Deno.serve(async (req: Request) => {
         updated_at: new Date().toISOString(),
       };
 
-      updatePayload.driver_name = driverName;
-      updatePayload.driver_phone = driverPhone;
-      updatePayload.vehicle_plate = vehiclePlate;
-      updatePayload.vehicle_model = vehicleModel;
+      // Only overwrite driver info if we have new values, or if the ride is going back to pending
+      // (driver cancelled). For completed/canceled, preserve existing driver info for history.
+      if (driverName !== null) updatePayload.driver_name = driverName;
+      if (driverPhone !== null) updatePayload.driver_phone = driverPhone;
+      if (vehiclePlate !== null) updatePayload.vehicle_plate = vehiclePlate;
+      if (vehicleModel !== null) updatePayload.vehicle_model = vehicleModel;
+      // Explicitly clear driver info only when going back to pending
+      if (internalStatus === "pending" && ride.status !== "pending") {
+        updatePayload.driver_name = null;
+        updatePayload.driver_phone = null;
+        updatePayload.vehicle_plate = null;
+        updatePayload.vehicle_model = null;
+      }
 
       await supabase.from("rides").update(updatePayload).eq("id", ride.id);
 
