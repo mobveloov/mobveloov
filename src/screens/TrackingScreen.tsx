@@ -227,7 +227,7 @@ export function TrackingScreen({ origin, destination, passengerName, passengerPh
     };
   }, [ride?.id]);
 
-  // Poll Machine API for status updates every 10s (fallback when webhook not configured)
+  // Poll Machine API for status updates every 30s (fallback — webhook is primary)
   useEffect(() => {
     if (creating || !ride?.id || !company) return;
     if (ride.status === 'completed' || ride.status === 'canceled') return;
@@ -250,7 +250,7 @@ export function TrackingScreen({ origin, destination, passengerName, passengerPh
         const idx = STATUS_FLOW.indexOf((fresh as Ride).status as OrderStatus);
         if (idx >= 0) setStatusIndex(idx);
       }
-    }, 10000);
+    }, 30000);
 
     return () => clearInterval(interval);
   }, [creating, ride?.id, ride?.status, ride?.machine_order_id, company, settings]);
