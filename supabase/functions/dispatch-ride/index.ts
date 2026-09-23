@@ -773,7 +773,7 @@ async function cancelRideByPhone(companyId: string, phone: string): Promise<Resp
 
 const STATUS_MESSAGES_PT: Record<string, string> = {
   accepted: "Seu motorista aceitou a corrida! Esta a caminho do ponto de partida.",
-  en_route: "Seu motorista chegou ao local de embarque!",
+  en_route: "Seu motorista chegou ao local de embarque! Procure pelo veiculo.",
   in_progress: "Sua viagem esta em andamento.",
   completed: "Sua viagem foi concluida. Obrigado pela preferencia!",
   canceled: "Sua corrida foi cancelada.",

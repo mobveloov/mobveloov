@@ -226,7 +226,7 @@ Deno.serve(async (req: Request) => {
       if (data.passenger_phone) {
         const statusMessages: Record<string, string> = {
           accepted: "Seu motorista aceitou a corrida! A caminho do ponto de partida.",
-          en_route: "Seu motorista está a caminho!",
+          en_route: "Seu motorista chegou ao local de embarque! Procure pelo veiculo.",
           in_progress: "Sua viagem está em andamento.",
           completed: "Sua viagem foi concluída. Obrigado!",
         };

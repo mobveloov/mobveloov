@@ -13,7 +13,7 @@ const STATUS_FLOW: OrderStatus[] = ['pending', 'accepted', 'en_route', 'in_progr
 const STATUS_LABELS: Record<OrderStatus, { label: string; color: string; icon: typeof Clock }> = {
   pending: { label: 'Aguardando motorista', color: 'text-warning-500', icon: Clock },
   accepted: { label: 'Motorista aceitou', color: 'text-primary-500', icon: CheckCircle2 },
-  en_route: { label: 'Motorista a caminho', color: 'text-primary-500', icon: Car },
+  en_route: { label: 'Motorista chegou', color: 'text-primary-500', icon: Car },
   in_progress: { label: 'Viagem em andamento', color: 'text-gold-600', icon: Navigation },
   completed: { label: 'Viagem concluída', color: 'text-success-600', icon: CheckCircle2 },
   canceled: { label: 'Viagem cancelada', color: 'text-error-500', icon: X },
@@ -328,7 +328,7 @@ export function TrackingScreen({ origin, destination, passengerName, passengerPh
         <div className="mt-1.5 flex justify-between text-[10px] text-neutral-400">
           <span>Pedido</span>
           <span>Aceito</span>
-          <span>A caminho</span>
+          <span>Chegou</span>
           <span>Em viagem</span>
           <span>Concluído</span>
         </div>
@@ -379,7 +379,7 @@ export function TrackingScreen({ origin, destination, passengerName, passengerPh
               <Phone className="h-5 w-5" />
             </a>
           </div>
-          {driverDistance !== null && (currentStatus === 'accepted' || currentStatus === 'en_route') && (
+          {driverDistance !== null && currentStatus === 'accepted' && (
             <div className="mt-3 flex items-center gap-2 rounded-lg bg-gold-500/10 px-3 py-2">
               <Navigation className="h-4 w-4 text-gold-600 dark:text-gold-400" />
               <span className="text-sm font-semibold text-gold-700 dark:text-gold-300">
