@@ -68,7 +68,7 @@ Deno.serve(async (req: Request) => {
         .from("rides")
         .select("id, company_id, passenger_name, passenger_phone, status")
         .eq("machine_order_id", machineOrderId)
-        .single();
+        .maybeSingle();
 
       if (!ride) {
         return new Response(JSON.stringify({ success: true, note: "ride not found" }), {
@@ -151,7 +151,7 @@ async function updateDriverPosition(requestId: string, lat: number, lng: number)
     .from("rides")
     .select("id, company_id")
     .eq("machine_order_id", String(requestId))
-    .single();
+    .maybeSingle();
 
   if (!ride) return;
 
@@ -215,18 +215,26 @@ async function sendWhatsAppNotification(
     message += `\n\nPara cancelar, responda "cancelar".`;
   }
 
-  const { data: wa } = await supabase
-    .from("whatsapp_instances")
-    .select("evolution_api_url, evolution_global_token, connection_status, instance_name")
-    .eq("company_id", companyId)
-    .single();
+  const { provider, fields: f } = await getWhatsAppConfig();
 
-  if (!wa || wa.connection_status !== "connected" || !wa.evolution_api_url || !wa.evolution_global_token) {
+  const isConfigured = provider === "evolution"
+    ? !!(f["evo_url"] && f["evo_token"])
+    : provider === "zapi"
+    ? !!(f["zapi_url"] && f["zapi_instance_id"] && f["zapi_instance_token"])
+    : provider === "zpro"
+    ? !!(f["zpro_url"] && f["zpro_instance_id"] && f["zpro_instance_token"])
+    : provider === "meta_cloud"
+    ? !!(f["meta_token"] && f["meta_phone_id"])
+    : provider === "custom_webhook"
+    ? !!f["custom_url"]
+    : false;
+
+  if (!isConfigured) {
     await supabase.from("admin_logs").insert({
       company_id: companyId,
       source: "machine_webhook",
       level: "warning",
-      message: `WhatsApp not connected — passenger notification skipped for status ${internalStatus}`,
+      message: `WhatsApp provider "${provider}" not configured — passenger notification skipped for status ${internalStatus}`,
     });
     return;
   }
@@ -235,14 +243,7 @@ async function sendWhatsAppNotification(
   if (!cleanPhone) return;
 
   try {
-    await fetch(`${wa.evolution_api_url}/message/sendText/${wa.instance_name}`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        apikey: wa.evolution_global_token,
-      },
-      body: JSON.stringify({ number: cleanPhone, text: message }),
-    });
+    await sendWhatsAppMessage(provider, f, cleanPhone, message);
 
     await supabase.from("admin_logs").insert({
       company_id: companyId,
@@ -252,5 +253,104 @@ async function sendWhatsAppNotification(
     });
   } catch {
     // Best-effort
+  }
+}
+
+async function getWhatsAppConfig(): Promise<{ provider: string; fields: Record<string, string> }> {
+  const { data } = await supabase
+    .from("system_settings")
+    .select("key_value")
+    .eq("key_name", "GLOBAL_WHATSAPP_CONFIG")
+    .maybeSingle();
+  if (data?.key_value) {
+    try {
+      const config = JSON.parse(data.key_value);
+      return { provider: config.provider || "evolution", fields: config.fields || {} };
+    } catch { /* ignore */ }
+  }
+  return { provider: "evolution", fields: {} };
+}
+
+async function sendWhatsAppMessage(
+  provider: string,
+  f: Record<string, string>,
+  cleanPhone: string,
+  message: string,
+): Promise<void> {
+  if (provider === "evolution") {
+    const url = f["evo_url"] ?? "";
+    const token = f["evo_token"] ?? "";
+    if (!url || !token) return;
+    const instance = f["evo_instance"] || "veloov";
+    await fetch(`${url}/message/sendText/${instance}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", apikey: token },
+      body: JSON.stringify({ number: cleanPhone, text: message }),
+    });
+    return;
+  }
+
+  if (provider === "zapi") {
+    const url = f["zapi_url"] ?? "";
+    const instanceId = f["zapi_instance_id"] ?? "";
+    const instanceToken = f["zapi_instance_token"] ?? "";
+    const clientToken = f["zapi_client_token"] ?? "";
+    if (!url || !instanceId || !instanceToken) return;
+    await fetch(`${url}/instances/${instanceId}/token/${instanceToken}/send-text`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "Client-Token": clientToken },
+      body: JSON.stringify({ phone: cleanPhone, message }),
+    });
+    return;
+  }
+
+  if (provider === "zpro") {
+    const url = f["zpro_url"] ?? "";
+    const instanceId = f["zpro_instance_id"] ?? "";
+    const instanceToken = f["zpro_instance_token"] ?? "";
+    const clientToken = f["zpro_client_token"] ?? "";
+    if (!url || !instanceId || !instanceToken) return;
+    await fetch(`${url}/instances/${instanceId}/token/${instanceToken}/send-text`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "Client-Token": clientToken },
+      body: JSON.stringify({ phone: cleanPhone, message }),
+    });
+    return;
+  }
+
+  if (provider === "meta_cloud") {
+    const token = f["meta_token"] ?? "";
+    const phoneId = f["meta_phone_id"] ?? "";
+    if (!token || !phoneId) return;
+    await fetch(`https://graph.facebook.com/v20.0/${phoneId}/messages`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+      body: JSON.stringify({
+        messaging_product: "whatsapp",
+        to: cleanPhone,
+        type: "text",
+        text: { body: message },
+      }),
+    });
+    return;
+  }
+
+  if (provider === "custom_webhook") {
+    const url = f["custom_url"] ?? "";
+    const token = f["custom_token"] ?? "";
+    const headersJson = f["custom_headers"] ?? "{}";
+    if (!url) return;
+    let extraHeaders: Record<string, string> = {};
+    try { extraHeaders = JSON.parse(headersJson); } catch { /* ignore */ }
+    await fetch(url, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: token ? `Bearer ${token}` : "",
+        ...extraHeaders,
+      },
+      body: JSON.stringify({ phone: cleanPhone, message, text: message, number: cleanPhone }),
+    });
+    return;
   }
 }
