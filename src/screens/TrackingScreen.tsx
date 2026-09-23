@@ -169,6 +169,18 @@ export function TrackingScreen({ origin, destination, passengerName, passengerPh
     }
   }, [ride?.status]);
 
+  // Auto-return to identify screen once the ride is accepted,
+  // so the totem is free for the next passenger. The current passenger
+  // follows the ride via WhatsApp notifications.
+  useEffect(() => {
+    if (ride?.status === 'accepted') {
+      const timer = setTimeout(() => {
+        goPassenger('identify');
+      }, 5000);
+      return () => clearTimeout(timer);
+    }
+  }, [ride?.status, goPassenger]);
+
   // Realtime subscription for status updates (works for all modes)
   useEffect(() => {
     if (!rideRef.current) return;
@@ -427,7 +439,7 @@ export function TrackingScreen({ origin, destination, passengerName, passengerPh
             Tela liberada para o próximo passageiro
           </p>
           <p className="mt-1 text-xs text-neutral-500 dark:text-neutral-400">
-            Acompanhe o status da corrida atual ou inicie uma nova solicitação.
+            Acompanhe sua corrida pelas notificações no WhatsApp.
           </p>
           <button
             onClick={() => goPassenger('identify')}
