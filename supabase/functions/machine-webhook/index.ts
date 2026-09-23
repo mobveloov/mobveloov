@@ -1,6 +1,8 @@
 import { createClient } from "npm:@supabase/supabase-js@2.57.4";
 import { createHmac } from "node:crypto";
 // machine-webhook: handles Machine API status + position webhooks (v2).
+// Responds immediately (200) to avoid Machine API timeout/blocking, then
+// processes heavy work (fetch details, driver position, WhatsApp) in background.
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -9,23 +11,18 @@ const corsHeaders = {
 };
 
 async function verifyMachineSignature(req: Request): Promise<boolean> {
-  // Signature-V2 = HMAC-SHA512 over raw body, keyed by the company's API key.
-  // We need the raw body to compute the hash, then we'll re-parse it.
   const rawBody = await req.clone().text();
   const signature = req.headers.get("Signature-V2");
   if (!signature) return false;
 
-  // Try to extract company_id from the body to look up the API key
   let bodyJson: { request_id?: string; company_id?: string; data?: Array<{ company_id?: string; request_id?: string }> } = {};
   try { bodyJson = JSON.parse(rawBody); } catch { return false; }
 
-  // Determine company_id from the payload
   let companyId: string | undefined = bodyJson.company_id;
   if (!companyId && Array.isArray(bodyJson.data) && bodyJson.data.length > 0) {
     companyId = bodyJson.data[0]?.company_id;
   }
   if (!companyId && bodyJson.request_id) {
-    // Look up ride by machine_order_id to find company_id
     const { data: ride } = await supabase
       .from("rides")
       .select("company_id")
@@ -35,7 +32,6 @@ async function verifyMachineSignature(req: Request): Promise<boolean> {
   }
   if (!companyId) return false;
 
-  // Fetch the company's API key
   const { data: credentials } = await supabase
     .from("company_credentials")
     .select("machine_api_key")
@@ -54,7 +50,6 @@ async function verifyMachineSignature(req: Request): Promise<boolean> {
   const hmac = createHmac("sha512", apiKey);
   hmac.update(rawBody);
   const expected = hmac.digest("hex");
-  // Constant-time comparison
   const sigBytes = Buffer.from(signature);
   const expBytes = Buffer.from(expected);
   if (sigBytes.length !== expBytes.length) return false;
@@ -121,28 +116,23 @@ function toBrazilianWhatsAppNumber(raw: string): string {
   return `55${digits}`;
 }
 
-// machine-webhook: handles Machine API status + position webhooks.
-// The Machine API only sends push/in-app notifications to passengers who have
-// the app installed. Since totem passengers don't have the app, we send WhatsApp
-// notifications via Evolution API (our own WhatsApp instance) instead.
-
 const STATUS_MAP: Record<string, string> = {
   D: "pending",
   G: "pending",
   P: "pending",
-  N: "canceled", // NOT_SERVED — no driver accepted
+  N: "canceled",
   A: "accepted",
   AP: "en_route",
   E: "in_progress",
   S: "in_progress",
   F: "completed",
   C: "canceled",
-  L: "in_progress", // WAITING_RELEASE
-  R: "completed", // WAITING_PAYMENT — ride finished
+  L: "in_progress",
+  R: "completed",
   U: "in_progress",
   ER: "in_progress",
-  O: "in_progress", // Partida prolongada
-  T: "pending", // Redistribuindo — ride went back to finding a driver
+  O: "in_progress",
+  T: "pending",
 };
 
 const STATUS_MESSAGES_PT: Record<string, string> = {
@@ -159,10 +149,6 @@ Deno.serve(async (req: Request) => {
     return new Response(null, { status: 200, headers: corsHeaders });
   }
 
-  // Verify webhook signature if Signature-V2 header is present.
-  // If the header is absent, process the webhook anyway — some Machine API
-  // configurations don't send signatures, and blocking them silently
-  // breaks all status updates (driver accept, arrival, completion, cancel).
   const sigHeader = req.headers.get("Signature-V2");
   if (sigHeader) {
     const sigValid = await verifyMachineSignature(req);
@@ -174,11 +160,36 @@ Deno.serve(async (req: Request) => {
     }
   }
 
+  let body: Record<string, unknown>;
   try {
-    const body = await req.json();
-    const { request_id, status_code, status_label, data: batchData, event_id } = body;
+    body = await req.json();
+  } catch {
+    return new Response(JSON.stringify({ success: true, note: "empty body" }), {
+      headers: { ...corsHeaders, "Content-Type": "application/json" },
+    });
+  }
 
-    // Deduplicate by event_id — Machine API may redeliver webhooks
+  // Respond 200 IMMEDIATELY — all processing goes to background.
+  // The Machine API has a short timeout (~5s) and blocks webhooks after
+  // consecutive failures. Returning fast prevents blocking.
+  EdgeRuntime.waitUntil(processWebhook(body));
+
+  return new Response(JSON.stringify({ success: true }), {
+    headers: { ...corsHeaders, "Content-Type": "application/json" },
+  });
+});
+
+async function processWebhook(body: Record<string, unknown>): Promise<void> {
+  try {
+    const { request_id, status_code, status_label, data: batchData, event_id } = body as {
+      request_id?: string;
+      status_code?: string;
+      status_label?: string;
+      data?: Array<{ request_id?: string; coordinates?: { latitude: number; longitude: number } }>;
+      event_id?: string;
+    };
+
+    // Deduplicate by event_id
     if (event_id) {
       const { data: existing } = await supabase
         .from("admin_logs")
@@ -187,200 +198,162 @@ Deno.serve(async (req: Request) => {
         .contains("payload", { event_id })
         .limit(1)
         .maybeSingle();
-      if (existing) {
-        return new Response(JSON.stringify({ success: true, note: "duplicate event" }), {
-          headers: { ...corsHeaders, "Content-Type": "application/json" },
-        });
-      }
+      if (existing) return;
     }
 
+    // Batch position data
     if (batchData && Array.isArray(batchData)) {
       for (const pos of batchData) {
         if (pos.request_id && pos.coordinates) {
           await updateDriverPosition(pos.request_id, pos.coordinates.latitude, pos.coordinates.longitude);
         }
       }
-      return new Response(JSON.stringify({ success: true }), {
-        headers: { ...corsHeaders, "Content-Type": "application/json" },
-      });
+      return;
     }
 
-    if (request_id && status_code) {
-      const internalStatus = STATUS_MAP[status_code] ?? "pending";
-      const machineOrderId = String(request_id);
+    if (!request_id || !status_code) return;
 
-      const { data: ride } = await supabase
+    const internalStatus = STATUS_MAP[status_code] ?? "pending";
+    const machineOrderId = String(request_id);
+
+    const { data: ride } = await supabase
+      .from("rides")
+      .select("id, company_id, passenger_name, passenger_phone, status")
+      .eq("machine_order_id", machineOrderId)
+      .maybeSingle();
+
+    if (!ride) return;
+
+    if (ride.status === internalStatus && internalStatus !== "accepted") return;
+
+    // Update status immediately so the totem sees it via realtime
+    const quickUpdate: Record<string, unknown> = {
+      status: internalStatus,
+      updated_at: new Date().toISOString(),
+    };
+
+    if (internalStatus === "pending" && ride.status !== "pending") {
+      quickUpdate.driver_name = null;
+      quickUpdate.driver_phone = null;
+      quickUpdate.vehicle_plate = null;
+      quickUpdate.vehicle_model = null;
+      quickUpdate.vehicle_color = null;
+    }
+
+    await supabase.from("rides").update(quickUpdate).eq("id", ride.id);
+
+    await supabase.from("admin_logs").insert({
+      company_id: ride.company_id,
+      source: "machine_webhook",
+      level: "info",
+      message: `Corrida ${machineOrderId} -> ${status_label} (${status_code}) -> ${internalStatus}`,
+      ride_id: ride.id,
+      payload: body,
+    });
+
+    // Heavy work: fetch driver details, position, send WhatsApp
+    let driverName: string | null = null;
+    let driverPhone: string | null = null;
+    let vehiclePlate: string | null = null;
+    let vehicleModel: string | null = null;
+    let vehicleColor: string | null = null;
+    let driverChanged = false;
+
+    if (internalStatus === "accepted" && ride.status === "accepted") {
+      const { data: existingRide } = await supabase
         .from("rides")
-        .select("id, company_id, passenger_name, passenger_phone, status")
-        .eq("machine_order_id", machineOrderId)
+        .select("driver_name, driver_phone, vehicle_plate")
+        .eq("id", ride.id)
         .maybeSingle();
-
-      if (!ride) {
-        return new Response(JSON.stringify({ success: true, note: "ride not found" }), {
-          headers: { ...corsHeaders, "Content-Type": "application/json" },
-        });
-      }
-
-      if (ride.status === internalStatus && internalStatus !== "accepted") {
-        return new Response(JSON.stringify({ success: true, note: "no change" }), {
-          headers: { ...corsHeaders, "Content-Type": "application/json" },
-        });
-      }
-
-      // Detect driver change: if status is accepted and the ride was already accepted,
-      // check if the driver is different — if so, re-send notification with new driver info
-      let driverChanged = false;
-      if (internalStatus === "accepted" && ride.status === "accepted") {
-        const { data: existingRide } = await supabase
-          .from("rides")
-          .select("driver_name, driver_phone, vehicle_plate")
-          .eq("id", ride.id)
-          .maybeSingle();
-        if (existingRide) {
-          const newDetails = await fetchRideDetails(ride.company_id, machineOrderId);
-          const newDriverName = newDetails?.nome_condutor ?? newDetails?.driver?.nome ?? null;
-          const newDriverPhone = newDetails?.telefone_condutor ?? newDetails?.driver?.telefone ?? null;
-          const newVehiclePlate = newDetails?.placa_veiculo ?? newDetails?.driver?.veiculo_placa ?? null;
-          if (newDriverName && newDriverName !== existingRide.driver_name) {
-            driverChanged = true;
-          } else if (newVehiclePlate && newVehiclePlate !== existingRide.vehicle_plate) {
-            driverChanged = true;
-          } else if (!newDriverName && !newDriverPhone) {
-            return new Response(JSON.stringify({ success: true, note: "no change" }), {
-              headers: { ...corsHeaders, "Content-Type": "application/json" },
-            });
-          }
+      if (existingRide) {
+        const newDetails = await fetchRideDetails(ride.company_id, machineOrderId);
+        const newDriverName = newDetails?.nome_condutor ?? newDetails?.driver?.nome ?? null;
+        const newDriverPhone = newDetails?.telefone_condutor ?? newDetails?.driver?.telefone ?? null;
+        const newVehiclePlate = newDetails?.placa_veiculo ?? newDetails?.driver?.veiculo_placa ?? null;
+        if (newDriverName && newDriverName !== existingRide.driver_name) {
+          driverChanged = true;
+        } else if (newVehiclePlate && newVehiclePlate !== existingRide.vehicle_plate) {
+          driverChanged = true;
+        } else if (!newDriverName && !newDriverPhone) {
+          return;
         }
       }
-
-      let driverName: string | null = null;
-      let driverPhone: string | null = null;
-      let vehiclePlate: string | null = null;
-      let vehicleModel: string | null = null;
-      let vehicleColor: string | null = null;
-
-      if (internalStatus === "accepted" || internalStatus === "en_route" || internalStatus === "in_progress") {
-        const details = await fetchRideDetails(ride.company_id, machineOrderId);
-        if (details) {
-          driverName = details.nome_condutor ?? details.driver?.nome ?? null;
-          driverPhone = details.telefone_condutor ?? details.driver?.telefone ?? null;
-          vehiclePlate = details.placa_veiculo ?? details.driver?.veiculo_placa ?? null;
-          vehicleModel = details.veiculo ?? details.driver?.veiculo_modelo ?? null;
-          vehicleColor = details.cor_veiculo ?? details.driver?.veiculo_cor ?? null;
-        }
-        // Fetch driver GPS from the dedicated position endpoint
-        const driverPos = await fetchDriverPosition(ride.company_id, machineOrderId);
-        if (driverPos) {
-          await supabase.from("ride_driver_positions").upsert({
-            ride_id: ride.id,
-            lat: driverPos.lat,
-            lng: driverPos.lng,
-            updated_at: new Date().toISOString(),
-          }).eq("ride_id", ride.id);
-        }
-      }
-
-      // When ride goes back to pending (driver cancelled), clear old driver info
-      if (internalStatus === "pending" && ride.status !== "pending") {
-        driverName = null;
-        driverPhone = null;
-        vehiclePlate = null;
-        vehicleModel = null;
-        vehicleColor = null;
-      }
-
-      const updatePayload: Record<string, unknown> = {
-        status: internalStatus,
-        updated_at: new Date().toISOString(),
-      };
-
-      // Only overwrite driver info if we have new values, or if the ride is going back to pending
-      // (driver cancelled). For completed/canceled, preserve existing driver info for history.
-      if (driverName !== null) updatePayload.driver_name = driverName;
-      if (driverPhone !== null) updatePayload.driver_phone = driverPhone;
-      if (vehiclePlate !== null) updatePayload.vehicle_plate = vehiclePlate;
-      if (vehicleModel !== null) updatePayload.vehicle_model = vehicleModel;
-      if (vehicleColor !== null) updatePayload.vehicle_color = vehicleColor;
-      // Explicitly clear driver info only when going back to pending
-      if (internalStatus === "pending" && ride.status !== "pending") {
-        updatePayload.driver_name = null;
-        updatePayload.driver_phone = null;
-        updatePayload.vehicle_plate = null;
-        updatePayload.vehicle_model = null;
-        updatePayload.vehicle_color = null;
-      }
-
-      await supabase.from("rides").update(updatePayload).eq("id", ride.id);
-
-      await supabase.from("admin_logs").insert({
-        company_id: ride.company_id,
-        source: "machine_webhook",
-        level: "info",
-        message: `Corrida ${machineOrderId} -> ${status_label} (${status_code}) -> ${internalStatus}`,
-        ride_id: ride.id,
-        payload: body,
-      });
-
-      // Send WhatsApp notification to passenger via Evolution API
-      // (passengers don't have the Machine app, so push notifications won't reach them)
-
-      // Fetch driver position for distance/ETA calculation
-      let driverDistanceKm: number | null = null;
-      let etaMinutes: number | null = null;
-      try {
-        const { data: pos } = await supabase
-          .from("ride_driver_positions")
-          .select("lat, lng")
-          .eq("ride_id", ride.id)
-          .maybeSingle();
-        if (pos) {
-          const { data: rideCoords } = await supabase
-            .from("rides")
-            .select("origin_lat, origin_lng")
-            .eq("id", ride.id)
-            .single();
-          if (rideCoords) {
-            const R = 6371;
-            const dLat = ((pos.lat - rideCoords.origin_lat) * Math.PI) / 180;
-            const dLng = ((pos.lng - rideCoords.origin_lng) * Math.PI) / 180;
-            const a = Math.sin(dLat/2)**2 + Math.cos(rideCoords.origin_lat * Math.PI/180) * Math.cos(pos.lat * Math.PI/180) * Math.sin(dLng/2)**2;
-            driverDistanceKm = R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
-            etaMinutes = Math.max(1, Math.round(driverDistanceKm * 2.5));
-          }
-        }
-      } catch { /* best-effort */ }
-
-      await sendWhatsAppNotification(
-        ride.company_id,
-        ride.id,
-        ride.passenger_phone,
-        internalStatus,
-        driverName,
-        vehicleModel,
-        vehiclePlate,
-        etaMinutes,
-        driverDistanceKm,
-        ride.status,
-        driverChanged,
-        vehicleColor,
-      );
-
-      return new Response(JSON.stringify({ success: true }), {
-        headers: { ...corsHeaders, "Content-Type": "application/json" },
-      });
     }
 
-    return new Response(JSON.stringify({ success: true, note: "unhandled event" }), {
-      headers: { ...corsHeaders, "Content-Type": "application/json" },
-    });
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : "Internal server error";
-    return new Response(JSON.stringify({ error: msg }), {
-      status: 500,
-      headers: { ...corsHeaders, "Content-Type": "application/json" },
-    });
+    if (internalStatus === "accepted" || internalStatus === "en_route" || internalStatus === "in_progress") {
+      const details = await fetchRideDetails(ride.company_id, machineOrderId);
+      if (details) {
+        driverName = details.nome_condutor ?? details.driver?.nome ?? null;
+        driverPhone = details.telefone_condutor ?? details.driver?.telefone ?? null;
+        vehiclePlate = details.placa_veiculo ?? details.driver?.veiculo_placa ?? null;
+        vehicleModel = details.veiculo ?? details.driver?.veiculo_modelo ?? null;
+        vehicleColor = details.cor_veiculo ?? details.driver?.veiculo_cor ?? null;
+      }
+
+      const driverPos = await fetchDriverPosition(ride.company_id, machineOrderId);
+      if (driverPos) {
+        await supabase.from("ride_driver_positions").upsert({
+          ride_id: ride.id,
+          lat: driverPos.lat,
+          lng: driverPos.lng,
+          updated_at: new Date().toISOString(),
+        }).eq("ride_id", ride.id);
+      }
+    }
+
+    const driverUpdate: Record<string, unknown> = {};
+    if (driverName !== null) driverUpdate.driver_name = driverName;
+    if (driverPhone !== null) driverUpdate.driver_phone = driverPhone;
+    if (vehiclePlate !== null) driverUpdate.vehicle_plate = vehiclePlate;
+    if (vehicleModel !== null) driverUpdate.vehicle_model = vehicleModel;
+    if (vehicleColor !== null) driverUpdate.vehicle_color = vehicleColor;
+    if (Object.keys(driverUpdate).length > 0) {
+      await supabase.from("rides").update(driverUpdate).eq("id", ride.id);
+    }
+
+    let driverDistanceKm: number | null = null;
+    let etaMinutes: number | null = null;
+    try {
+      const { data: pos } = await supabase
+        .from("ride_driver_positions")
+        .select("lat, lng")
+        .eq("ride_id", ride.id)
+        .maybeSingle();
+      if (pos) {
+        const { data: rideCoords } = await supabase
+          .from("rides")
+          .select("origin_lat, origin_lng")
+          .eq("id", ride.id)
+          .single();
+        if (rideCoords) {
+          const R = 6371;
+          const dLat = ((pos.lat - rideCoords.origin_lat) * Math.PI) / 180;
+          const dLng = ((pos.lng - rideCoords.origin_lng) * Math.PI) / 180;
+          const a = Math.sin(dLat/2)**2 + Math.cos(rideCoords.origin_lat * Math.PI/180) * Math.cos(pos.lat * Math.PI/180) * Math.sin(dLng/2)**2;
+          driverDistanceKm = R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+          etaMinutes = Math.max(1, Math.round(driverDistanceKm * 2.5));
+        }
+      }
+    } catch { /* best-effort */ }
+
+    await sendWhatsAppNotification(
+      ride.company_id,
+      ride.id,
+      ride.passenger_phone,
+      internalStatus,
+      driverName,
+      vehicleModel,
+      vehiclePlate,
+      etaMinutes,
+      driverDistanceKm,
+      ride.status,
+      driverChanged,
+      vehicleColor,
+    );
+  } catch {
+    // Silent fail in background — webhook already acknowledged
   }
-});
+}
 
 async function updateDriverPosition(requestId: string, lat: number, lng: number): Promise<void> {
   const { data: ride } = await supabase
@@ -422,9 +395,6 @@ async function fetchRideDetails(companyId: string, machineOrderId: string): Prom
   if (!apiKey || !user || !pass) return null;
 
   try {
-    // GET /corridas/{id} returns a single ride with all fields:
-    // nome_condutor, telefone_condutor, veiculo, placa_veiculo, cor_veiculo, status_solicitacao, valor_corrida.
-    // The response uses the "response" key (not "data").
     const resp = await fetch(`${baseUrl}/api/v2/integracao/corridas/${machineOrderId}`, {
       method: "GET",
       headers: {
