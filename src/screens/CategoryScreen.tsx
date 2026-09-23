@@ -12,7 +12,7 @@ interface CategoryScreenProps {
 
 export function CategoryScreen({ origin, destination }: CategoryScreenProps) {
   const { goPassenger, selectCategory, selectedCategoryId } = useNav();
-  const { settings, company, categories } = useTenant();
+  const { settings, company, categories, location } = useTenant();
 
   if (!settings) {
     return (
@@ -21,6 +21,8 @@ export function CategoryScreen({ origin, destination }: CategoryScreenProps) {
       </div>
     );
   }
+
+  const hasFixedOrigin = !!(location?.pickup_address && location.pickup_lat != null && location.pickup_lng != null);
 
   const availableCategories = categories.length > 0
     ? [...categories].sort((a, b) => a.sort_order - b.sort_order)
@@ -36,7 +38,7 @@ export function CategoryScreen({ origin, destination }: CategoryScreenProps) {
 
   return (
     <div className="animate-slide-up">
-      <BackButton onClick={() => goPassenger('destination')} label="Voltar" />
+      <BackButton onClick={() => goPassenger(hasFixedOrigin ? 'identify' : 'destination')} label="Voltar" />
 
       <h1 className="mb-4 text-2xl font-extrabold text-neutral-900 dark:text-neutral-100">
         Escolha sua viagem

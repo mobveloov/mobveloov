@@ -305,7 +305,7 @@ export function TrackingScreen({ origin, destination, passengerName, passengerPh
     <div className="animate-slide-up">
       {!isCompleted && !isCanceled && (
         <button
-          onClick={() => goPassenger('destination')}
+          onClick={() => goPassenger(location?.pickup_address ? 'identify' : 'destination')}
           className="mb-4 text-sm font-medium text-neutral-600 dark:text-neutral-400"
         >
           ← Voltar

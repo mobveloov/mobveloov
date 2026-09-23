@@ -1,8 +1,10 @@
-import { useState } from 'react';
-import { User, Phone, ArrowRight, Building2, AlertCircle, Loader2, MapPin } from 'lucide-react';
+import { useState, useRef } from 'react';
+import { User, Phone, ArrowRight, AlertCircle, Loader2, MapPin, Navigation, HelpCircle } from 'lucide-react';
 import { useNav } from '@/context/NavContext';
 import { useTenant } from '@/context/TenantContext';
 import { formatPhone, isValidPhone, sanitizeText } from '@/lib/utils';
+import { MapView } from '@/components/MapView';
+import type { GeoPoint } from '@/types';
 
 interface PassengerInfo {
   name: string;
@@ -11,14 +13,81 @@ interface PassengerInfo {
 
 interface IdentifyScreenProps {
   onIdentify: (info: PassengerInfo) => void;
+  origin: GeoPoint | null;
+  destination: GeoPoint | null;
+  onDestinationChange: (p: GeoPoint | null) => void;
 }
 
-export function IdentifyScreen({ onIdentify }: IdentifyScreenProps) {
+interface SearchResult {
+  lat: number;
+  lon: number;
+  display_name: string;
+  type?: string;
+  address?: { house_number?: string };
+}
+
+function extractHouseNumber(value: string): string {
+  const commaPart = value.split(',').map((p) => p.trim()).find((p) => /^\d+[A-Za-z]?$/.test(p));
+  if (commaPart) return commaPart;
+  const match = value.match(/(?:^|,|\s)\d+[A-Za-z]?(?=,|\s|$)/);
+  return match?.[0].trim().replace(/^,\s*/, '') ?? '';
+}
+
+function addHouseNumber(label: string, houseNumber: string): string {
+  const number = houseNumber.trim();
+  if (!number || label.split(',').some((p) => p.trim() === number)) return label;
+  const parts = label.split(',').map((p) => p.trim()).filter(Boolean);
+  return parts.length > 0 ? [parts[0], number, ...parts.slice(1)].join(', ') : `${label}, ${number}`;
+}
+
+export function IdentifyScreen({ onIdentify, origin, destination, onDestinationChange }: IdentifyScreenProps) {
   const { goPassenger, tenantSlug } = useNav();
   const { company, location, loading, error, deviceLocked, licenseExpired } = useTenant();
   const [name, setName] = useState('');
   const [phone, setPhone] = useState('');
+  const [destQuery, setDestQuery] = useState(destination?.label ?? '');
+  const [destResults, setDestResults] = useState<SearchResult[]>([]);
+  const [searching, setSearching] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
+  const searchTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const hasFixedOrigin = !!(location?.pickup_address && location.pickup_lat != null && location.pickup_lng != null);
+
+  const searchAddress = async (query: string) => {
+    if (query.length < 3) {
+      setDestResults([]);
+      return;
+    }
+    setSearching(true);
+    try {
+      const res = await fetch(
+        `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(query)}&limit=5&countrycodes=br`,
+        { headers: { 'Accept-Language': 'pt-BR' } },
+      );
+      const data: SearchResult[] = await res.json();
+      setDestResults(data);
+    } catch {
+      setDestResults([]);
+    } finally {
+      setSearching(false);
+    }
+  };
+
+  const handleDestInput = (value: string) => {
+    setDestQuery(value);
+    if (searchTimer.current) clearTimeout(searchTimer.current);
+    searchTimer.current = setTimeout(() => searchAddress(value), 500);
+  };
+
+  const selectDestResult = (result: SearchResult, typedQuery: string) => {
+    const typedNumber = extractHouseNumber(typedQuery);
+    const rawLabel = result.display_name.split(',').slice(0, 4).join(', ');
+    const finalLabel = typedNumber ? addHouseNumber(rawLabel, typedNumber) : rawLabel;
+    const point: GeoPoint = { lat: result.lat, lng: result.lon, label: finalLabel };
+    onDestinationChange(point);
+    setDestQuery(finalLabel);
+    setDestResults([]);
+  };
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -35,7 +104,12 @@ export function IdentifyScreen({ onIdentify }: IdentifyScreenProps) {
     }
 
     onIdentify({ name: cleanName, phone });
-    goPassenger('destination');
+
+    if (hasFixedOrigin && origin) {
+      goPassenger('category');
+    } else {
+      goPassenger('destination');
+    }
   };
 
   // No slug in URL — show landing with link to admin
@@ -136,7 +210,7 @@ export function IdentifyScreen({ onIdentify }: IdentifyScreenProps) {
     );
   }
 
-  // Company loaded — show passenger name/phone form directly
+  // Company loaded — show passenger form with optional destination (when fixed origin)
   return (
     <div className="animate-slide-up">
       <div className="mb-8 text-center">
@@ -157,6 +231,22 @@ export function IdentifyScreen({ onIdentify }: IdentifyScreenProps) {
           </p>
         )}
       </div>
+
+      {hasFixedOrigin && origin && (
+        <div className="mb-4 flex items-center gap-2 rounded-xl bg-success-500/10 border border-success-500/20 px-4 py-3">
+          <MapPin className="h-4 w-4 shrink-0 text-success-600" />
+          <div className="min-w-0">
+            <p className="text-xs font-semibold text-success-700 dark:text-success-400">Embarque</p>
+            <p className="text-sm text-neutral-700 dark:text-neutral-300 truncate">{origin.label}</p>
+          </div>
+        </div>
+      )}
+
+      {hasFixedOrigin && origin && (
+        <div className="mb-4 h-40 overflow-hidden rounded-2xl border border-neutral-200 dark:border-neutral-700">
+          <MapView origin={origin} destination={destination ?? undefined} className="h-full w-full" />
+        </div>
+      )}
 
       <form onSubmit={handleSubmit} className="glass-card space-y-5 rounded-2xl border border-slate-700/50 bg-slate-900/60 p-8 shadow-2xl backdrop-blur-md">
         <div>
@@ -199,10 +289,58 @@ export function IdentifyScreen({ onIdentify }: IdentifyScreenProps) {
           </div>
         </div>
 
+        {hasFixedOrigin && origin && (
+          <div>
+            <div className="mb-1.5 flex items-center justify-between">
+              <label className="block text-sm font-semibold text-slate-200">
+                Destino
+              </label>
+              <span className="flex items-center gap-1 text-xs text-slate-400">
+                <HelpCircle className="h-3 w-3" />
+                Opcional
+              </span>
+            </div>
+            <div className="relative">
+              <Navigation className="absolute left-3.5 top-1/2 h-5 w-5 -translate-y-1/2 text-primary-500" />
+              <input
+                type="text"
+                value={destQuery}
+                onChange={(e) => handleDestInput(e.target.value)}
+                placeholder="Para onde deseja ir? (opcional)"
+                className="input-field pl-12"
+              />
+              {searching && (
+                <Loader2 className="absolute right-3.5 top-1/2 h-5 w-5 -translate-y-1/2 animate-spin text-neutral-400" />
+              )}
+            </div>
+            {destResults.length > 0 && (
+              <div className="mt-2 overflow-hidden rounded-xl border border-neutral-200 dark:border-neutral-700 bg-white dark:bg-neutral-800 shadow-md">
+                {destResults.map((r, i) => (
+                  <button
+                    key={i}
+                    onClick={() => selectDestResult(r, destQuery)}
+                    className="flex w-full items-start gap-2 px-4 py-3 text-left hover:bg-neutral-50 dark:hover:bg-neutral-700/50 transition-colors border-b border-neutral-100 dark:border-neutral-700 last:border-0"
+                  >
+                    <Navigation className="h-4 w-4 mt-0.5 shrink-0 text-primary-500" />
+                    <span className="text-sm text-neutral-700 dark:text-neutral-300 line-clamp-2">
+                      {r.display_name}
+                    </span>
+                  </button>
+                ))}
+              </div>
+            )}
+            {!destination && destQuery.length === 0 && (
+              <p className="mt-1.5 text-xs text-slate-400">
+                Se nao souber o endereco, pode chamar sem destino. O valor sera informado pelo motorista no final.
+              </p>
+            )}
+          </div>
+        )}
+
         {formError && <p className="text-xs font-medium text-error-500">{formError}</p>}
 
         <button type="submit" className="btn-primary w-full text-base flex items-center justify-center gap-2">
-          {location?.pickup_address ? 'Avancar' : 'Escolher destino'}
+          {hasFixedOrigin ? 'Ver categorias' : 'Escolher destino'}
           <ArrowRight className="h-5 w-5" />
         </button>
       </form>

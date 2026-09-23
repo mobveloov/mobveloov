@@ -7,7 +7,6 @@ import { useWakeLock } from '@/hooks/useWakeLock';
 import { Header } from '@/components/Header';
 import { IdentifyScreen } from '@/screens/IdentifyScreen';
 import { DestinationScreen } from '@/screens/DestinationScreen';
-import { RequestScreen } from '@/screens/RequestScreen';
 import { CategoryScreen } from '@/screens/CategoryScreen';
 import { TrackingScreen } from '@/screens/TrackingScreen';
 import { TenantLoginScreen } from '@/screens/TenantLoginScreen';
@@ -32,21 +31,18 @@ function PassengerFlow() {
     }
   }, [location?.id, location?.pickup_address, location?.pickup_lat, location?.pickup_lng]);
 
-  const hasFixedOrigin = !!(location?.pickup_address && location.pickup_lat != null && location.pickup_lng != null);
 
   switch (passengerScreen) {
     case 'identify':
-      return <IdentifyScreen onIdentify={setPassengerInfo} />;
+      return (
+        <IdentifyScreen
+          onIdentify={setPassengerInfo}
+          origin={origin}
+          destination={destination}
+          onDestinationChange={setDestination}
+        />
+      );
     case 'destination':
-      if (hasFixedOrigin && origin) {
-        return (
-          <RequestScreen
-            origin={origin}
-            destination={destination}
-            onDestinationChange={setDestination}
-          />
-        );
-      }
       return (
         <DestinationScreen
           origin={origin}
@@ -57,10 +53,24 @@ function PassengerFlow() {
         />
       );
     case 'category':
-      if (!origin) return <IdentifyScreen onIdentify={setPassengerInfo} />;
+      if (!origin) return (
+        <IdentifyScreen
+          onIdentify={setPassengerInfo}
+          origin={origin}
+          destination={destination}
+          onDestinationChange={setDestination}
+        />
+      );
       return <CategoryScreen origin={origin} destination={destination} />;
     case 'tracking':
-      if (!origin || !passengerInfo) return <IdentifyScreen onIdentify={setPassengerInfo} />;
+      if (!origin || !passengerInfo) return (
+        <IdentifyScreen
+          onIdentify={setPassengerInfo}
+          origin={origin}
+          destination={destination}
+          onDestinationChange={setDestination}
+        />
+      );
       return (
         <TrackingScreen
           origin={origin}
@@ -70,7 +80,14 @@ function PassengerFlow() {
         />
       );
     default:
-      return <IdentifyScreen onIdentify={setPassengerInfo} />;
+      return (
+        <IdentifyScreen
+          onIdentify={setPassengerInfo}
+          origin={origin}
+          destination={destination}
+          onDestinationChange={setDestination}
+        />
+      );
   }
 }
 
