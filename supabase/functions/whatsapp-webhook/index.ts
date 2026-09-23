@@ -128,7 +128,7 @@ async function sendWhatsAppMessageWithProvider(
     const url = f["evo_url"] ?? "";
     const token = f["evo_token"] ?? "";
     if (!url || !token) return false;
-    const instance = f["evo_instance"] || "veloov";
+    const instance = f["evo_instance"] || "VeoovMob";
     const resp = await fetch(`${url}/message/sendText/${instance}`, {
       method: "POST",
       headers: { "Content-Type": "application/json", apikey: token },

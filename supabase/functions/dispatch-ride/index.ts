@@ -753,7 +753,7 @@ async function cancelRideOnMachine(companyId: string, rideId: string, machineOrd
     const resp = await fetch(`${auth.baseUrl}/api/v2/integracao/corridas/${mchId}/cancelar`, {
       method: "POST",
       headers: auth.headers,
-      body: JSON.stringify({ motivo_id: 1 }),
+      body: JSON.stringify({ motivo_id: 3 }),
     });
 
     if (!resp.ok) {
@@ -765,20 +765,16 @@ async function cancelRideOnMachine(companyId: string, rideId: string, machineOrd
         message: `Machine API cancel error ${resp.status}: ${errorBody}`,
         ride_id: rideId,
       });
-      // Only cancel locally on definitive failure (404, 410, 409)
-      // On transient errors (429, 5xx), keep the ride active so the Machine ride isn't orphaned
-      if (resp.status === 404 || resp.status === 410 || resp.status === 409) {
-        await supabase.from("rides").update({
-          status: "canceled",
-          updated_at: new Date().toISOString(),
-        }).eq("id", rideId);
-        return new Response(JSON.stringify({ success: true, canceled: true, note: "machine cancel definitive failure, canceled locally" }), {
-          headers: { ...corsHeaders, "Content-Type": "application/json" },
-        });
-      }
-      // Transient error — don't cancel locally, ride may still be active on Machine
-      return new Response(JSON.stringify({ success: false, canceled: false, error: `Machine cancel failed (${resp.status}) — ride still active` }), {
-        status: 200,
+      // Cancel locally on any API error — the user requested cancellation,
+      // and leaving the totem stuck on "active" when the Machine rejected
+      // the cancel is worse than a potential orphan. 404/410 means the ride
+      // is already gone on the Machine side; 400 means bad motivo_id;
+      // 429/5xx are transient but we still cancel locally for UX.
+      await supabase.from("rides").update({
+        status: "canceled",
+        updated_at: new Date().toISOString(),
+      }).eq("id", rideId);
+      return new Response(JSON.stringify({ success: true, canceled: true, note: `machine cancel returned ${resp.status}, canceled locally` }), {
         headers: { ...corsHeaders, "Content-Type": "application/json" },
       });
     }
@@ -907,7 +903,7 @@ async function sendWhatsAppMessage(
     const url = f["evo_url"] ?? "";
     const token = f["evo_token"] ?? "";
     if (!url || !token) return false;
-    const instance = f["evo_instance"] || "veloov";
+    const instance = f["evo_instance"] || "VeoovMob";
     const resp = await fetch(`${url}/message/sendText/${instance}`, {
       method: "POST",
       headers: { "Content-Type": "application/json", apikey: token },

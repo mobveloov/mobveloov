@@ -47,7 +47,7 @@ async function requestQr(config: WhatsAppConfig): Promise<Record<string, unknown
   if (provider === "evolution") {
     const baseUrl = (fields.evo_url ?? "").replace(/\/$/, "");
     const token = fields.evo_token ?? "";
-    const instance = fields.evo_instance || "veloov";
+    const instance = fields.evo_instance || "VeoovMob";
     if (!baseUrl || !token) throw new Error("URL e token da Evolution não estão configurados");
 
     const authHeaders = { "Content-Type": "application/json", apikey: token };

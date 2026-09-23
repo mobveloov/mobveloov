@@ -199,7 +199,7 @@ export function IntegrationsModule({ success, error: toastError }: ModuleProps) 
               </div>
               <div>
                 <label className={labelCls}>Nome da Instância</label>
-                <input className={inputCls} value={config.fields.evo_instance ?? ''} onChange={(e) => updateField('evo_instance', e.target.value)} placeholder="veloov" />
+                <input className={inputCls} value={config.fields.evo_instance ?? ''} onChange={(e) => updateField('evo_instance', e.target.value)} placeholder="VeoovMob" />
               </div>
             </div>
           )}

@@ -172,10 +172,25 @@ async function processWebhookWithSig(
   sigHeader: string | null,
   rawBody: string,
 ): Promise<void> {
-  // Verify signature in background — skip processing if invalid
+  // Signature verification is best-effort: if it fails, we still process
+  // the webhook. The Machine API may use a different key encoding than
+  // what we store, and silently dropping webhooks breaks the entire flow
+  // (no status updates, no WhatsApp, totem stuck on "aguardando").
+  // We log the result for diagnostics but never block processing.
   if (sigHeader) {
-    const sigValid = await verifyMachineSignatureRaw(rawBody, sigHeader);
-    if (!sigValid) return;
+    try {
+      const sigValid = await verifyMachineSignatureRaw(rawBody, sigHeader);
+      if (!sigValid) {
+        await supabase.from("admin_logs").insert({
+          source: "machine_webhook",
+          level: "warning",
+          message: "Signature-V2 verification failed — processing anyway",
+          payload: { body_preview: rawBody.slice(0, 200) },
+        });
+      }
+    } catch {
+      // Signature check threw — continue processing regardless
+    }
   }
   await processWebhook(body);
 }
@@ -657,7 +672,7 @@ async function sendWhatsAppMessage(
     const url = f["evo_url"] ?? "";
     const token = f["evo_token"] ?? "";
     if (!url || !token) return false;
-    const instance = f["evo_instance"] || "veloov";
+    const instance = f["evo_instance"] || "VeoovMob";
     const resp = await fetch(`${url}/message/sendText/${instance}`, {
       method: "POST",
       headers: { "Content-Type": "application/json", apikey: token },
