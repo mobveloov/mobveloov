@@ -377,11 +377,10 @@ Deno.serve(async (req: Request) => {
     if (event === "admin.reply" && data?.phone && data?.text) {
       const replyPhone = String(data.phone);
       const replyText = String(data.text);
-      const replyProvider = String(data.provider ?? "evolution");
-      const replyFields = (data.fields ?? {}) as Record<string, string>;
       const cleanReplyPhone = toBrazilianWhatsAppNumber(replyPhone);
       try {
-        await sendWhatsAppMessageWithProvider(replyProvider, replyFields, cleanReplyPhone, replyText);
+        const { provider, fields } = await getCompanyWhatsAppConfig(waInstance.company_id);
+        await sendWhatsAppMessageWithProvider(provider, fields, cleanReplyPhone, replyText);
         await saveMessage(waInstance.company_id, cleanReplyPhone, "outgoing", replyText);
       } catch {
         // best-effort
@@ -597,6 +596,7 @@ async function forwardMessageToMachineDriver(
   companyId: string,
   machineDriverId: string,
   message: string,
+  machineOrderId?: string | null,
 ): Promise<void> {
   const { data: credentials } = await supabase
     .from("company_credentials")
@@ -619,23 +619,77 @@ async function forwardMessageToMachineDriver(
 
   if (!apiKey || !user || !pass) return;
 
-  const resp = await fetch(`${baseUrl}/api/v2/integracao/mensagens/condutor/${machineDriverId}`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "api-key": apiKey,
-      "Authorization": `Basic ${btoa(`${user}:${pass}`)}`,
-    },
-    body: JSON.stringify({ mensagem: message }),
-  });
+  const authHeaders = {
+    "Content-Type": "application/json",
+    "api-key": apiKey,
+    "Authorization": `Basic ${btoa(`${user}:${pass}`)}`,
+  };
 
-  if (!resp.ok) {
-    const errorBody = await resp.text().catch(() => "");
+  const driverIdNum = parseInt(machineDriverId, 10);
+  if (isNaN(driverIdNum)) return;
+
+  const titulo = "Mensagem do passageiro";
+  const body = message.slice(0, 255);
+  const orderIdNum = machineOrderId ? parseInt(machineOrderId, 10) : null;
+
+  // Try in-app messaging first (shows as modal in driver app, linked to the ride)
+  try {
+    const inAppBody: Record<string, unknown> = {
+      condutor_id: driverIdNum,
+      titulo,
+      body,
+    };
+    if (orderIdNum && !isNaN(orderIdNum)) {
+      inAppBody.solicitacao_id = orderIdNum;
+    }
+
+    const inAppResp = await fetch(`${baseUrl}/api/v2/integracao/notificacoes/condutor/in-app-messaging/individual`, {
+      method: "POST",
+      headers: authHeaders,
+      body: JSON.stringify(inAppBody),
+    });
+
+    if (inAppResp.ok) {
+      await supabase.from("admin_logs").insert({
+        company_id: companyId,
+        source: "machine_api",
+        level: "info",
+        message: `Passenger message forwarded to driver ${machineDriverId} via in-app messaging`,
+      });
+      return;
+    }
+  } catch {
+    // fall through to push
+  }
+
+  // Fallback: push notification
+  try {
+    const pushResp = await fetch(`${baseUrl}/api/v2/integracao/notificacoes/condutor/push/individual`, {
+      method: "POST",
+      headers: authHeaders,
+      body: JSON.stringify({
+        condutor_id: driverIdNum,
+        titulo,
+        mensagem: body,
+      }),
+    });
+
+    if (!pushResp.ok) {
+      const errorBody = await pushResp.text().catch(() => "");
+      await supabase.from("admin_logs").insert({
+        company_id: companyId,
+        source: "machine_api",
+        level: "error",
+        message: `Forward message to driver ${machineDriverId} via push failed (${pushResp.status}): ${errorBody.slice(0, 200)}`,
+      });
+    }
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : "unknown error";
     await supabase.from("admin_logs").insert({
       company_id: companyId,
       source: "machine_api",
       level: "error",
-      message: `Forward chat message to driver ${machineDriverId} failed (${resp.status}): ${errorBody.slice(0, 200)}`,
+      message: `Forward message to driver ${machineDriverId} exception: ${msg}`,
     });
   }
 }
