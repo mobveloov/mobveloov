@@ -50,20 +50,52 @@ async function requestQr(config: WhatsAppConfig): Promise<Record<string, unknown
     const instance = fields.evo_instance || "veloov";
     if (!baseUrl || !token) throw new Error("URL e token da Evolution não estão configurados");
 
-    const target = `${baseUrl}/instance/connect/${encodeURIComponent(instance)}`;
-    const upstream = await fetch(target, { headers: { apikey: token } });
-    const raw = await upstream.text();
-    let data: Record<string, unknown> = {};
-    try {
-      data = JSON.parse(raw) as Record<string, unknown>;
-    } catch {
-      throw new Error(`Evolution retornou uma resposta inválida (${upstream.status})`);
+    const authHeaders = { "Content-Type": "application/json", apikey: token };
+
+    const connectResp = await fetch(`${baseUrl}/instance/connect/${encodeURIComponent(instance)}`, { headers: authHeaders });
+    let connectRaw = await connectResp.text();
+    let connectData: Record<string, unknown> = {};
+    try { connectData = JSON.parse(connectRaw) as Record<string, unknown>; } catch { /* not json */ }
+
+    if (connectResp.status === 404) {
+      const createResp = await fetch(`${baseUrl}/instance/create`, {
+        method: "POST",
+        headers: authHeaders,
+        body: JSON.stringify({ instanceName: instance }),
+      });
+      const createRaw = await createResp.text();
+      let createData: Record<string, unknown> = {};
+      try { createData = JSON.parse(createRaw) as Record<string, unknown>; } catch { /* not json */ }
+
+      if (!createResp.ok) {
+        const detail = typeof createData.message === "string" ? createData.message
+          : typeof createData.error === "string" ? createData.error
+          : "Erro ao criar instância";
+        throw new Error(`Não foi possível criar a instância "${instance}" na Evolution (${createResp.status}): ${detail}`);
+      }
+
+      const retryResp = await fetch(`${baseUrl}/instance/connect/${encodeURIComponent(instance)}`, { headers: authHeaders });
+      connectRaw = await retryResp.text();
+      try { connectData = JSON.parse(connectRaw) as Record<string, unknown>; } catch { /* not json */ }
+      if (!retryResp.ok) {
+        const detail = typeof connectData.message === "string" ? connectData.message
+          : typeof connectData.error === "string" ? connectData.error
+          : "Erro ao conectar após criação";
+        throw new Error(`Instância criada, mas a conexão falhou (${retryResp.status}): ${detail}`);
+      }
+    } else if (!connectResp.ok) {
+      const detail = typeof connectData.message === "string"
+        ? connectData.message
+        : typeof connectData.error === "string"
+          ? connectData.error
+          : "Resposta sem detalhes";
+      if (connectResp.status === 401 || connectResp.status === 403) {
+        throw new Error(`Evolution rejeitou o token (${connectResp.status})`);
+      }
+      throw new Error(`Evolution recusou a conexão (${connectResp.status}): ${detail}`);
     }
 
-    if (!upstream.ok) {
-      throw new Error(`Evolution recusou a conexão (${upstream.status})`);
-    }
-
+    const data = connectData;
     const qr = cleanBase64(data.base64)
       ?? cleanBase64((data.qrcode as Record<string, unknown> | undefined)?.base64)
       ?? cleanBase64(data.code);

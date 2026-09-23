@@ -122,7 +122,19 @@ export function IntegrationsModule({ success, error: toastError }: ModuleProps) 
       });
 
       if (error) {
-        setQrError('Não foi possível conectar ao gateway. Verifique a URL, o token e o nome da instância.');
+        let message = 'Não foi possível conectar ao gateway. Verifique a URL, o token e o nome da instância.';
+        const response = (error as { context?: Response }).context;
+        if (response) {
+          try {
+            const body = await response.json() as { error?: string };
+            if (body.error) message = body.error;
+          } catch {
+            // Keep the generic message when the gateway response is not readable.
+          }
+        }
+        setQrError(message);
+      } else if (data?.error) {
+        setQrError(String(data.error));
       } else if (data?.connected) {
         setConnected(true);
       } else if (typeof data?.base64 === 'string' && data.base64.length > 100) {
