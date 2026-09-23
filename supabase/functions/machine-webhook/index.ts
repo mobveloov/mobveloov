@@ -496,6 +496,7 @@ async function fetchRideDetails(companyId: string, machineOrderId: string): Prom
     if (!resp.ok) return null;
     const json = await resp.json();
     const ride = json?.response ?? json?.data ?? null;
+    if (Array.isArray(ride)) return ride[0] ?? null;
     return ride;
   } catch {
     return null;
@@ -510,7 +511,7 @@ async function fetchRideDetailsWithRetry(companyId: string, machineOrderId: stri
   };
   let details = await fetchRideDetails(companyId, machineOrderId);
   if (hasDriver(details)) return details;
-  const delays = [3000, 5000, 8000, 12000];
+  const delays = [5000, 10000, 15000, 20000, 30000, 40000, 60000];
   for (const delay of delays) {
     await new Promise(r => setTimeout(r, delay));
     details = await fetchRideDetails(companyId, machineOrderId);

@@ -192,6 +192,121 @@ async function saveChatMessage(
   });
 }
 
+async function fetchRideDetailsFromMachine(
+  supabase: ReturnType<typeof createClient>,
+  companyId: string,
+  machineOrderId: string,
+): Promise<Record<string, unknown> | null> {
+  const { data: credentials } = await supabase
+    .from("company_credentials")
+    .select("machine_api_url, machine_api_key, taximetro_username, taximetro_password")
+    .eq("company_id", companyId)
+    .maybeSingle();
+
+  const { data: tenantRows } = await supabase
+    .from("tenant_secrets")
+    .select("secret_name, secret_value")
+    .eq("tenant_id", companyId);
+  const tenantMap = new Map(
+    (tenantRows ?? []).map((r: { secret_name: string; secret_value: string }) => [r.secret_name, r.secret_value])
+  );
+
+  const baseUrl = (credentials?.machine_api_url || "https://api.taximachine.com.br").replace(/\/+$/, "");
+  const apiKey = tenantMap.get("MACHINE_API_KEY") || credentials?.machine_api_key || "";
+  const user = tenantMap.get("TAXIMETRO_USER") || credentials?.taximetro_username || "";
+  const pass = tenantMap.get("TAXIMETRO_PASSWORD") || credentials?.taximetro_password || "";
+
+  if (!apiKey || !user || !pass) return null;
+
+  try {
+    const resp = await fetch(`${baseUrl}/api/v2/integracao/corridas/${machineOrderId}`, {
+      method: "GET",
+      headers: {
+        "Content-Type": "application/json",
+        "api-key": apiKey,
+        "Authorization": `Basic ${btoa(`${user}:${pass}`)}`,
+      },
+    });
+    if (!resp.ok) return null;
+    const json = await resp.json();
+    const ride = json?.response ?? json?.data ?? null;
+    if (Array.isArray(ride)) return ride[0] ?? null;
+    return ride;
+  } catch {
+    return null;
+  }
+}
+
+async function tryFetchAndSendDriverInfo(
+  supabase: ReturnType<typeof createClient>,
+  ride: { id: string; company_id: string; machine_order_id: string; passenger_phone: string },
+): Promise<void> {
+  const details = await fetchRideDetailsFromMachine(supabase, ride.company_id, ride.machine_order_id);
+  if (!details) return;
+
+  const str = (v: unknown): string | null => { const s = v != null ? String(v).trim() : ""; return s || null; };
+  const driverName = str(details.nome_condutor) ?? str((details.driver as Record<string, unknown>)?.nome);
+  if (!driverName) return;
+
+  const driverPhone = str(details.telefone_condutor) ?? str((details.driver as Record<string, unknown>)?.telefone);
+  const vehiclePlate = str(details.placa_veiculo) ?? str((details.driver as Record<string, unknown>)?.veiculo_placa);
+  const vehicleModel = str(details.veiculo) ?? str((details.driver as Record<string, unknown>)?.veiculo_modelo);
+  const vehicleColor = str(details.cor_veiculo) ?? str((details.driver as Record<string, unknown>)?.veiculo_cor);
+
+  const driverUpdate: Record<string, unknown> = { driver_name: driverName };
+  if (driverPhone) driverUpdate.driver_phone = driverPhone;
+  if (vehiclePlate) driverUpdate.vehicle_plate = vehiclePlate;
+  if (vehicleModel) driverUpdate.vehicle_model = vehicleModel;
+  if (vehicleColor) driverUpdate.vehicle_color = vehicleColor;
+  await supabase.from("rides").update(driverUpdate).eq("id", ride.id);
+
+  // Check if we already sent a driver_info message for this ride
+  const { data: existing } = await supabase
+    .from("whatsapp_message_log")
+    .select("id")
+    .eq("ride_id", ride.id)
+    .eq("message_type", "driver_info")
+    .eq("success", true)
+    .limit(1)
+    .maybeSingle();
+  if (existing) return;
+
+  let msg = `\u2705 Corrida confirmada! Seu motorista est\u00e1 a caminho.`;
+  msg += `\n\n\U0001F464 Motorista: ${driverName}`;
+  if (vehicleModel) msg += `\n\U0001F697 Ve\u00edculo: ${vehicleModel}`;
+  if (vehicleColor) msg += `\n\U0001F3A8 Cor: ${vehicleColor}`;
+  if (vehiclePlate) msg += `\n\U0001F510 Placa: ${vehiclePlate}`;
+  msg += `\n\n\u274C Para cancelar, responda "cancelar".`;
+
+  const cleanPhone = toBrazilianWhatsAppNumber(ride.passenger_phone);
+  if (!cleanPhone) return;
+
+  const { ok, provider } = await sendWhatsAppMessage(supabase, cleanPhone, msg, ride.company_id);
+
+  try {
+    await supabase.from("whatsapp_message_log").insert({
+      company_id: ride.company_id,
+      ride_id: ride.id,
+      phone: cleanPhone,
+      message_type: "driver_info",
+      message_body: msg,
+      provider,
+      success: ok,
+      billing_month: new Date().toISOString().slice(0, 7),
+    });
+  } catch { /* best-effort */ }
+
+  if (ok) {
+    await saveChatMessage(supabase, ride.company_id, cleanPhone, "outgoing", msg);
+    await supabase.from("admin_logs").insert({
+      company_id: ride.company_id,
+      source: "distance_update",
+      level: "info",
+      message: `Dados do motorista enviados via cron (ride ${ride.id}): ${driverName}`,
+    });
+  }
+}
+
 async function fetchDriverPositionFromMachine(
   supabase: ReturnType<typeof createClient>,
   companyId: string,
@@ -276,7 +391,7 @@ Deno.serve(async (req: Request) => {
     // Find all accepted + en_route rides with passenger phone
     const { data: rides } = await supabase
       .from("rides")
-      .select("id, company_id, passenger_phone, origin_lat, origin_lng, machine_order_id, status")
+      .select("id, company_id, passenger_phone, origin_lat, origin_lng, machine_order_id, status, driver_name, vehicle_model, vehicle_color, vehicle_plate")
       .in("status", ["accepted", "en_route"])
       .not("passenger_phone", "is", null);
 
@@ -290,6 +405,11 @@ Deno.serve(async (req: Request) => {
     let skippedCount = 0;
 
     for (const ride of rides) {
+      // If driver info is missing, try to fetch it from the Machine API and send it
+      if (!ride.driver_name && ride.machine_order_id) {
+        await tryFetchAndSendDriverInfo(supabase, ride);
+      }
+
       // Get company's plan notification features
       const { data: company } = await supabase
         .from("companies")
