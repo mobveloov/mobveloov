@@ -557,6 +557,23 @@ async function handleDriverNotification(
       ride_id: rideId,
     });
 
+    // Also notify the passenger that a driver has been assigned
+    const { data: ride } = await supabase
+      .from("rides")
+      .select("driver_name, vehicle_model, vehicle_plate")
+      .eq("id", rideId)
+      .maybeSingle();
+
+    await sendPassengerWhatsAppNotification(
+      companyId,
+      rideId,
+      passengerPhone,
+      "accepted",
+      ride?.driver_name ?? driverName,
+      ride?.vehicle_model ?? null,
+      ride?.vehicle_plate ?? null,
+    );
+
     return new Response(JSON.stringify({ success: true, mode: "manual", notification: "sent" }), {
       headers: { ...corsHeaders, "Content-Type": "application/json" },
     });
