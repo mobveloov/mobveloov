@@ -415,7 +415,12 @@ async function fetchRideDetails(companyId: string, machineOrderId: string): Prom
   if (!apiKey || !user || !pass) return null;
 
   try {
-    // Use POST /corridas/consultar — returns telefone_condutor, veiculo, placa_veiculo, cor_veiculo
+    // POST /corridas/consultar returns an array of rides filtered by date/status.
+    // It does NOT accept id_mch as a filter — we query a recent window and find
+    // the matching ride by id, which gives us nome_condutor, telefone_condutor,
+    // veiculo, placa_veiculo, cor_veiculo.
+    const now = new Date();
+    const oneHourAgo = new Date(now.getTime() - 60 * 60 * 1000);
     const resp = await fetch(`${baseUrl}/api/v2/integracao/corridas/consultar`, {
       method: "POST",
       headers: {
@@ -423,12 +428,20 @@ async function fetchRideDetails(companyId: string, machineOrderId: string): Prom
         "api-key": apiKey,
         "Authorization": `Basic ${btoa(`${user}:${pass}`)}`,
       },
-      body: JSON.stringify({ id_mch: machineOrderId }),
+      body: JSON.stringify({
+        data_hora_solicitacao_min: oneHourAgo.toISOString(),
+        data_hora_solicitacao_max: now.toISOString(),
+        limite: 100,
+      }),
     });
 
     if (!resp.ok) return null;
     const json = await resp.json();
-    return json?.data ?? null;
+    const rides = json?.data;
+    if (!Array.isArray(rides)) return null;
+
+    const match = rides.find((r: { id?: string }) => String(r.id) === String(machineOrderId));
+    return match ?? null;
   } catch {
     return null;
   }

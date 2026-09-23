@@ -191,17 +191,18 @@ export function TrackingScreen({ origin, destination, passengerName, passengerPh
 
   // Realtime subscription for status updates (works for all modes)
   useEffect(() => {
-    if (!rideRef.current) return;
+    const rideId = ride?.id;
+    if (!rideId) return;
 
     const channel = supabase
-      .channel(`ride-${rideRef.current}`)
+      .channel(`ride-${rideId}`)
       .on(
         'postgres_changes',
         {
           event: 'UPDATE',
           schema: 'public',
           table: 'rides',
-          filter: `id=eq.${rideRef.current}`,
+          filter: `id=eq.${rideId}`,
         },
         (payload) => {
           const updated = payload.new as Ride;
@@ -223,21 +224,25 @@ export function TrackingScreen({ origin, destination, passengerName, passengerPh
     return () => {
       supabase.removeChannel(channel);
     };
-  }, []);
+  }, [ride?.id]);
 
   // Poll Machine API for status updates every 10s (fallback when webhook not configured)
   useEffect(() => {
-    if (creating || !ride || !company) return;
+    if (creating || !ride?.id || !company) return;
     if (ride.status === 'completed' || ride.status === 'canceled') return;
     if (settings?.integration_mode !== 'machine') return;
 
+    const rideId = ride.id;
+    const machineOrderId = ride.machine_order_id;
+    const companySlug = company.slug;
+
     const interval = setInterval(async () => {
-      if (!rideRef.current || !company) return;
-      await pollRideStatus(company.slug, rideRef.current, ride.machine_order_id);
+      if (!rideRef.current) return;
+      await pollRideStatus(companySlug, rideRef.current, machineOrderId);
       const { data: fresh } = await supabase
         .from('rides')
         .select('*')
-        .eq('id', rideRef.current)
+        .eq('id', rideId)
         .single();
       if (fresh) {
         setRide(fresh as Ride);
@@ -247,7 +252,7 @@ export function TrackingScreen({ origin, destination, passengerName, passengerPh
     }, 10000);
 
     return () => clearInterval(interval);
-  }, [creating, ride, company, settings]);
+  }, [creating, ride?.id, ride?.status, ride?.machine_order_id, company, settings]);
 
   // Poll driver position every 2 minutes and calculate distance to pickup
   useEffect(() => {

@@ -440,10 +440,15 @@ async function dispatchToMachine(
   if (apiResponse.status >= 200 && apiResponse.status < 300) {
     updatePayload.status = "pending";
 
-    // Persist the fare returned by Machine API if available
+    // Only overwrite the price if the Machine API explicitly returns a different fare.
+    // The totem already stored the confirmed estimate from the category screen;
+    // overwriting with a null/0/empty value would erase the correct price.
     const d = dispatchData?.data ?? dispatchData;
     if (d?.valor_corrida != null) {
-      updatePayload.estimated_price = parseFloat(String(d.valor_corrida));
+      const machinePrice = parseFloat(String(d.valor_corrida));
+      if (!isNaN(machinePrice) && machinePrice > 0) {
+        updatePayload.estimated_price = machinePrice;
+      }
     }
   }
 
@@ -1155,24 +1160,36 @@ async function pollRideStatus(companyId: string, rideId: string, machineOrderId?
   // Use POST /corridas/consultar for driver info (telefone_condutor, veiculo, placa_veiculo, cor_veiculo)
   // and GET /corridas/{id}/condutor/posicao for GPS — /detalhes only returns {id, nome} for driver
   try {
+    // POST /corridas/consultar returns an array of rides filtered by date/status.
+    // It does NOT accept id_mch as a filter — we query a recent window and find
+    // the matching ride by id to get nome_condutor, telefone_condutor, veiculo, etc.
+    const now = new Date();
+    const oneHourAgo = new Date(now.getTime() - 60 * 60 * 1000);
     const consultarResp = await fetch(`${auth.baseUrl}/api/v2/integracao/corridas/consultar`, {
       method: "POST",
       headers: auth.headers,
-      body: JSON.stringify({ id_mch: mchId }),
+      body: JSON.stringify({
+        data_hora_solicitacao_min: oneHourAgo.toISOString(),
+        data_hora_solicitacao_max: now.toISOString(),
+        limite: 100,
+      }),
     });
 
     if (consultarResp.ok) {
       const consultarJson = await consultarResp.json();
-      const d = consultarJson?.data;
-      if (d) {
-        driverName = d.nome_condutor ?? d.driver?.nome ?? null;
-        driverPhone = d.telefone_condutor ?? d.driver?.telefone ?? null;
-        vehiclePlate = d.placa_veiculo ?? d.driver?.veiculo_placa ?? null;
-        vehicleModel = d.veiculo ?? d.driver?.veiculo_modelo ?? null;
-        vehicleColor = d.cor_veiculo ?? d.driver?.veiculo_cor ?? null;
-        // Fallback status from consultar if /status failed
-        if (!statusCode && d.status_solicitacao) {
-          statusCode = String(d.status_solicitacao);
+      const rides = consultarJson?.data;
+      if (Array.isArray(rides)) {
+        const d = rides.find((r: { id?: string }) => String(r.id) === String(mchId));
+        if (d) {
+          driverName = d.nome_condutor ?? d.driver?.nome ?? null;
+          driverPhone = d.telefone_condutor ?? d.driver?.telefone ?? null;
+          vehiclePlate = d.placa_veiculo ?? d.driver?.veiculo_placa ?? null;
+          vehicleModel = d.veiculo ?? d.driver?.veiculo_modelo ?? null;
+          vehicleColor = d.cor_veiculo ?? d.driver?.veiculo_cor ?? null;
+          // Fallback status from consultar if /status failed
+          if (!statusCode && d.status_solicitacao) {
+            statusCode = String(d.status_solicitacao);
+          }
         }
       }
     }
