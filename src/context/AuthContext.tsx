@@ -1,6 +1,6 @@
 import { createContext, useContext, useEffect, useState, type ReactNode } from 'react';
 import type { Session } from '@supabase/supabase-js';
-import { supabase } from '@/lib/supabase';
+import { supabase, supabaseConfig } from '@/lib/supabase';
 import type { Company, CompanyAdmin } from '@/types';
 
 interface AuthContextValue {
@@ -49,12 +49,20 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   };
 
   useEffect(() => {
+    if (!supabaseConfig.isConfigured) {
+      setLoading(false);
+      return;
+    }
+
     supabase.auth.getSession().then(({ data: { session: s } }) => {
       setSession(s);
       if (s) {
         const role = (s.user.app_metadata as { role?: string })?.role;
         loadUserData(s.user.id, role);
       }
+      setLoading(false);
+    }).catch(() => {
+      setSession(null);
       setLoading(false);
     });
 

@@ -4,6 +4,7 @@ import { AuthProvider, useAuth } from '@/context/AuthContext';
 import { NavProvider, useNav } from '@/context/NavContext';
 import { TenantProvider, useTenant } from '@/context/TenantContext';
 import { useWakeLock } from '@/hooks/useWakeLock';
+import { supabaseConfig } from '@/lib/supabase';
 import { Header } from '@/components/Header';
 import { IdentifyScreen } from '@/screens/IdentifyScreen';
 import { DestinationScreen } from '@/screens/DestinationScreen';
@@ -100,8 +101,33 @@ function AppContent() {
   }
 }
 
+function ConfigErrorScreen() {
+  return (
+    <div className="flex min-h-screen flex-col items-center justify-center bg-slate-950 px-6 text-center">
+      <div className="max-w-md">
+        <h1 className="text-2xl font-bold text-red-400">Erro de configuracao</h1>
+        <p className="mt-3 text-sm text-slate-300">
+          As variaveis de ambiente do Supabase nao foram injetadas no build do Cloudflare Pages.
+        </p>
+        <p className="mt-2 text-xs text-slate-400">
+          Verifique se as variaveis <code className="rounded bg-slate-800 px-1.5 py-0.5 text-red-300">VITE_SUPABASE_URL</code> e{' '}<code className="rounded bg-slate-800 px-1.5 py-0.5 text-red-300">VITE_SUPABASE_ANON_KEY</code> estao configuradas em Settings &gt; Environment Variables no Cloudflare Pages, e que o build command esta rodando com elas disponiveis.
+        </p>
+        {supabaseConfig.error && (
+          <p className="mt-4 rounded-lg bg-red-500/10 px-4 py-2 text-xs text-red-300">
+            {supabaseConfig.error}
+          </p>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function App() {
   useWakeLock();
+
+  if (!supabaseConfig.isConfigured) {
+    return <ConfigErrorScreen />;
+  }
 
   return (
     <ThemeProvider>

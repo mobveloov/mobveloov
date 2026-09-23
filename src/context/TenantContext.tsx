@@ -1,5 +1,5 @@
 import { createContext, useContext, useEffect, useState, type ReactNode } from 'react';
-import { supabase } from '@/lib/supabase';
+import { supabase, supabaseConfig } from '@/lib/supabase';
 import { getDeviceFingerprint } from '@/lib/deviceFingerprint';
 import type { Company, CompanySettings, VehicleCategory, CompanyLocation } from '@/types';
 
@@ -46,6 +46,12 @@ export function TenantProvider({ children }: { children: ReactNode }) {
       setLocation(null);
       setLocations([]);
       setLicenseExpired(false);
+      return;
+    }
+
+    if (!supabaseConfig.isConfigured) {
+      setError('Supabase nao configurado');
+      setLoading(false);
       return;
     }
 
