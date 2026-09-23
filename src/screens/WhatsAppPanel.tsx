@@ -73,6 +73,7 @@ const PROVIDERS: {
 }[] = [
   { value: 'evolution', label: 'Evolution API', description: 'Auto-hospedada ou cloud. QR code para conectar.', icon: Server },
   { value: 'zapi', label: 'Z-API', description: 'API simples via token. Sem QR code.', icon: Zap },
+  { value: 'zpro', label: 'Z-Pro', description: 'API Z-Pro via token. Sem QR code.', icon: Zap },
   { value: 'meta_cloud', label: 'Meta Cloud API', description: 'WhatsApp Business oficial do Facebook/Meta.', icon: Cloud },
   { value: 'veloov', label: 'API Veloov', description: 'Infraestrutura própria Veloov. Sem configuração.', icon: Building2 },
 ];
@@ -219,10 +220,10 @@ export function WhatsAppPanel() {
       evolution_api_url: provider === 'evolution' ? cleanApiUrl : null,
       evolution_global_token: provider === 'evolution' ? (globalToken || null) : null,
       instance_name: instanceName,
-      provider_api_url: provider === 'zapi' ? cleanApiUrl : null,
-      provider_token: provider === 'zapi' || provider === 'meta_cloud' ? (providerToken || null) : null,
+      provider_api_url: provider === 'zapi' || provider === 'zpro' ? cleanApiUrl : null,
+      provider_token: provider === 'zapi' || provider === 'zpro' || provider === 'meta_cloud' ? (providerToken || null) : null,
       provider_phone_id: provider === 'meta_cloud' ? (providerPhoneId || null) : null,
-      provider_waba_id: provider === 'meta_cloud' ? (providerWabaId || null) : null,
+      provider_waba_id: provider === 'zapi' || provider === 'zpro' || provider === 'meta_cloud' ? (providerWabaId || null) : null,
       ...extra,
       updated_at: new Date().toISOString(),
     };
@@ -244,12 +245,20 @@ export function WhatsAppPanel() {
         setSuccess('API Veloov ativada! As notificações serão enviadas pelo número da Veloov.');
       } else if (provider === 'zapi') {
         if (!apiUrl || !providerToken) {
-          setError('Preencha a URL da Z-API e o token.');
+          setError('Preencha a URL da Z-API e o token da instância.');
           setActionLoading(false);
           return;
         }
         await upsertInstance({ connection_status: 'connected', qr_code: null, last_connected_at: new Date().toISOString() });
         setSuccess('Z-API configurada com sucesso!');
+      } else if (provider === 'zpro') {
+        if (!apiUrl || !providerToken) {
+          setError('Preencha a URL da Z-Pro e o token da instância.');
+          setActionLoading(false);
+          return;
+        }
+        await upsertInstance({ connection_status: 'connected', qr_code: null, last_connected_at: new Date().toISOString() });
+        setSuccess('Z-Pro configurada com sucesso!');
       } else if (provider === 'meta_cloud') {
         if (!providerToken || !providerPhoneId || !providerWabaId) {
           setError('Preencha token, phone ID e WABA ID da Meta Cloud API.');
@@ -751,17 +760,20 @@ export function WhatsAppPanel() {
               </>
             )}
 
-            {provider === 'zapi' && (
+            {(provider === 'zapi' || provider === 'zpro') && (
               <>
                 <div>
-                  <label className={labelCls}>URL da API Z-API</label>
+                  <label className={labelCls}>{provider === 'zapi' ? 'URL da API Z-API' : 'URL da API Z-Pro'}</label>
                   <input
                     type="url"
                     value={apiUrl}
                     onChange={(e) => setApiUrl(e.target.value)}
-                    placeholder="https://api.z-api.com/instances/SEU-ID"
+                    placeholder={provider === 'zapi' ? 'https://api.z-api.com/instances/SEU-ID' : 'https://api.zpro.com/instances/SEU-ID'}
                     className="input-field"
                   />
+                  <p className="mt-1 text-xs text-neutral-400">
+                    Use a URL completa da instância (ex: https://api.z-api.com/instances/SEU-ID)
+                  </p>
                 </div>
                 <div>
                   <label className={labelCls}>Token da instância</label>
@@ -769,12 +781,25 @@ export function WhatsAppPanel() {
                     type="password"
                     value={providerToken}
                     onChange={(e) => setProviderToken(e.target.value)}
-                    placeholder="Token de autenticação Z-API"
+                    placeholder="Token da instância"
                     className="input-field"
                   />
                 </div>
+                <div>
+                  <label className={labelCls}>Client-Token (opcional)</label>
+                  <input
+                    type="password"
+                    value={providerWabaId}
+                    onChange={(e) => setProviderWabaId(e.target.value)}
+                    placeholder="Client-Token do painel Z-API/Z-Pro"
+                    className="input-field"
+                  />
+                  <p className="mt-1 text-xs text-neutral-400">
+                    Encontrado no painel da Z-API/Z-Pro. Necessário para algumas contas.
+                  </p>
+                </div>
                 <p className="text-xs text-neutral-400">
-                  A Z-API não usa QR code. O número é conectado diretamente no painel da Z-API.
+                  {provider === 'zapi' ? 'A Z-API' : 'A Z-Pro'} não usa QR code. O número é conectado diretamente no painel.
                 </p>
               </>
             )}
@@ -855,7 +880,7 @@ export function WhatsAppPanel() {
               </button>
             )}
 
-            {provider !== 'evolution' && (
+            {provider !== 'evolution' && provider !== 'veloov' && (
               <button
                 onClick={handleSaveProvider}
                 disabled={actionLoading}
