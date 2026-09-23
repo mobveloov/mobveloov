@@ -58,7 +58,8 @@ export function TrackingScreen({ origin, destination, passengerName, passengerPh
     : null;
 
   const categoryLabel = selectedCategory?.label ?? settings?.category_label ?? 'Econômico';
-  const estimatedPrice = pricing?.pricing.final_price ?? settings?.min_fee ?? 0;
+  const calculatedPrice = pricing?.pricing.final_price ?? settings?.min_fee ?? 0;
+  const estimatedPrice = ride?.estimated_price ?? calculatedPrice;
 
   useEffect(() => {
     if (createdRef.current || !company || !settings) return;

@@ -12,6 +12,15 @@ const supabaseServiceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
 
 const supabase = createClient(supabaseUrl, supabaseServiceKey);
 
+function toBrazilianWhatsAppNumber(raw: string): string {
+  let digits = raw.replace(/\D/g, "");
+  if (!digits) return "";
+  if (digits.startsWith("55") && digits.length >= 12) return digits;
+  if (digits.length === 10 || digits.length === 11) return `55${digits}`;
+  if (digits.length === 12 || digits.length === 13) return digits;
+  return `55${digits}`;
+}
+
 interface DispatchBody {
   companySlug: string;
   integrationMode: string;
@@ -999,7 +1008,7 @@ async function sendPassengerWhatsAppNotification(
     message += `\n\nPara cancelar, responda "cancelar".`;
   }
 
-  const cleanPhone = passengerPhone.replace(/\D/g, "");
+  const cleanPhone = toBrazilianWhatsAppNumber(passengerPhone);
   if (!cleanPhone) return;
 
   const { provider, fields: f } = await getCompanyWhatsAppConfig(companyId);
@@ -1184,8 +1193,8 @@ async function pollRideStatus(companyId: string, rideId: string, machineOrderId?
             ? `Atualizacao: O motorista esta a ${driverDistanceKm.toFixed(1)} km de distancia. Tempo estimado: ${etaMinutes ?? "?"} min.`
             : `Atualizacao: O motorista esta a ${Math.round(driverDistanceKm * 1000)} m de distancia. Quase no local!`;
           const { provider, fields: f } = await getCompanyWhatsAppConfig(companyId);
-          const ok = await sendWhatsAppMessage(provider, f, passengerPhone.replace(/\D/g, ""), updateMsg);
-          await logWhatsAppMessage(companyId, rideId, passengerPhone.replace(/\D/g, ""), "distance_update", updateMsg, provider, ok);
+          const ok = await sendWhatsAppMessage(provider, f, toBrazilianWhatsAppNumber(passengerPhone), updateMsg);
+          await logWhatsAppMessage(companyId, rideId, toBrazilianWhatsAppNumber(passengerPhone), "distance_update", updateMsg, provider, ok);
         }
       }
     }

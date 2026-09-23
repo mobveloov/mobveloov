@@ -10,6 +10,15 @@ const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
 const supabaseServiceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
 const supabase = createClient(supabaseUrl, supabaseServiceKey);
 
+function toBrazilianWhatsAppNumber(raw: string): string {
+  let digits = raw.replace(/\D/g, "");
+  if (!digits) return "";
+  if (digits.startsWith("55") && digits.length >= 12) return digits;
+  if (digits.length === 10 || digits.length === 11) return `55${digits}`;
+  if (digits.length === 12 || digits.length === 13) return digits;
+  return `55${digits}`;
+}
+
 // machine-webhook: handles Machine API status + position webhooks.
 // The Machine API only sends push/in-app notifications to passengers who have
 // the app installed. Since totem passengers don't have the app, we send WhatsApp
@@ -122,6 +131,7 @@ Deno.serve(async (req: Request) => {
       // (passengers don't have the Machine app, so push notifications won't reach them)
       await sendWhatsAppNotification(
         ride.company_id,
+        ride.id,
         ride.passenger_phone,
         internalStatus,
         driverName,
@@ -199,6 +209,7 @@ async function fetchRideDetails(companyId: string, machineOrderId: string): Prom
 
 async function sendWhatsAppNotification(
   companyId: string,
+  rideId: string,
   passengerPhone: string,
   internalStatus: string,
   driverName: string | null,
@@ -208,10 +219,14 @@ async function sendWhatsAppNotification(
   let message = STATUS_MESSAGES_PT[internalStatus];
   if (!message) return;
 
+  const features = await getPlanNotificationFeatures(companyId);
+
   if (internalStatus === "accepted" && driverName) {
-    message += `\n\nMotorista: ${driverName}`;
-    if (vehicleModel) message += `\nVeiculo: ${vehicleModel}`;
-    if (vehiclePlate) message += `\nPlaca: ${vehiclePlate}`;
+    if (features.send_driver_info) {
+      message += `\n\nMotorista: ${driverName}`;
+      if (vehicleModel) message += `\nVeiculo: ${vehicleModel}`;
+      if (vehiclePlate) message += `\nPlaca: ${vehiclePlate}`;
+    }
     message += `\n\nPara cancelar, responda "cancelar".`;
   }
 
@@ -239,21 +254,81 @@ async function sendWhatsAppNotification(
     return;
   }
 
-  const cleanPhone = passengerPhone.replace(/\D/g, "");
+  const cleanPhone = toBrazilianWhatsAppNumber(passengerPhone);
   if (!cleanPhone) return;
 
   try {
     await sendWhatsAppMessage(provider, f, cleanPhone, message);
+    await logWhatsAppMessage(companyId, rideId, cleanPhone, "status_update", message, provider, true);
 
     await supabase.from("admin_logs").insert({
       company_id: companyId,
       source: "machine_webhook",
       level: "info",
-      message: `Notificacao WhatsApp enviada para passageiro (${internalStatus})`,
+      message: `Notificacao WhatsApp enviada para passageiro (${internalStatus}, ${features.plan_name})`,
     });
-  } catch {
-    // Best-effort
+  } catch (err) {
+    const errMsg = err instanceof Error ? err.message : "unknown error";
+    await logWhatsAppMessage(companyId, rideId, cleanPhone, "status_update", message, provider, false, errMsg);
   }
+}
+
+async function getPlanNotificationFeatures(
+  companyId: string,
+): Promise<{ send_driver_info: boolean; send_eta: boolean; distance_update_interval_min: number; plan_name: string }> {
+  const { data: company } = await supabase
+    .from("companies")
+    .select("plan_id")
+    .eq("id", companyId)
+    .maybeSingle();
+
+  const defaults = { send_driver_info: true, send_eta: false, distance_update_interval_min: 0, plan_name: "Plano" };
+  if (!company?.plan_id) return defaults;
+
+  const { data: plan } = await supabase
+    .from("subscription_plans")
+    .select("name")
+    .eq("id", company.plan_id)
+    .maybeSingle();
+
+  const { data: features } = await supabase
+    .from("plan_notification_features")
+    .select("send_driver_info, send_eta, distance_update_interval_min")
+    .eq("plan_id", company.plan_id)
+    .maybeSingle();
+
+  if (!features) return { ...defaults, plan_name: plan?.name ?? "Plano" };
+  return {
+    send_driver_info: features.send_driver_info,
+    send_eta: features.send_eta,
+    distance_update_interval_min: features.distance_update_interval_min,
+    plan_name: plan?.name ?? "Plano",
+  };
+}
+
+async function logWhatsAppMessage(
+  companyId: string,
+  rideId: string | null,
+  phone: string,
+  messageType: string,
+  messageBody: string,
+  provider: string,
+  success: boolean,
+  error: string | null = null,
+): Promise<void> {
+  try {
+    await supabase.from("whatsapp_message_log").insert({
+      company_id: companyId,
+      ride_id: rideId,
+      phone,
+      message_type: messageType,
+      message_body: messageBody,
+      provider,
+      success,
+      error,
+      billing_month: new Date().toISOString().slice(0, 7),
+    });
+  } catch { /* best-effort */ }
 }
 
 async function getWhatsAppConfig(): Promise<{ provider: string; fields: Record<string, string> }> {

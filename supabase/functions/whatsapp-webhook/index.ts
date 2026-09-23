@@ -11,6 +11,15 @@ const supabaseServiceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
 
 const supabase = createClient(supabaseUrl, supabaseServiceKey);
 
+function toBrazilianWhatsAppNumber(raw: string): string {
+  let digits = raw.replace(/\D/g, "");
+  if (!digits) return "";
+  if (digits.startsWith("55") && digits.length >= 12) return digits;
+  if (digits.length === 10 || digits.length === 11) return `55${digits}`;
+  if (digits.length === 12 || digits.length === 13) return digits;
+  return `55${digits}`;
+}
+
 // whatsapp-webhook: handles Evolution API events + incoming "cancelar" messages from passengers (v2)
 
 async function getWhatsAppConfig(): Promise<{ provider: string; fields: Record<string, string> }> {
@@ -233,7 +242,7 @@ Deno.serve(async (req: Request) => {
 
         const message = statusMessages[newStatus];
         if (message) {
-          const cleanPhone = String(data.passenger_phone).replace(/\D/g, "");
+          const cleanPhone = toBrazilianWhatsAppNumber(String(data.passenger_phone));
           try {
             const { provider, fields: f } = await getWhatsAppConfig();
             await sendWhatsAppMessageWithProvider(provider, f, cleanPhone, message);
