@@ -4,7 +4,6 @@ import { supabase } from '@/lib/supabase';
 import { useTenant } from '@/context/TenantContext';
 import { useNav } from '@/context/NavContext';
 import { dispatchRide, cancelRide, pollRideStatus } from '@/lib/machineApi';
-import { MapView } from '@/components/MapView';
 import { haversineDistance } from '@/lib/utils';
 import type { GeoPoint, OrderStatus, Ride, VehicleCategory } from '@/types';
 
@@ -311,10 +310,6 @@ export function TrackingScreen({ origin, destination, passengerName, passengerPh
           ← Voltar
         </button>
       )}
-
-      <div className="mb-4 h-48 overflow-hidden rounded-2xl border border-neutral-200 dark:border-neutral-700">
-        <MapView origin={origin} destination={destination ?? undefined} className="h-full w-full" />
-      </div>
 
       <div className={`card p-5 mb-4 ${isCompleted ? 'border-success-500/30' : ''}`}>
         <div className="flex items-center gap-3 mb-4">

@@ -3,7 +3,6 @@ import { User, Phone, ArrowRight, AlertCircle, Loader2, MapPin, Navigation, Help
 import { useNav } from '@/context/NavContext';
 import { useTenant } from '@/context/TenantContext';
 import { formatPhone, isValidPhone, sanitizeText } from '@/lib/utils';
-import { MapView } from '@/components/MapView';
 import type { GeoPoint } from '@/types';
 
 interface PassengerInfo {
@@ -20,25 +19,10 @@ interface IdentifyScreenProps {
 
 interface SearchResult {
   lat: number;
-  lon: number;
-  display_name: string;
-  type?: string;
-  address?: { house_number?: string };
+  lng: number;
+  label: string;
 }
 
-function extractHouseNumber(value: string): string {
-  const commaPart = value.split(',').map((p) => p.trim()).find((p) => /^\d+[A-Za-z]?$/.test(p));
-  if (commaPart) return commaPart;
-  const match = value.match(/(?:^|,|\s)\d+[A-Za-z]?(?=,|\s|$)/);
-  return match?.[0].trim().replace(/^,\s*/, '') ?? '';
-}
-
-function addHouseNumber(label: string, houseNumber: string): string {
-  const number = houseNumber.trim();
-  if (!number || label.split(',').some((p) => p.trim() === number)) return label;
-  const parts = label.split(',').map((p) => p.trim()).filter(Boolean);
-  return parts.length > 0 ? [parts[0], number, ...parts.slice(1)].join(', ') : `${label}, ${number}`;
-}
 
 export function IdentifyScreen({ onIdentify, origin, destination, onDestinationChange }: IdentifyScreenProps) {
   const { goPassenger, tenantSlug } = useNav();
@@ -54,18 +38,27 @@ export function IdentifyScreen({ onIdentify, origin, destination, onDestinationC
   const hasFixedOrigin = !!(location?.pickup_address && location.pickup_lat != null && location.pickup_lng != null);
 
   const searchAddress = async (query: string) => {
-    if (query.length < 3) {
+    if (query.trim().length < 3) {
       setDestResults([]);
       return;
     }
     setSearching(true);
     try {
       const res = await fetch(
-        `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(query)}&limit=5&countrycodes=br`,
-        { headers: { 'Accept-Language': 'pt-BR' } },
+        `https://photon.komoot.io/api/?q=${encodeURIComponent(query.trim())}&limit=6&lang=pt`,
       );
-      const data: SearchResult[] = await res.json();
-      setDestResults(data);
+      const data = await res.json();
+      const features = (data.features ?? []) as Array<{
+        geometry: { coordinates: [number, number] };
+        properties: { name?: string; street?: string; housenumber?: string; city?: string; postcode?: string; state?: string; country?: string };
+      }>;
+      const results: SearchResult[] = features.map((f) => {
+        const p = f.properties;
+        const parts = [p.name, p.housenumber ? `${p.housenumber} ${p.street ?? ''}`.trim() : p.street, p.city, p.state, p.country].filter(Boolean);
+        const label = parts.join(', ');
+        return { lat: f.geometry.coordinates[1], lng: f.geometry.coordinates[0], label };
+      });
+      setDestResults(results);
     } catch {
       setDestResults([]);
     } finally {
@@ -79,13 +72,10 @@ export function IdentifyScreen({ onIdentify, origin, destination, onDestinationC
     searchTimer.current = setTimeout(() => searchAddress(value), 500);
   };
 
-  const selectDestResult = (result: SearchResult, typedQuery: string) => {
-    const typedNumber = extractHouseNumber(typedQuery);
-    const rawLabel = result.display_name.split(',').slice(0, 4).join(', ');
-    const finalLabel = typedNumber ? addHouseNumber(rawLabel, typedNumber) : rawLabel;
-    const point: GeoPoint = { lat: result.lat, lng: result.lon, label: finalLabel };
+  const selectDestResult = (result: SearchResult) => {
+    const point: GeoPoint = { lat: result.lat, lng: result.lng, label: result.label };
     onDestinationChange(point);
-    setDestQuery(finalLabel);
+    setDestQuery(result.label);
     setDestResults([]);
   };
 
@@ -242,12 +232,6 @@ export function IdentifyScreen({ onIdentify, origin, destination, onDestinationC
         </div>
       )}
 
-      {hasFixedOrigin && origin && (
-        <div className="mb-4 h-40 overflow-hidden rounded-2xl border border-neutral-200 dark:border-neutral-700">
-          <MapView origin={origin} destination={destination ?? undefined} className="h-full w-full" />
-        </div>
-      )}
-
       <form onSubmit={handleSubmit} className="glass-card space-y-5 rounded-2xl border border-slate-700/50 bg-slate-900/60 p-8 shadow-2xl backdrop-blur-md">
         <div>
           <label className="mb-1.5 block text-sm font-semibold text-slate-200">
@@ -318,12 +302,12 @@ export function IdentifyScreen({ onIdentify, origin, destination, onDestinationC
                 {destResults.map((r, i) => (
                   <button
                     key={i}
-                    onClick={() => selectDestResult(r, destQuery)}
+                    onClick={() => selectDestResult(r)}
                     className="flex w-full items-start gap-2 px-4 py-3 text-left hover:bg-neutral-50 dark:hover:bg-neutral-700/50 transition-colors border-b border-neutral-100 dark:border-neutral-700 last:border-0"
                   >
                     <Navigation className="h-4 w-4 mt-0.5 shrink-0 text-primary-500" />
                     <span className="text-sm text-neutral-700 dark:text-neutral-300 line-clamp-2">
-                      {r.display_name}
+                      {r.label}
                     </span>
                   </button>
                 ))}

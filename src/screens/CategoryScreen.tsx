@@ -1,7 +1,6 @@
 import { Car, Clock, ArrowRight, Sparkles, MapPin } from 'lucide-react';
 import { useNav } from '@/context/NavContext';
 import { useTenant } from '@/context/TenantContext';
-import { MapView } from '@/components/MapView';
 import { BackButton } from '@/components/Header';
 import type { GeoPoint } from '@/types';
 
@@ -43,10 +42,6 @@ export function CategoryScreen({ origin, destination }: CategoryScreenProps) {
       <h1 className="mb-4 text-2xl font-extrabold text-neutral-900 dark:text-neutral-100">
         Escolha sua viagem
       </h1>
-
-      <div className="mb-4 h-44 overflow-hidden rounded-2xl border border-neutral-200 dark:border-neutral-700">
-        <MapView origin={origin} destination={destination ?? undefined} className="h-full w-full" />
-      </div>
 
       <div className="card p-5 mb-4">
         <div className="flex items-start gap-3 mb-3">
