@@ -142,14 +142,14 @@ const STATUS_MAP: Record<string, string> = {
   U: "in_progress",
   ER: "in_progress",
   O: "in_progress", // Partida prolongada
-  T: "in_progress", // Alteração de trajeto
+  T: "pending", // Redistribuindo — ride went back to finding a driver
 };
 
 const STATUS_MESSAGES_PT: Record<string, string> = {
-  accepted: "Seu motorista aceitou a corrida! Esta a caminho do ponto de partida.",
-  en_route: "Seu motorista chegou ao local de embarque! Procure pelo veiculo.",
-  in_progress: "Sua viagem esta em andamento.",
-  completed: "Sua viagem foi concluida. Obrigado pela preferencia!",
+  accepted: "Seu motorista aceitou a corrida! Está a caminho do ponto de partida.",
+  en_route: "Seu motorista chegou ao local de embarque! Procure pelo veículo.",
+  in_progress: "Sua viagem está em andamento.",
+  completed: "Sua viagem foi concluída. Obrigado pela preferência!",
   canceled: "Sua corrida foi cancelada.",
   pending: "Seu motorista cancelou. Estamos procurando um novo motorista para sua corrida. Aguarde.",
 };
@@ -415,33 +415,22 @@ async function fetchRideDetails(companyId: string, machineOrderId: string): Prom
   if (!apiKey || !user || !pass) return null;
 
   try {
-    // POST /corridas/consultar returns an array of rides filtered by date/status.
-    // It does NOT accept id_mch as a filter — we query a recent window and find
-    // the matching ride by id, which gives us nome_condutor, telefone_condutor,
-    // veiculo, placa_veiculo, cor_veiculo.
-    const now = new Date();
-    const oneHourAgo = new Date(now.getTime() - 60 * 60 * 1000);
-    const resp = await fetch(`${baseUrl}/api/v2/integracao/corridas/consultar`, {
-      method: "POST",
+    // GET /corridas/{id} returns a single ride with all fields:
+    // nome_condutor, telefone_condutor, veiculo, placa_veiculo, cor_veiculo, status_solicitacao, valor_corrida.
+    // The response uses the "response" key (not "data").
+    const resp = await fetch(`${baseUrl}/api/v2/integracao/corridas/${machineOrderId}`, {
+      method: "GET",
       headers: {
         "Content-Type": "application/json",
         "api-key": apiKey,
         "Authorization": `Basic ${btoa(`${user}:${pass}`)}`,
       },
-      body: JSON.stringify({
-        data_hora_solicitacao_min: oneHourAgo.toISOString(),
-        data_hora_solicitacao_max: now.toISOString(),
-        limite: 100,
-      }),
     });
 
     if (!resp.ok) return null;
     const json = await resp.json();
-    const rides = json?.data;
-    if (!Array.isArray(rides)) return null;
-
-    const match = rides.find((r: { id?: string }) => String(r.id) === String(machineOrderId));
-    return match ?? null;
+    const ride = json?.response ?? json?.data ?? null;
+    return ride;
   } catch {
     return null;
   }
@@ -517,7 +506,7 @@ async function sendWhatsAppNotification(
         message = "Seu motorista foi trocado! Um novo motorista aceitou sua corrida.";
       }
       message += `\n\nMotorista: ${driverName}`;
-      if (vehicleModel) message += `\nVeiculo: ${vehicleModel}`;
+      if (vehicleModel) message += `\nVeículo: ${vehicleModel}`;
       if (vehicleColor) message += `\nCor: ${vehicleColor}`;
       if (vehiclePlate) message += `\nPlaca: ${vehiclePlate}`;
     }
@@ -528,9 +517,9 @@ async function sendWhatsAppNotification(
 
     if (features.distance_update_interval_min > 0 && driverDistanceKm != null) {
       if (driverDistanceKm >= 1) {
-        message += `\nO motorista esta a ${driverDistanceKm.toFixed(1)} km de distancia`;
+        message += `\nO motorista está a ${driverDistanceKm.toFixed(1)} km de distância`;
       } else {
-        message += `\nO motorista esta a ${Math.round(driverDistanceKm * 1000)} m de distancia`;
+        message += `\nO motorista está a ${Math.round(driverDistanceKm * 1000)} m de distância`;
       }
     }
 

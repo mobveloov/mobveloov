@@ -114,7 +114,7 @@ Deno.serve(async (req: Request) => {
       await supabase
         .from("rides")
         .update({
-          status: "canceled_timeout",
+          status: "canceled",
           updated_at: new Date().toISOString(),
         })
         .eq("id", ride.id);

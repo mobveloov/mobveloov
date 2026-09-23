@@ -175,6 +175,7 @@ Deno.serve(async (req: Request) => {
       return new Response(JSON.stringify({
         success: true,
         ride_id: "mock_v2_7719",
+        id_mch: "mock_v2_7719",
         status: "SEARCHING_DRIVER",
       }), {
         status: 201,
@@ -682,7 +683,7 @@ const MACHINE_STATUS_MAP: Record<string, string> = {
   R: "completed", // WAITING_PAYMENT — ride finished, awaiting payment
   U: "in_progress", ER: "in_progress",
   O: "in_progress", // Partida prolongada
-  T: "in_progress", // Alteração de trajeto
+  T: "pending", // Redistribuindo — ride went back to finding a driver
 };
 
 async function getMachineAuthHeaders(companyId: string): Promise<{ headers: Record<string, string>; baseUrl: string } | null> {
@@ -836,8 +837,8 @@ async function cancelRideByPhone(companyId: string, phone: string): Promise<Resp
     return new Response(JSON.stringify({
       success: false,
       error: ride.status === "en_route"
-        ? "Seu motorista ja chegou ao local de embarque. Nao e possivel cancelar neste momento."
-        : "Sua viagem ja esta em andamento. Nao e possivel cancelar.",
+        ? "Seu motorista já chegou ao local de embarque. Não é possível cancelar neste momento."
+        : "Sua viagem já está em andamento. Não é possível cancelar.",
     }), {
       status: 200,
       headers: { ...corsHeaders, "Content-Type": "application/json" },
@@ -848,10 +849,10 @@ async function cancelRideByPhone(companyId: string, phone: string): Promise<Resp
 }
 
 const STATUS_MESSAGES_PT: Record<string, string> = {
-  accepted: "Seu motorista aceitou a corrida! Esta a caminho do ponto de partida.",
-  en_route: "Seu motorista chegou ao local de embarque! Procure pelo veiculo.",
-  in_progress: "Sua viagem esta em andamento.",
-  completed: "Sua viagem foi concluida. Obrigado pela preferencia!",
+  accepted: "Seu motorista aceitou a corrida! Está a caminho do ponto de partida.",
+  en_route: "Seu motorista chegou ao local de embarque! Procure pelo veículo.",
+  in_progress: "Sua viagem está em andamento.",
+  completed: "Sua viagem foi concluída. Obrigado pela preferência!",
   canceled: "Sua corrida foi cancelada.",
   pending: "Seu motorista cancelou. Estamos procurando um novo motorista para sua corrida. Aguarde.",
 };
@@ -1063,7 +1064,7 @@ async function sendPassengerWhatsAppNotification(
         message = "Seu motorista foi trocado! Um novo motorista aceitou sua corrida.";
       }
       message += `\n\nMotorista: ${driverName}`;
-      if (vehicleModel) message += `\nVeiculo: ${vehicleModel}`;
+      if (vehicleModel) message += `\nVeículo: ${vehicleModel}`;
       if (vehicleColor) message += `\nCor: ${vehicleColor}`;
       if (vehiclePlate) message += `\nPlaca: ${vehiclePlate}`;
     }
@@ -1074,9 +1075,9 @@ async function sendPassengerWhatsAppNotification(
 
     if (features.distance_update_interval_min > 0 && driverDistanceKm != null) {
       if (driverDistanceKm >= 1) {
-        message += `\nO motorista esta a ${driverDistanceKm.toFixed(1)} km de distancia`;
+        message += `\nO motorista está a ${driverDistanceKm.toFixed(1)} km de distância`;
       } else {
-        message += `\nO motorista esta a ${Math.round(driverDistanceKm * 1000)} m de distancia`;
+        message += `\nO motorista está a ${Math.round(driverDistanceKm * 1000)} m de distância`;
       }
     }
 
@@ -1157,39 +1158,26 @@ async function pollRideStatus(companyId: string, rideId: string, machineOrderId?
   let vehicleModel: string | null = null;
   let vehicleColor: string | null = null;
 
-  // Use POST /corridas/consultar for driver info (telefone_condutor, veiculo, placa_veiculo, cor_veiculo)
-  // and GET /corridas/{id}/condutor/posicao for GPS — /detalhes only returns {id, nome} for driver
+  // Use GET /corridas/{id} for driver info (nome_condutor, telefone_condutor, veiculo, placa_veiculo, cor_veiculo)
+  // and GET /corridas/{id}/condutor/posicao for GPS.
   try {
-    // POST /corridas/consultar returns an array of rides filtered by date/status.
-    // It does NOT accept id_mch as a filter — we query a recent window and find
-    // the matching ride by id to get nome_condutor, telefone_condutor, veiculo, etc.
-    const now = new Date();
-    const oneHourAgo = new Date(now.getTime() - 60 * 60 * 1000);
-    const consultarResp = await fetch(`${auth.baseUrl}/api/v2/integracao/corridas/consultar`, {
-      method: "POST",
+    const detailResp = await fetch(`${auth.baseUrl}/api/v2/integracao/corridas/${mchId}`, {
+      method: "GET",
       headers: auth.headers,
-      body: JSON.stringify({
-        data_hora_solicitacao_min: oneHourAgo.toISOString(),
-        data_hora_solicitacao_max: now.toISOString(),
-        limite: 100,
-      }),
     });
 
-    if (consultarResp.ok) {
-      const consultarJson = await consultarResp.json();
-      const rides = consultarJson?.data;
-      if (Array.isArray(rides)) {
-        const d = rides.find((r: { id?: string }) => String(r.id) === String(mchId));
-        if (d) {
-          driverName = d.nome_condutor ?? d.driver?.nome ?? null;
-          driverPhone = d.telefone_condutor ?? d.driver?.telefone ?? null;
-          vehiclePlate = d.placa_veiculo ?? d.driver?.veiculo_placa ?? null;
-          vehicleModel = d.veiculo ?? d.driver?.veiculo_modelo ?? null;
-          vehicleColor = d.cor_veiculo ?? d.driver?.veiculo_cor ?? null;
-          // Fallback status from consultar if /status failed
-          if (!statusCode && d.status_solicitacao) {
-            statusCode = String(d.status_solicitacao);
-          }
+    if (detailResp.ok) {
+      const detailJson = await detailResp.json();
+      const d = detailJson?.response ?? detailJson?.data ?? null;
+      if (d) {
+        driverName = d.nome_condutor ?? d.driver?.nome ?? null;
+        driverPhone = d.telefone_condutor ?? d.driver?.telefone ?? null;
+        vehiclePlate = d.placa_veiculo ?? d.driver?.veiculo_placa ?? null;
+        vehicleModel = d.veiculo ?? d.driver?.veiculo_modelo ?? null;
+        vehicleColor = d.cor_veiculo ?? d.driver?.veiculo_cor ?? null;
+        // Fallback status from detalhes if /status failed
+        if (!statusCode && d.status_solicitacao) {
+          statusCode = String(d.status_solicitacao);
         }
       }
     }
@@ -1348,8 +1336,8 @@ async function pollRideStatus(companyId: string, rideId: string, machineOrderId?
 
         if (shouldSend) {
           const updateMsg = driverDistanceKm >= 1
-            ? `Atualizacao: O motorista esta a ${driverDistanceKm.toFixed(1)} km de distancia. Tempo estimado: ${etaMinutes ?? "?"} min.`
-            : `Atualizacao: O motorista esta a ${Math.round(driverDistanceKm * 1000)} m de distancia. Quase no local!`;
+            ? `Atualização: O motorista está a ${driverDistanceKm.toFixed(1)} km de distância. Tempo estimado: ${etaMinutes ?? "?"} min.`
+            : `Atualização: O motorista está a ${Math.round(driverDistanceKm * 1000)} m de distância. Quase no local!`;
           const { provider, fields: f } = await getCompanyWhatsAppConfig(companyId);
           const ok = await sendWhatsAppMessage(provider, f, toBrazilianWhatsAppNumber(passengerPhone), updateMsg);
           await logWhatsAppMessage(companyId, rideId, toBrazilianWhatsAppNumber(passengerPhone), "distance_update", updateMsg, provider, ok);
