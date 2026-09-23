@@ -395,6 +395,15 @@ async function dispatchToMachine(
     .update(updatePayload)
     .eq("id", rideId);
 
+  await supabase.from("admin_logs").insert({
+    company_id: companyId,
+    source: "machine_api",
+    level: "info",
+    message: `Corrida enviada para Machine API — pedido ${updatePayload.machine_order_id ?? "?"} (status ${apiResponse.status})`,
+    ride_id: rideId,
+    payload: { sentPayload: v2Payload, response: dispatchData },
+  });
+
   return new Response(JSON.stringify({ success: true, data: dispatchData }), {
     headers: { ...corsHeaders, "Content-Type": "application/json" },
   });
@@ -1063,6 +1072,17 @@ async function pollRideStatus(companyId: string, rideId: string, machineOrderId?
   const internalStatus = statusCode ? (MACHINE_STATUS_MAP[statusCode] ?? "pending") : null;
 
   if (internalStatus) {
+    if (prevStatus && prevStatus !== internalStatus) {
+      await supabase.from("admin_logs").insert({
+        company_id: companyId,
+        source: "machine_api",
+        level: internalStatus === "canceled" ? "warning" : "info",
+        message: `Polling: corrida ${rideId.slice(0, 8)} status ${prevStatus} → ${internalStatus} (Machine code: ${statusCode})`,
+        ride_id: rideId,
+        payload: { prevStatus, internalStatus, statusCode, driverName, vehiclePlate },
+      });
+    }
+
     const updatePayload: Record<string, unknown> = {
       status: internalStatus,
       updated_at: new Date().toISOString(),
