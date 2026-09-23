@@ -48,22 +48,11 @@ export function IntegrationsModule({ success, error: toastError }: ModuleProps) 
           fields: parsed.fields ?? {},
         });
         if ((parsed.provider === 'evolution' || parsed.provider === 'veloov') && parsed.fields?.evo_url && parsed.fields?.evo_token) {
-          const baseUrl = parsed.fields.evo_url.replace(/\/$/, '');
-          const instance = parsed.fields.evo_instance || 'veloov';
           try {
-            const resp = await fetch(`${baseUrl}/instance/status/${encodeURIComponent(instance)}`, {
-              headers: { apikey: parsed.fields.evo_token },
+            const { data: statusData } = await supabase.functions.invoke('integration-qr', {
+              body: { action: 'status' },
             });
-            if (resp.ok) {
-              const statusData = await resp.json() as Record<string, unknown>;
-              const state = String(
-                (statusData.instance as Record<string, unknown> | undefined)?.state
-                ?? statusData.status
-                ?? statusData.state
-                ?? ''
-              ).toLowerCase();
-              if (state === 'open' || state === 'connected') setConnected(true);
-            }
+            if (statusData?.connected) setConnected(true);
           } catch { /* status check is best-effort */ }
         }
       } catch {
@@ -170,20 +159,13 @@ export function IntegrationsModule({ success, error: toastError }: ModuleProps) 
   };
 
   const handleDisconnect = async () => {
-    const baseUrl = (config.fields.evo_url ?? '').replace(/\/$/, '');
-    const token = config.fields.evo_token ?? '';
-    const instance = config.fields.evo_instance || 'veloov';
-    if (!baseUrl || !token) {
-      setQrError('URL e token da Evolution não estão configurados.');
-      return;
-    }
     setQrLoading(true);
     setQrError(null);
     try {
-      await fetch(`${baseUrl}/instance/logout/${encodeURIComponent(instance)}`, {
-        method: 'DELETE',
-        headers: { apikey: token },
+      const { data, error } = await supabase.functions.invoke('integration-qr', {
+        body: { action: 'disconnect' },
       });
+      if (error || !data?.disconnected) throw new Error('disconnect_failed');
       setConnected(false);
       setQrData(null);
       success('Instância desconectada. Clique em "Gerar QR Code" para reconectar.');
@@ -193,6 +175,27 @@ export function IntegrationsModule({ success, error: toastError }: ModuleProps) 
       setQrLoading(false);
     }
   };
+
+  useEffect(() => {
+    if (!qrData || connected) return;
+
+    const pollStatus = async () => {
+      const { data } = await supabase.functions.invoke('integration-qr', {
+        body: { action: 'status' },
+      });
+      if (data?.connected) {
+        setConnected(true);
+        setQrData(null);
+        setQrError(null);
+        success('WhatsApp conectado com sucesso.');
+      }
+    };
+
+    const timer = window.setInterval(() => {
+      void pollStatus();
+    }, 3000);
+    return () => window.clearInterval(timer);
+  }, [qrData, connected, success]);
 
   if (loading) {
     return (
@@ -368,6 +371,9 @@ export function IntegrationsModule({ success, error: toastError }: ModuleProps) 
                   <p className="text-[10px] text-slate-500 animate-pulse">Escaneie com o WhatsApp para conectar...</p>
                   <button type="button" onClick={() => setQrData(null)} className="text-[10px] text-slate-400 hover:text-white flex items-center gap-1">
                     <RefreshCw className="h-3 w-3" /> Gerar novo QR Code
+                  </button>
+                  <button type="button" onClick={handleDisconnect} disabled={qrLoading} className="text-[10px] text-red-400 hover:text-red-300 flex items-center gap-1">
+                    <Power className="h-3 w-3" /> Desconectar
                   </button>
                 </div>
               )}

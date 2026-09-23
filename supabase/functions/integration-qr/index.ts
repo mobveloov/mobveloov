@@ -40,6 +40,33 @@ async function getConfig(): Promise<WhatsAppConfig> {
   return { provider: config.provider ?? "evolution", fields: config.fields ?? {} };
 }
 
+async function requestEvolutionAction(
+  config: WhatsAppConfig,
+  action: "status" | "disconnect",
+): Promise<Record<string, unknown>> {
+  const fields = config.fields ?? {};
+  const baseUrl = (fields.evo_url ?? "").replace(/\/$/, "");
+  const token = fields.evo_token ?? "";
+  const instance = fields.evo_instance || "veloov";
+  if (!baseUrl || !token) throw new Error("URL e token da Evolution não estão configurados");
+
+  const headers = { "Content-Type": "application/json", apikey: token };
+  if (action === "disconnect") {
+    const response = await fetch(`${baseUrl}/instance/logout/${encodeURIComponent(instance)}`, {
+      method: "DELETE",
+      headers,
+    });
+    if (!response.ok && response.status !== 404) throw new Error(`Evolution recusou a desconexão (${response.status})`);
+    return { disconnected: true };
+  }
+
+  const response = await fetch(`${baseUrl}/instance/connectionState/${encodeURIComponent(instance)}`, { headers });
+  const data = await response.json().catch(() => ({})) as Record<string, unknown>;
+  if (!response.ok) throw new Error(`Não foi possível consultar a conexão (${response.status})`);
+  const state = String((data.instance as Record<string, unknown> | undefined)?.state ?? data.state ?? "").toLowerCase();
+  return { connected: state === "open" || state === "connected", state };
+}
+
 async function requestQr(config: WhatsAppConfig): Promise<Record<string, unknown>> {
   const provider = config.provider ?? "evolution";
   const fields = config.fields ?? {};
@@ -153,6 +180,10 @@ Deno.serve(async (req: Request) => {
     if (authError || !userData.user || role !== "superadmin") return response({ error: "Acesso restrito ao SuperAdmin" }, 403);
 
     const config = await getConfig();
+    const body = req.method === "POST" ? await req.json().catch(() => ({})) as { action?: string } : {};
+    if (body.action === "status" || body.action === "disconnect") {
+      return response(await requestEvolutionAction(config, body.action));
+    }
     const result = await requestQr(config);
     return response(result);
   } catch (error) {
