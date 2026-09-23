@@ -134,7 +134,7 @@ const STATUS_MAP: Record<string, string> = {
 };
 
 const STATUS_MESSAGES_PT: Record<string, string> = {
-  accepted: "\u2705 Seu motorista aceitou a corrida! Está a caminho do ponto de partida.",
+  accepted: "\u2705 Corrida confirmada. Confira abaixo os dados do seu motorista:",
   en_route: "\U0001F697 Seu motorista chegou ao local de embarque! Procure pelo veículo.",
   in_progress: "\U0001F695 Sua viagem está em andamento.",
   completed: "\U0001F3C6 Sua viagem foi concluída. Obrigado pela preferência!",
@@ -579,12 +579,12 @@ async function sendWhatsAppNotification(
 
   const features = await getPlanNotificationFeatures(companyId);
 
-  if (internalStatus === "accepted" && driverName) {
-    if (features.send_driver_info) {
-      const isDriverChange = previousStatus === "accepted" && driverChanged;
-      if (isDriverChange) {
-        message = "\U0001F501 Seu motorista foi trocado! Um novo motorista aceitou sua corrida.";
-      }
+  if (internalStatus === "accepted") {
+    const isDriverChange = previousStatus === "accepted" && driverChanged;
+    if (isDriverChange) {
+      message = "\U0001F501 Seu motorista foi trocado! Confira os dados do novo motorista:";
+    }
+    if (driverName) {
       message += `\n\n\U0001F464 Motorista: ${driverName}`;
       if (vehicleModel) message += `\n\U0001F697 Veículo: ${vehicleModel}`;
       if (vehicleColor) message += `\n\U0001F3A8 Cor: ${vehicleColor}`;
