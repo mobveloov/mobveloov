@@ -1,7 +1,7 @@
 import { useState, type ReactNode } from 'react';
 import {
   LayoutDashboard, MapPin, Plug, DollarSign, Radio, Users, Car,
-  MessageCircle, BookOpen, Settings, UserCog, Bell, ScrollText,
+  MessageCircle, MessagesSquare, BookOpen, Settings, UserCog, Bell, ScrollText,
   BarChart3, Wallet, LogOut, Menu, X, ChevronRight, Crown,
 } from 'lucide-react';
 import { useAuth } from '@/context/AuthContext';
@@ -23,6 +23,7 @@ const NAV_ITEMS: NavItem[] = [
   { key: 'pricing', label: 'Preços', icon: DollarSign, group: 'Configuração' },
   { key: 'integration', label: 'Integração', icon: Plug, group: 'Configuração' },
   { key: 'whatsapp', label: 'WhatsApp', icon: MessageCircle, group: 'Configuração' },
+  { key: 'chats', label: 'Conversas', icon: MessagesSquare, group: 'Configuração' },
   { key: 'settings', label: 'Dados da Empresa', icon: Settings, group: 'Configuração' },
   { key: 'subscription', label: 'Assinatura', icon: Crown, group: 'Configuração' },
   { key: 'users', label: 'Usuários & Permissões', icon: UserCog, group: 'Gestão' },

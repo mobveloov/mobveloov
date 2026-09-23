@@ -20,7 +20,65 @@ function toBrazilianWhatsAppNumber(raw: string): string {
   return `55${digits}`;
 }
 
-// whatsapp-webhook: handles Evolution API events + incoming "cancelar" messages from passengers (v2)
+// whatsapp-webhook: handles Evolution API events + incoming messages from passengers (v2)
+// Saves all incoming and outgoing messages to whatsapp_chats / whatsapp_messages tables.
+
+async function saveMessage(
+  companyId: string,
+  phone: string,
+  direction: "incoming" | "outgoing",
+  body: string,
+  rawPayload?: Record<string, unknown>,
+): Promise<void> {
+  if (!phone || !body) return;
+  const cleanPhone = phone.replace(/\D/g, "");
+
+  // Upsert chat
+  const { data: chat } = await supabase
+    .from("whatsapp_chats")
+    .upsert(
+      {
+        company_id: companyId,
+        phone: cleanPhone,
+        last_message_preview: body.slice(0, 200),
+        last_message_at: new Date().toISOString(),
+        unread_count: direction === "incoming" ? 1 : 0,
+      },
+      { onConflict: "company_id,phone" },
+    )
+    .select("id")
+    .maybeSingle();
+
+  // If upsert didn't return the chat (race condition), fetch it
+  let chatId = chat?.id;
+  if (!chatId) {
+    const { data: existing } = await supabase
+      .from("whatsapp_chats")
+      .select("id")
+      .eq("company_id", companyId)
+      .eq("phone", cleanPhone)
+      .maybeSingle();
+    chatId = existing?.id;
+  }
+  if (!chatId) return;
+
+  // If incoming, increment unread_count (upsert with 0 for outgoing doesn't increment)
+  if (direction === "incoming") {
+    await supabase.rpc("increment_chat_unread", { chat_id: chatId }).catch(() => {});
+  }
+
+  // Insert message
+  await supabase.from("whatsapp_messages").insert({
+    chat_id: chatId,
+    company_id: companyId,
+    direction,
+    phone: cleanPhone,
+    body,
+    message_type: "text",
+    raw_payload: rawPayload ?? null,
+    sent_at: new Date().toISOString(),
+  });
+}
 
 async function getWhatsAppConfig(): Promise<{ provider: string; fields: Record<string, string> }> {
   const { data } = await supabase
@@ -221,6 +279,18 @@ Deno.serve(async (req: Request) => {
 
     // Handle incoming messages from passengers (e.g. "cancelar")
     if (event === "messages.upsert" || event === "message.receive") {
+      // Save ALL incoming messages to chat history (not just "cancelar")
+      const key = data?.key as Record<string, unknown> | undefined;
+      const msg = data?.message as Record<string, unknown> | undefined;
+      let rawPhone: string | null = key?.remoteJid ? String(key.remoteJid).replace(/@.*$/, "") : (data?.from ? String(data.from) : null);
+      let text: string | null = msg?.conversation ? String(msg.conversation) : (msg?.text ? String(msg.text) : null);
+      if (typeof data?.body === "string") text = data.body;
+      else if (data?.body && typeof data.body === "object") text = String((data.body as Record<string, unknown>).text ?? "");
+
+      if (rawPhone && text) {
+        await saveMessage(waInstance.company_id, rawPhone, "incoming", text, body);
+      }
+
       await handleIncomingMessage(waInstance.company_id, data, instance);
     }
 
@@ -258,10 +328,26 @@ Deno.serve(async (req: Request) => {
           try {
             const { provider, fields: f } = await getWhatsAppConfig();
             await sendWhatsAppMessageWithProvider(provider, f, cleanPhone, message);
+            await saveMessage(waInstance.company_id, cleanPhone, "outgoing", message);
           } catch {
             // Silent — notification is best-effort
           }
         }
+      }
+    }
+
+    // Handle admin reply from the chat panel
+    if (event === "admin.reply" && data?.phone && data?.text) {
+      const replyPhone = String(data.phone);
+      const replyText = String(data.text);
+      const replyProvider = String(data.provider ?? "evolution");
+      const replyFields = (data.fields ?? {}) as Record<string, string>;
+      const cleanReplyPhone = toBrazilianWhatsAppNumber(replyPhone);
+      try {
+        await sendWhatsAppMessageWithProvider(replyProvider, replyFields, cleanReplyPhone, replyText);
+        await saveMessage(waInstance.company_id, cleanReplyPhone, "outgoing", replyText);
+      } catch {
+        // best-effort
       }
     }
 
@@ -349,6 +435,7 @@ async function handleIncomingMessage(companyId: string, data: Record<string, unk
         ? "Seu motorista ja chegou ao local de embarque. Nao e possivel cancelar neste momento."
         : "Sua viagem ja esta em andamento. Nao e possivel cancelar.";
       await sendWhatsAppMessageWithProvider(provider, f, cleanPhone, msg);
+      await saveMessage(companyId, cleanPhone, "outgoing", msg);
     } catch { /* best-effort */ }
     await supabase.from("admin_logs").insert({
       company_id: companyId,
@@ -428,7 +515,9 @@ async function handleIncomingMessage(companyId: string, data: Record<string, unk
   // Send confirmation message back to passenger via global WhatsApp provider
   try {
     const { provider, fields: f } = await getWhatsAppConfig();
-    await sendWhatsAppMessageWithProvider(provider, f, cleanPhone, "Sua corrida foi cancelada com sucesso. Para solicitar uma nova viagem, use o totem.");
+    const confirmMsg = "Sua corrida foi cancelada com sucesso. Para solicitar uma nova viagem, use o totem.";
+    await sendWhatsAppMessageWithProvider(provider, f, cleanPhone, confirmMsg);
+    await saveMessage(companyId, cleanPhone, "outgoing", confirmMsg);
   } catch {
     // Best-effort
   }

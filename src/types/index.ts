@@ -313,3 +313,28 @@ export interface SuperadminNotification {
   related_id: string | null;
   created_at: string;
 }
+
+export interface WhatsAppChat {
+  id: string;
+  company_id: string;
+  phone: string;
+  contact_name: string | null;
+  last_message_preview: string | null;
+  last_message_at: string;
+  unread_count: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface WhatsAppMessage {
+  id: string;
+  chat_id: string;
+  company_id: string;
+  direction: 'incoming' | 'outgoing';
+  phone: string;
+  body: string | null;
+  message_type: string;
+  raw_payload: Record<string, unknown> | null;
+  sent_at: string;
+  created_at: string;
+}
