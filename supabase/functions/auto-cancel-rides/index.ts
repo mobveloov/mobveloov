@@ -85,7 +85,7 @@ Deno.serve(async (req: Request) => {
                 "api-key": apiKey,
                 "Authorization": `Basic ${btoa(`${user}:${pass}`)}`,
               },
-              body: JSON.stringify({ motivo_id: 3 }),
+              body: JSON.stringify({ motivo_id: 1 }),
             });
             if (!cancelResp.ok) {
               const errBody = await cancelResp.text().catch(() => "");

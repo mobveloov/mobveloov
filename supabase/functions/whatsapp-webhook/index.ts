@@ -512,7 +512,7 @@ async function handleIncomingMessage(companyId: string, data: Record<string, unk
             "api-key": apiKey,
             "Authorization": `Basic ${btoa(`${user}:${pass}`)}`,
           },
-          body: JSON.stringify({ motivo_id: 3 }),
+          body: JSON.stringify({ motivo_id: 1 }),
         });
 
         machineCanceled = resp.ok;
