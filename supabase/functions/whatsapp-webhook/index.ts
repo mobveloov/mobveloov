@@ -13,12 +13,19 @@ const supabase = createClient(supabaseUrl, supabaseServiceKey);
 
 // whatsapp-webhook: handles Evolution API events + incoming "cancelar" messages from passengers
 
-async function getGlobalSecretsMap(): Promise<Map<string, string>> {
+async function getWhatsAppConfig(): Promise<{ provider: string; fields: Record<string, string> }> {
   const { data } = await supabase
-    .from("tenant_secrets")
-    .select("secret_name, secret_value")
-    .is("tenant_id", null);
-  return new Map((data ?? []).map((r: { secret_name: string; secret_value: string }) => [r.secret_name, r.secret_value]));
+    .from("system_settings")
+    .select("key_value")
+    .eq("key_name", "GLOBAL_WHATSAPP_CONFIG")
+    .maybeSingle();
+  if (data?.key_value) {
+    try {
+      const config = JSON.parse(data.key_value);
+      return { provider: config.provider || "evolution", fields: config.fields || {} };
+    } catch { /* ignore */ }
+  }
+  return { provider: "evolution", fields: {} };
 }
 
 async function sendWhatsAppMessage(
@@ -26,14 +33,13 @@ async function sendWhatsAppMessage(
   cleanPhone: string,
   message: string,
 ): Promise<boolean> {
-  const secrets = await getGlobalSecretsMap();
-  const provider = secrets.get("WA_GLOBAL_PROVIDER") || "evolution";
+  const { provider, fields: f } = await getWhatsAppConfig();
 
   if (provider === "evolution") {
-    const url = secrets.get("WA_EVO_BASE_URL") ?? "";
-    const token = secrets.get("WA_EVO_GLOBAL_TOKEN") ?? "";
+    const url = f["evo_url"] ?? "";
+    const token = f["evo_token"] ?? "";
     if (!url || !token) return false;
-    const instance = secrets.get("WA_EVO_INSTANCE_NAME") || "veloov";
+    const instance = f["evo_instance"] || "veloov";
     const resp = await fetch(`${url}/message/sendText/${instance}`, {
       method: "POST",
       headers: { "Content-Type": "application/json", apikey: token },
@@ -43,10 +49,10 @@ async function sendWhatsAppMessage(
   }
 
   if (provider === "zapi") {
-    const url = secrets.get("WA_ZAPI_BASE_URL") ?? "";
-    const instanceId = secrets.get("WA_ZAPI_INSTANCE_ID") ?? "";
-    const instanceToken = secrets.get("WA_ZAPI_INSTANCE_TOKEN") ?? "";
-    const clientToken = secrets.get("WA_ZAPI_CLIENT_TOKEN") ?? "";
+    const url = f["zapi_url"] ?? "";
+    const instanceId = f["zapi_instance_id"] ?? "";
+    const instanceToken = f["zapi_instance_token"] ?? "";
+    const clientToken = f["zapi_client_token"] ?? "";
     if (!url || !instanceId || !instanceToken) return false;
     const resp = await fetch(`${url}/instances/${instanceId}/token/${instanceToken}/send-text`, {
       method: "POST",
@@ -57,10 +63,10 @@ async function sendWhatsAppMessage(
   }
 
   if (provider === "zpro") {
-    const url = secrets.get("WA_ZPRO_BASE_URL") ?? "";
-    const instanceId = secrets.get("WA_ZPRO_INSTANCE_ID") ?? "";
-    const instanceToken = secrets.get("WA_ZPRO_INSTANCE_TOKEN") ?? "";
-    const clientToken = secrets.get("WA_ZPRO_CLIENT_TOKEN") ?? "";
+    const url = f["zpro_url"] ?? "";
+    const instanceId = f["zpro_instance_id"] ?? "";
+    const instanceToken = f["zpro_instance_token"] ?? "";
+    const clientToken = f["zpro_client_token"] ?? "";
     if (!url || !instanceId || !instanceToken) return false;
     const resp = await fetch(`${url}/instances/${instanceId}/token/${instanceToken}/send-text`, {
       method: "POST",
@@ -71,8 +77,8 @@ async function sendWhatsAppMessage(
   }
 
   if (provider === "meta_cloud") {
-    const token = secrets.get("WA_META_ACCESS_TOKEN") ?? "";
-    const phoneId = secrets.get("WA_META_PHONE_NUMBER_ID") ?? "";
+    const token = f["meta_token"] ?? "";
+    const phoneId = f["meta_phone_id"] ?? "";
     if (!token || !phoneId) return false;
     const resp = await fetch(`https://graph.facebook.com/v20.0/${phoneId}/messages`, {
       method: "POST",
@@ -88,9 +94,9 @@ async function sendWhatsAppMessage(
   }
 
   if (provider === "custom_webhook") {
-    const url = secrets.get("WA_CUSTOM_ENDPOINT_URL") ?? "";
-    const token = secrets.get("WA_CUSTOM_BEARER_TOKEN") ?? "";
-    const headersJson = secrets.get("WA_CUSTOM_HEADER_MAPPER") ?? "{}";
+    const url = f["custom_url"] ?? "";
+    const token = f["custom_token"] ?? "";
+    const headersJson = f["custom_headers"] ?? "{}";
     if (!url) return false;
     let extraHeaders: Record<string, string> = {};
     try { extraHeaders = JSON.parse(headersJson); } catch { /* ignore */ }
