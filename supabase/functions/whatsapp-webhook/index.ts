@@ -22,7 +22,7 @@ function toBrazilianWhatsAppNumber(raw: string): string {
 
 // whatsapp-webhook: handles Evolution API events + incoming messages from passengers (v2)
 // Saves all incoming and outgoing messages to whatsapp_chats / whatsapp_messages tables.
-// Updated: fix token check + replace rpc with direct query for Evolution API v2.3.7.
+// Updated: fix token check + replace rpc with direct query for Evolution API v2.3.7. v2
 
 async function saveMessage(
   companyId: string,
