@@ -392,7 +392,7 @@ export function TrackingScreen({ origin, destination, passengerName, passengerPh
                 Erro de comunicação com a central
               </p>
               <p className="text-xs text-neutral-500 dark:text-neutral-400 mt-1">
-                Seu pedido foi registrado e será processado.
+                {apiError || 'Seu pedido foi registrado e será processado.'}
               </p>
             </div>
           </div>

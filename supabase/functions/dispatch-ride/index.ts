@@ -331,7 +331,7 @@ async function dispatchToMachine(
     requestHeaders["Authorization"] = `Basic ${basicAuth}`;
   }
 
-  const apiResponse = await fetch(`${baseUrl}/api/v2/integracao/corridas`, {
+  const apiResponse = await fetch(`${baseUrl}/api/v2/integracao/corridas/`, {
     method: "POST",
     headers: requestHeaders,
     body: JSON.stringify(v2Payload),
@@ -339,18 +339,24 @@ async function dispatchToMachine(
 
   if (!apiResponse.ok) {
     const errorBody = await apiResponse.text();
+    let errorDetail = errorBody;
+    try {
+      const parsed = JSON.parse(errorBody);
+      errorDetail = parsed?.message ?? parsed?.error ?? parsed?.data?.message ?? errorBody;
+    } catch { /* not JSON, keep raw */ }
+
     await supabase.from("admin_logs").insert({
       company_id: companyId,
       source: "machine_api",
       level: "error",
-      message: `Machine API error ${apiResponse.status}: ${errorBody}`,
+      message: `Machine API error ${apiResponse.status}: ${errorDetail}`,
       ride_id: rideId,
-      payload: { status: apiResponse.status, body: errorBody },
+      payload: { status: apiResponse.status, body: errorBody, sentPayload: v2Payload },
     });
 
     return new Response(JSON.stringify({
       success: false,
-      error: `Dispatch failed (${apiResponse.status})`,
+      error: `Dispatch failed (${apiResponse.status}): ${errorDetail}`,
       fallback: true,
     }), {
       status: 200,
