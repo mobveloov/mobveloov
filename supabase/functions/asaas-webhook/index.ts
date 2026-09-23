@@ -46,6 +46,16 @@ Deno.serve(async (req: Request) => {
 
     const asaasApiKey = Deno.env.get("ASAAS_API_KEY") ?? "";
 
+    // Verify Asaas webhook access token
+    const accessToken = req.headers.get("asaas-access-token");
+    const webhookSecret = Deno.env.get("ASAAS_WEBHOOK_TOKEN") ?? asaasApiKey;
+    if (!accessToken || accessToken !== webhookSecret) {
+      return new Response(JSON.stringify({ error: "Unauthorized" }), {
+        status: 401,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
+    }
+
     const body = await req.json();
     const { event, payment, invoice } = body;
 

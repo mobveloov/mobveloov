@@ -1,10 +1,23 @@
 import { createClient } from "npm:@supabase/supabase-js@2.57.4";
+import { createHmac } from "node:crypto";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS",
   "Access-Control-Allow-Headers": "Content-Type, Authorization, X-Client-Info, Apikey",
 };
+
+async function verifyMachineSignature(req: Request): Promise<boolean> {
+  const secret = Deno.env.get("MACHINE_WEBHOOK_SECRET");
+  if (!secret) return true; // If no secret configured, skip verification (backwards compat)
+  const signature = req.headers.get("x-machine-signature");
+  if (!signature) return false;
+  const rawBody = await req.clone().text();
+  const hmac = createHmac("sha256", secret);
+  hmac.update(rawBody);
+  const expected = hmac.digest("hex");
+  return signature === expected;
+}
 
 const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
 const supabaseServiceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
@@ -53,6 +66,14 @@ const STATUS_MESSAGES_PT: Record<string, string> = {
 Deno.serve(async (req: Request) => {
   if (req.method === "OPTIONS") {
     return new Response(null, { status: 200, headers: corsHeaders });
+  }
+
+  // Verify webhook signature if secret is configured
+  if (!(await verifyMachineSignature(req))) {
+    return new Response(JSON.stringify({ error: "Invalid signature" }), {
+      status: 401,
+      headers: { ...corsHeaders, "Content-Type": "application/json" },
+    });
   }
 
   try {

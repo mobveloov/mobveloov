@@ -128,6 +128,18 @@ Deno.serve(async (req: Request) => {
     return new Response(null, { status: 200, headers: corsHeaders });
   }
 
+  // Verify Evolution API webhook token if configured
+  const expectedToken = Deno.env.get("WHATSAPP_WEBHOOK_TOKEN");
+  if (expectedToken) {
+    const receivedToken = req.headers.get("apikey") ?? req.headers.get("evo-apikey");
+    if (receivedToken !== expectedToken) {
+      return new Response(JSON.stringify({ error: "Unauthorized" }), {
+        status: 401,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
+    }
+  }
+
   try {
     const body = await req.json();
     const { event, instance, data } = body;

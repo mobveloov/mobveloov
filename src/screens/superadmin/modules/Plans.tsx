@@ -74,6 +74,7 @@ export function PlansModule({ success, error, logAction }: ModuleProps) {
               <div className="space-y-2 text-xs text-slate-400 flex-1">
                 <div className="flex justify-between"><span>Mensal</span><span className="text-emerald-400 font-bold">R$ {(p.base_monthly_price ?? p.price ?? 0).toFixed(2)}</span></div>
                 <div className="flex justify-between"><span>Trimestral</span><span className="text-amber-400 font-bold">R$ {(p.quarterly_price ?? 0).toFixed(2)}</span></div>
+                <div className="flex justify-between"><span>Semestral</span><span className="text-amber-400 font-bold">R$ {(p.semiannual_price ?? 0).toFixed(2)}</span></div>
                 <div className="flex justify-between"><span>Anual</span><span className="text-amber-400 font-bold">R$ {(p.annual_price ?? 0).toFixed(2)}</span></div>
                 <div className="h-px bg-slate-800 my-2" />
                 <div className="flex justify-between items-center"><span>Desc. Trimestral</span><span className="text-[#D4AF37] font-bold flex items-center gap-1"><Percent className="h-3 w-3" />{(p.quarterly_discount_percent ?? 0).toFixed(0)}%</span></div>
@@ -104,6 +105,7 @@ export function PlansModule({ success, error, logAction }: ModuleProps) {
           <div className="space-y-2 text-xs">
             <div className="flex justify-between p-3 bg-slate-950 rounded-lg"><span className="text-slate-400">Mensal</span><span className="text-emerald-400 font-bold">R$ {(previewPlan.base_monthly_price ?? previewPlan.price ?? 0).toFixed(2)}</span></div>
             <div className="flex justify-between p-3 bg-slate-950 rounded-lg"><span className="text-slate-400">Trimestral</span><span className="text-amber-400 font-bold">R$ {(previewPlan.quarterly_price ?? 0).toFixed(2)}</span></div>
+            <div className="flex justify-between p-3 bg-slate-950 rounded-lg"><span className="text-slate-400">Semestral</span><span className="text-amber-400 font-bold">R$ {(previewPlan.semiannual_price ?? 0).toFixed(2)}</span></div>
             <div className="flex justify-between p-3 bg-slate-950 rounded-lg"><span className="text-slate-400">Anual</span><span className="text-amber-400 font-bold">R$ {(previewPlan.annual_price ?? 0).toFixed(2)}</span></div>
           </div>
         </Modal>
@@ -133,6 +135,7 @@ function PlanFormModal({ plan, onClose, onSaved, onError, onLog }: {
   const [totemLimit, setTotemLimit] = useState(plan?.totem_limit?.toString() ?? '1');
   const [baseMonthly, setBaseMonthly] = useState(plan?.base_monthly_price?.toString() ?? plan?.price?.toString() ?? '0');
   const [quarterly, setQuarterly] = useState(plan?.quarterly_price?.toString() ?? '0');
+  const [semiannual, setSemiannual] = useState(plan?.semiannual_price?.toString() ?? '0');
   const [annual, setAnnual] = useState(plan?.annual_price?.toString() ?? '0');
   const [quarterlyDiscount, setQuarterlyDiscount] = useState(plan?.quarterly_discount_percent?.toString() ?? '0');
   const [semiannualDiscount, setSemiannualDiscount] = useState(plan?.semiannual_discount_percent?.toString() ?? '0');
@@ -150,6 +153,7 @@ function PlanFormModal({ plan, onClose, onSaved, onError, onLog }: {
       name, totem_limit: parseInt(totemLimit) || 1,
       base_monthly_price: parseFloat(baseMonthly) || 0,
       quarterly_price: parseFloat(quarterly) || 0,
+      semiannual_price: parseFloat(semiannual) || 0,
       annual_price: parseFloat(annual) || 0,
       quarterly_discount_percent: parseFloat(quarterlyDiscount) || 0,
       semiannual_discount_percent: parseFloat(semiannualDiscount) || 0,
@@ -201,6 +205,10 @@ function PlanFormModal({ plan, onClose, onSaved, onError, onLog }: {
           <div>
             <label className={labelCls}>Trimestral (R$)</label>
             <input type="number" step="0.01" className={inputCls} value={quarterly} onChange={(e) => setQuarterly(e.target.value)} />
+          </div>
+          <div>
+            <label className={labelCls}>Semestral (R$)</label>
+            <input type="number" step="0.01" className={inputCls} value={semiannual} onChange={(e) => setSemiannual(e.target.value)} />
           </div>
           <div>
             <label className={labelCls}>Anual (R$)</label>

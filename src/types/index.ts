@@ -201,6 +201,7 @@ export interface SubscriptionPlan {
   price: number;
   base_monthly_price: number;
   quarterly_price: number;
+  semiannual_price: number;
   annual_price: number;
   quarterly_discount_percent: number;
   semiannual_discount_percent: number;

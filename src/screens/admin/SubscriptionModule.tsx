@@ -12,7 +12,7 @@ export function SubscriptionModule() {
   const [invoices, setInvoices] = useState<Invoice[]>([]);
   const [companyData, setCompanyData] = useState<Company | null>(null);
   const [loading, setLoading] = useState(true);
-  const [billingCycle, setBillingCycle] = useState<'monthly' | 'annual'>('monthly');
+  const [billingCycle, setBillingCycle] = useState<'monthly' | 'quarterly' | 'semiannual' | 'annual'>('monthly');
   const [totemCount, setTotemCount] = useState(0);
   const [rideCount, setRideCount] = useState(0);
 
@@ -64,12 +64,14 @@ export function SubscriptionModule() {
   };
 
   const getPriceForCycle = (plan: SubscriptionPlan) => {
+    const base = plan.base_monthly_price || plan.price || 0;
     if (billingCycle === 'annual' && plan.annual_price > 0) return plan.annual_price;
+    if (billingCycle === 'semiannual' && plan.semiannual_price > 0) return plan.semiannual_price;
     if (billingCycle === 'quarterly' && plan.quarterly_price > 0) return plan.quarterly_price;
-    return plan.base_monthly_price || plan.price;
+    return base;
   };
 
-  const cycleLabel = billingCycle === 'annual' ? '/ano' : '/mês';
+  const cycleLabel = billingCycle === 'annual' ? '/ano' : billingCycle === 'semiannual' ? '/semestre' : billingCycle === 'quarterly' ? '/trimestre' : '/mês';
 
   const handleCheckout = (plan: SubscriptionPlan) => {
     if (companyData?.asaas_checkout_url) {
@@ -198,20 +200,22 @@ export function SubscriptionModule() {
       </Card>
 
       {/* Billing cycle toggle */}
-      <div className="flex items-center justify-center gap-3">
-        <button
-          onClick={() => setBillingCycle('monthly')}
-          className={`rounded-xl px-4 py-2 text-sm font-semibold transition-all ${billingCycle === 'monthly' ? 'bg-gold-500/15 text-gold-300 ring-1 ring-gold-500/25' : 'text-slate-400 hover:text-slate-200'}`}
-        >
-          Mensal
-        </button>
-        <button
-          onClick={() => setBillingCycle('annual')}
-          className={`rounded-xl px-4 py-2 text-sm font-semibold transition-all ${billingCycle === 'annual' ? 'bg-gold-500/15 text-gold-300 ring-1 ring-gold-500/25' : 'text-slate-400 hover:text-slate-200'}`}
-        >
-          Anual
-          <span className="ml-2 rounded-full bg-success-500/15 px-2 py-0.5 text-xs text-success-500">Economize</span>
-        </button>
+      <div className="flex flex-wrap items-center justify-center gap-2">
+        {([
+          ['monthly', 'Mensal', null],
+          ['quarterly', 'Trimestral', '3 meses'],
+          ['semiannual', 'Semestral', '6 meses'],
+          ['annual', 'Anual', 'Economize'],
+        ] as const).map(([cycle, label, badge]) => (
+          <button
+            key={cycle}
+            onClick={() => setBillingCycle(cycle)}
+            className={`rounded-xl px-4 py-2 text-sm font-semibold transition-all ${billingCycle === cycle ? 'bg-gold-500/15 text-gold-300 ring-1 ring-gold-500/25' : 'text-slate-400 hover:text-slate-200'}`}
+          >
+            {label}
+            {badge && <span className="ml-2 rounded-full bg-success-500/15 px-2 py-0.5 text-xs text-success-500">{badge}</span>}
+          </button>
+        ))}
       </div>
 
       {/* Plans comparison */}
@@ -264,7 +268,7 @@ export function SubscriptionModule() {
                 <Button variant="secondary" disabled className="w-full">Plano atual</Button>
               ) : (
                 <Button onClick={() => handleCheckout(plan)} className="w-full">
-                  {billingCycle === 'annual' ? 'Assinar anual' : 'Assinar mensal'}
+                  Assinar {billingCycle === 'monthly' ? 'mensal' : billingCycle === 'quarterly' ? 'trimestral' : billingCycle === 'semiannual' ? 'semestral' : 'anual'}
                 </Button>
               )}
             </Card>
@@ -283,13 +287,36 @@ export function SubscriptionModule() {
           )}
         </div>
         {companyData?.asaas_customer_id ? (
-          <div className="flex items-center gap-3 rounded-xl border border-slate-800 bg-slate-800/30 p-4">
-            <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-slate-800">
-              <CreditCard className="h-5 w-5 text-slate-400" />
+          <div className="space-y-3">
+            <div className="flex items-center gap-3 rounded-xl border border-slate-800 bg-slate-800/30 p-4">
+              <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-success-500/15">
+                <CreditCard className="h-5 w-5 text-success-500" />
+              </div>
+              <div className="flex-1">
+                <p className="text-sm font-semibold text-slate-200">Pagamento via Asaas</p>
+                <p className="text-xs text-slate-500">Cartão de crédito ou Pix</p>
+              </div>
+              <Badge variant="success">Ativo</Badge>
             </div>
-            <div>
-              <p className="text-sm font-semibold text-slate-200">Pagamento via Asaas</p>
-              <p className="text-xs text-slate-500">Boleto, Pix ou cartão de crédito</p>
+            <div className="grid gap-3 sm:grid-cols-2">
+              <div className="flex items-center gap-3 rounded-xl border border-slate-800 bg-slate-800/20 p-3">
+                <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-gold-500/15">
+                  <CreditCard className="h-4 w-4 text-gold-400" />
+                </div>
+                <div>
+                  <p className="text-xs font-bold text-slate-200">Cartão de crédito</p>
+                  <p className="text-[11px] text-slate-500">Cobrança automática mensal</p>
+                </div>
+              </div>
+              <div className="flex items-center gap-3 rounded-xl border border-slate-800 bg-slate-800/20 p-3">
+                <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-gold-500/15">
+                  <CreditCard className="h-4 w-4 text-gold-400" />
+                </div>
+                <div>
+                  <p className="text-xs font-bold text-slate-200">Pix</p>
+                  <p className="text-[11px] text-slate-500">Pagamento instantâneo</p>
+                </div>
+              </div>
             </div>
           </div>
         ) : (
