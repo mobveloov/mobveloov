@@ -61,7 +61,11 @@ async function requestQr(config: WhatsAppConfig): Promise<Record<string, unknown
       const createResp = await fetch(`${baseUrl}/instance/create`, {
         method: "POST",
         headers: authHeaders,
-        body: JSON.stringify({ instanceName: instance }),
+        body: JSON.stringify({
+          instanceName: instance,
+          qrcode: true,
+          integration: "WHATSAPP-BAILEYS",
+        }),
       });
       const createRaw = await createResp.text();
       let createData: Record<string, unknown> = {};
