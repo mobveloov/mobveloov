@@ -463,7 +463,7 @@ async function handleIncomingMessage(companyId: string, data: Record<string, unk
     // If the ride has a Machine driver ID, forward the message to the driver via Machine API
     if (ride.machine_driver_id) {
       try {
-        await forwardMessageToMachineDriver(companyId, ride.machine_driver_id, text.trim());
+        await forwardMessageToMachineDriver(companyId, ride.machine_driver_id, text.trim(), ride.machine_order_id);
       } catch {
         // best-effort — message is saved in ride_messages regardless
       }

@@ -98,21 +98,6 @@ export function ChatsModule() {
     if (!selectedChat || !replyText.trim() || !company) return;
     setSending(true);
     try {
-      const { data: instance } = await supabase
-        .from('whatsapp_instances')
-        .select('whatsapp_provider, evolution_api_url, evolution_global_token, instance_name, provider_token, provider_phone_id, provider_waba_id, provider_api_url')
-        .eq('company_id', company.id)
-        .maybeSingle();
-
-      const provider = (instance as Record<string, unknown>)?.whatsapp_provider ?? 'evolution';
-      const fields: Record<string, string> = {};
-      const inst = instance as Record<string, unknown> | null;
-      if (inst) {
-        fields.evo_url = String(inst.evolution_api_url ?? '');
-        fields.evo_token = String(inst.evolution_global_token ?? '');
-        fields.evo_instance = String(inst.instance_name ?? '');
-      }
-
       const apiUrl = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/whatsapp-webhook`;
       await fetch(apiUrl, {
         method: 'POST',
@@ -125,8 +110,6 @@ export function ChatsModule() {
           data: {
             phone: selectedChat.phone,
             text: replyText.trim(),
-            provider,
-            fields,
           },
         }),
       });
