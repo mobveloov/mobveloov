@@ -54,25 +54,66 @@ export function IdentifyScreen({ onIdentify, origin, destination, onDestinationC
   const hasFixedOrigin = !!(location?.pickup_address && location.pickup_lat != null && location.pickup_lng != null);
 
   const searchAddress = async (query: string) => {
-    if (query.trim().length < 3) {
+    const trimmedQuery = query.trim();
+    if (trimmedQuery.length < 3) {
       setDestResults([]);
       return;
     }
+
     setSearching(true);
     try {
-      const res = await fetch(
-        `https://photon.komoot.io/api/?q=${encodeURIComponent(query.trim())}&limit=6&lang=pt`,
+      const nominatimParams = new URLSearchParams({
+        format: 'json',
+        q: trimmedQuery,
+        addressdetails: '1',
+        limit: '6',
+        countrycodes: 'br',
+      });
+      const nominatimResponse = await fetch(
+        `https://nominatim.openstreetmap.org/search?${nominatimParams.toString()}`,
+        { headers: { 'Accept-Language': 'pt-BR' } },
       );
-      const data = await res.json();
-      const features = (data.features ?? []) as Array<{
+      const nominatimResults = nominatimResponse.ok
+        ? await nominatimResponse.json() as Array<{ lat: string; lon: string; display_name: string; address?: { house_number?: string } }>
+        : [];
+
+      if (nominatimResults.length > 0) {
+        setDestResults(nominatimResults.map((result) => ({
+          lat: parseFloat(result.lat),
+          lng: parseFloat(result.lon),
+          label: result.display_name,
+          housenumber: result.address?.house_number,
+        })));
+        return;
+      }
+
+      const photonResponse = await fetch(
+        `https://photon.komoot.io/api/?q=${encodeURIComponent(trimmedQuery)}&limit=6&lang=pt`,
+      );
+      if (!photonResponse.ok) {
+        setDestResults([]);
+        return;
+      }
+
+      const data = await photonResponse.json() as { features?: Array<{
         geometry: { coordinates: [number, number] };
-        properties: { name?: string; street?: string; housenumber?: string; city?: string; postcode?: string; state?: string; country?: string };
-      }>;
-      const results: SearchResult[] = features.map((f) => {
-        const p = f.properties;
-        const parts = [p.name, p.housenumber ? `${p.housenumber} ${p.street ?? ''}`.trim() : p.street, p.city, p.state, p.country].filter(Boolean);
-        const label = parts.join(', ');
-        return { lat: f.geometry.coordinates[1], lng: f.geometry.coordinates[0], label, housenumber: p.housenumber };
+        properties: { name?: string; street?: string; housenumber?: string; city?: string; state?: string; country?: string };
+      }> };
+      const results: SearchResult[] = (data.features ?? []).map((feature) => {
+        const properties = feature.properties;
+        const parts = [
+          properties.name,
+          properties.housenumber ? `${properties.housenumber} ${properties.street ?? ''}`.trim() : properties.street,
+          properties.city,
+          properties.state,
+          properties.country,
+        ].filter(Boolean);
+        return {
+          lat: feature.geometry.coordinates[1],
+          lng: feature.geometry.coordinates[0],
+          label: parts.join(', '),
+          housenumber: properties.housenumber,
+        };
       });
       setDestResults(results);
     } catch {
@@ -84,6 +125,9 @@ export function IdentifyScreen({ onIdentify, origin, destination, onDestinationC
 
   const handleDestInput = (value: string) => {
     setDestQuery(value);
+    if (destination) onDestinationChange(null);
+    setDestNumber('');
+    setDestResults([]);
     if (searchTimer.current) clearTimeout(searchTimer.current);
     searchTimer.current = setTimeout(() => searchAddress(value), 500);
   };
@@ -323,6 +367,7 @@ export function IdentifyScreen({ onIdentify, origin, destination, onDestinationC
                 {destResults.map((r, i) => (
                   <button
                     key={i}
+                    type="button"
                     onClick={() => selectDestResult(r, destQuery)}
                     className="flex w-full items-start gap-2 px-4 py-3 text-left hover:bg-neutral-50 dark:hover:bg-neutral-700/50 transition-colors border-b border-neutral-100 dark:border-neutral-700 last:border-0"
                   >
@@ -352,14 +397,14 @@ export function IdentifyScreen({ onIdentify, origin, destination, onDestinationC
                       onDestinationChange({ lat: destination.lat, lng: destination.lng, label: baseLabel });
                     }
                   }}
-                  placeholder="Numero (opcional)"
+                  placeholder="Número do endereço"
                   className="input-field flex-1 text-sm py-2"
                 />
               </div>
             )}
             {!destination && destQuery.length === 0 && (
               <p className="mt-1.5 text-xs text-slate-400">
-                Se nao souber o endereco, pode chamar sem destino. O valor sera informado pelo motorista no final.
+                Digite o endereço e selecione uma sugestão para informar o número.
               </p>
             )}
           </div>

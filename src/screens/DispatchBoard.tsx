@@ -3,6 +3,7 @@ import { Radio, User, Phone, MapPin, Car, CheckCircle2, X, Loader2, Send, Clock 
 import { supabase } from '@/lib/supabase';
 import { useAuth } from '@/context/AuthContext';
 import { formatTimeAgo } from '@/lib/utils';
+import { RideChat } from '@/components/RideChat';
 import type { Ride, Driver, OrderStatus } from '@/types';
 
 const STATUS_LABELS: Record<OrderStatus, { label: string; cls: string }> = {
@@ -348,6 +349,12 @@ export function DispatchBoard() {
                       )}
                     </div>
                   </div>
+                  <RideChat
+                    rideId={ride.id}
+                    rideStatus={ride.status}
+                    passengerName={ride.passenger_name}
+                    passengerPhone={ride.passenger_phone}
+                  />
                 </div>
               );
             })}

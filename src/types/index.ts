@@ -343,3 +343,14 @@ export interface WhatsAppMessage {
   sent_at: string;
   created_at: string;
 }
+
+export interface RideMessage {
+  id: string;
+  ride_id: string;
+  company_id: string;
+  sender: 'motorista' | 'passageiro';
+  content: string;
+  status: 'enviada' | 'entregue' | 'lida';
+  whatsapp_delivered: boolean;
+  created_at: string;
+}

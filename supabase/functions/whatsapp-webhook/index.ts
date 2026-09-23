@@ -23,6 +23,7 @@ function toBrazilianWhatsAppNumber(raw: string): string {
 // whatsapp-webhook: handles Evolution API events + incoming messages from passengers (v2)
 // Saves all incoming and outgoing messages to whatsapp_chats / whatsapp_messages tables.
 // Updated: fix token check + replace rpc with direct query for Evolution API v2.3.7. v2
+// Also routes passenger messages to ride_messages table for driver chat.
 
 async function saveMessage(
   companyId: string,
@@ -430,9 +431,6 @@ async function handleIncomingMessage(companyId: string, data: Record<string, unk
   const cleanPhone = rawPhone.replace(/\D/g, "");
   const normalizedText = text.trim().toLowerCase();
 
-  // Only handle "cancelar" (and variations like "cancelar corrida", "cancela")
-  if (!normalizedText.includes("cancel")) return;
-
   // Find the passenger's active ride by phone number, scoped to this company
   const normalizedQueryDigits = cleanPhone.replace(/^55/, "");
 
@@ -440,7 +438,7 @@ async function handleIncomingMessage(companyId: string, data: Record<string, unk
     .from("rides")
     .select("id, machine_order_id, company_id, passenger_name, passenger_phone, status")
     .eq("company_id", companyId)
-    .in("status", ["pending", "accepted", "en_route"])
+    .in("status", ["pending", "accepted", "en_route", "in_progress"])
     .order("created_at", { ascending: false })
     .limit(50);
 
@@ -452,15 +450,30 @@ async function handleIncomingMessage(companyId: string, data: Record<string, unk
       storedDigits === normalizedQueryDigits;
   }) ?? null;
 
+  // If there's an active ride, save the message to ride_messages (chat)
+  if (ride) {
+    await supabase.from("ride_messages").insert({
+      ride_id: ride.id,
+      company_id: companyId,
+      sender: "passageiro",
+      content: text.trim(),
+      status: "entregue",
+    });
+  }
+
+  // If no active ride found, log the unmatched message
   if (!ride) {
     await supabase.from("admin_logs").insert({
       company_id: companyId,
       source: "whatsapp_webhook",
       level: "info",
-      message: `Mensagem "cancelar" recebida de ${cleanPhone} mas nenhuma corrida ativa encontrada`,
+      message: `Mensagem recebida de ${cleanPhone}: "${text.trim().slice(0, 100)}" — nenhuma corrida ativa vinculada a este número`,
     });
     return;
   }
+
+  // Only handle "cancelar" (and variations like "cancelar corrida", "cancela")
+  if (!normalizedText.includes("cancel")) return;
 
   // Block cancellation when driver has arrived (en_route)
   if (ride.status === "en_route") {

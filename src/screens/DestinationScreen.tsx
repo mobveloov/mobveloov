@@ -188,7 +188,7 @@ export function DestinationScreen({
     setSearching(type);
     try {
       const res = await fetch(
-        `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(query)}&limit=5&countrycodes=br`,
+        `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(query)}&limit=6&countrycodes=br&addressdetails=1`,
         { headers: { 'Accept-Language': 'pt-BR' } }
       );
       const data: SearchResult[] = await res.json();
@@ -390,6 +390,7 @@ export function DestinationScreen({
               {originResults.map((r, i) => (
                 <button
                   key={i}
+                  type="button"
                   onClick={() => selectResult(r, 'origin', originQuery)}
                   className="flex w-full items-start gap-2 px-4 py-3 text-left hover:bg-neutral-50 dark:hover:bg-neutral-700/50 transition-colors border-b border-neutral-100 dark:border-neutral-700 last:border-0"
                 >
@@ -441,6 +442,7 @@ export function DestinationScreen({
               {destResults.map((r, i) => (
                 <button
                   key={i}
+                  type="button"
                   onClick={() => selectResult(r, 'dest', destQuery)}
                   className="flex w-full items-start gap-2 px-4 py-3 text-left hover:bg-neutral-50 dark:hover:bg-neutral-700/50 transition-colors border-b border-neutral-100 dark:border-neutral-700 last:border-0"
                 >
@@ -472,6 +474,7 @@ export function DestinationScreen({
       </div>
 
       <button
+        type="button"
         onClick={() => goPassenger('category')}
         disabled={!canProceed}
         className="btn-primary mt-6 w-full text-base flex items-center justify-center gap-2"
