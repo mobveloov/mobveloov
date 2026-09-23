@@ -23,6 +23,53 @@ const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
 const supabaseServiceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
 const supabase = createClient(supabaseUrl, supabaseServiceKey);
 
+async function saveChatMessage(
+  companyId: string,
+  phone: string,
+  direction: "incoming" | "outgoing",
+  body: string,
+): Promise<void> {
+  if (!phone || !body) return;
+  const cleanPhone = phone.replace(/\D/g, "");
+  const { data: chat } = await supabase
+    .from("whatsapp_chats")
+    .upsert(
+      {
+        company_id: companyId,
+        phone: cleanPhone,
+        last_message_preview: body.slice(0, 200),
+        last_message_at: new Date().toISOString(),
+        unread_count: direction === "incoming" ? 1 : 0,
+      },
+      { onConflict: "company_id,phone" },
+    )
+    .select("id")
+    .maybeSingle();
+  let chatId = chat?.id;
+  if (!chatId) {
+    const { data: existing } = await supabase
+      .from("whatsapp_chats")
+      .select("id")
+      .eq("company_id", companyId)
+      .eq("phone", cleanPhone)
+      .maybeSingle();
+    chatId = existing?.id;
+  }
+  if (!chatId) return;
+  if (direction === "incoming") {
+    await supabase.rpc("increment_chat_unread", { chat_id: chatId }).catch(() => {});
+  }
+  await supabase.from("whatsapp_messages").insert({
+    chat_id: chatId,
+    company_id: companyId,
+    direction,
+    phone: cleanPhone,
+    body,
+    message_type: "text",
+    sent_at: new Date().toISOString(),
+  });
+}
+
 function toBrazilianWhatsAppNumber(raw: string): string {
   let digits = raw.replace(/\D/g, "");
   if (!digits) return "";
@@ -144,6 +191,7 @@ Deno.serve(async (req: Request) => {
       let driverPhone: string | null = null;
       let vehiclePlate: string | null = null;
       let vehicleModel: string | null = null;
+      let vehicleColor: string | null = null;
 
       if (internalStatus === "accepted" || internalStatus === "en_route" || internalStatus === "in_progress") {
         const details = await fetchRideDetails(ride.company_id, machineOrderId);
@@ -152,6 +200,18 @@ Deno.serve(async (req: Request) => {
           driverPhone = details.driver.telefone ?? null;
           vehiclePlate = details.driver.veiculo_placa ?? null;
           vehicleModel = details.driver.veiculo_modelo ?? null;
+          vehicleColor = details.driver.veiculo_cor ?? null;
+        }
+        // Save driver GPS position if available
+        const driverLat = details?.driver?.lat ?? details?.driver?.latitude ?? details?.lat ?? details?.latitude ?? null;
+        const driverLng = details?.driver?.lng ?? details?.driver?.longitude ?? details?.lng ?? details?.longitude ?? null;
+        if (driverLat != null && driverLng != null) {
+          await supabase.from("ride_driver_positions").upsert({
+            ride_id: ride.id,
+            lat: driverLat,
+            lng: driverLng,
+            updated_at: new Date().toISOString(),
+          }).eq("ride_id", ride.id);
         }
       }
 
@@ -161,6 +221,7 @@ Deno.serve(async (req: Request) => {
         driverPhone = null;
         vehiclePlate = null;
         vehicleModel = null;
+        vehicleColor = null;
       }
 
       const updatePayload: Record<string, unknown> = {
@@ -174,12 +235,14 @@ Deno.serve(async (req: Request) => {
       if (driverPhone !== null) updatePayload.driver_phone = driverPhone;
       if (vehiclePlate !== null) updatePayload.vehicle_plate = vehiclePlate;
       if (vehicleModel !== null) updatePayload.vehicle_model = vehicleModel;
+      if (vehicleColor !== null) updatePayload.vehicle_color = vehicleColor;
       // Explicitly clear driver info only when going back to pending
       if (internalStatus === "pending" && ride.status !== "pending") {
         updatePayload.driver_name = null;
         updatePayload.driver_phone = null;
         updatePayload.vehicle_plate = null;
         updatePayload.vehicle_model = null;
+        updatePayload.vehicle_color = null;
       }
 
       await supabase.from("rides").update(updatePayload).eq("id", ride.id);
@@ -234,6 +297,7 @@ Deno.serve(async (req: Request) => {
         driverDistanceKm,
         ride.status,
         driverChanged,
+        vehicleColor,
       );
 
       return new Response(JSON.stringify({ success: true }), {
@@ -316,6 +380,7 @@ async function sendWhatsAppNotification(
   driverDistanceKm: number | null = null,
   previousStatus: string | null = null,
   driverChanged: boolean = false,
+  vehicleColor: string | null = null,
 ): Promise<void> {
   let message = STATUS_MESSAGES_PT[internalStatus];
   if (!message) return;
@@ -330,6 +395,7 @@ async function sendWhatsAppNotification(
       }
       message += `\n\nMotorista: ${driverName}`;
       if (vehicleModel) message += `\nVeiculo: ${vehicleModel}`;
+      if (vehicleColor) message += `\nCor: ${vehicleColor}`;
       if (vehiclePlate) message += `\nPlaca: ${vehiclePlate}`;
     }
 
@@ -377,6 +443,7 @@ async function sendWhatsAppNotification(
 
   try {
     await sendWhatsAppMessage(provider, f, cleanPhone, message);
+    await saveChatMessage(companyId, cleanPhone, "outgoing", message);
     await logWhatsAppMessage(companyId, rideId, cleanPhone, "status_update", message, provider, true);
 
     await supabase.from("admin_logs").insert({

@@ -1,7 +1,7 @@
 // ride-distance-updates — periodic WhatsApp distance/ETA updates for en_route rides.
-// Triggered by a cron or external scheduler. Finds all en_route rides whose plan
-// has distance_update_interval_min > 0, checks elapsed time since last update,
-// sends a WhatsApp message with current distance/ETA, and logs it.
+// Triggered by pg_cron every minute. Finds all en_route rides whose plan
+// has distance_update_interval_min > 0, fetches driver position (from local table
+// or Machine API), sends a WhatsApp message with current distance/ETA, and logs it.
 import { createClient } from "npm:@supabase/supabase-js@2.57.4";
 
 const corsHeaders = {
@@ -148,6 +148,103 @@ function haversineKm(lat1: number, lng1: number, lat2: number, lng2: number): nu
   return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
 }
 
+async function saveChatMessage(
+  supabase: ReturnType<typeof createClient>,
+  companyId: string,
+  phone: string,
+  direction: "incoming" | "outgoing",
+  body: string,
+): Promise<void> {
+  if (!phone || !body) return;
+  const cleanPhone = phone.replace(/\D/g, "");
+  const { data: chat } = await supabase
+    .from("whatsapp_chats")
+    .upsert(
+      {
+        company_id: companyId,
+        phone: cleanPhone,
+        last_message_preview: body.slice(0, 200),
+        last_message_at: new Date().toISOString(),
+        unread_count: 0,
+      },
+      { onConflict: "company_id,phone" },
+    )
+    .select("id")
+    .maybeSingle();
+  let chatId = chat?.id;
+  if (!chatId) {
+    const { data: existing } = await supabase
+      .from("whatsapp_chats")
+      .select("id")
+      .eq("company_id", companyId)
+      .eq("phone", cleanPhone)
+      .maybeSingle();
+    chatId = existing?.id;
+  }
+  if (!chatId) return;
+  await supabase.from("whatsapp_messages").insert({
+    chat_id: chatId,
+    company_id: companyId,
+    direction,
+    phone: cleanPhone,
+    body,
+    message_type: "text",
+    sent_at: new Date().toISOString(),
+  });
+}
+
+async function fetchDriverPositionFromMachine(
+  supabase: ReturnType<typeof createClient>,
+  companyId: string,
+  machineOrderId: string,
+  rideId: string,
+): Promise<{ lat: number; lng: number } | null> {
+  const { data: credentials } = await supabase
+    .from("company_credentials")
+    .select("machine_api_url, machine_api_key, taximetro_username, taximetro_password")
+    .eq("company_id", companyId)
+    .maybeSingle();
+
+  if (!credentials) return null;
+
+  const baseUrl = (credentials.machine_api_url || "https://api.taximachine.com.br").replace(/\/+$/, "");
+  const apiKey = credentials.machine_api_key || "";
+  const user = credentials.taximetro_username || "";
+  const pass = credentials.taximetro_password || "";
+
+  if (!apiKey || !user || !pass) return null;
+
+  try {
+    const resp = await fetch(`${baseUrl}/api/v2/integracao/corridas/${machineOrderId}/detalhes`, {
+      method: "GET",
+      headers: {
+        "Content-Type": "application/json",
+        "api-key": apiKey,
+        "Authorization": `Basic ${btoa(`${user}:${pass}`)}`,
+      },
+    });
+
+    if (!resp.ok) return null;
+    const json = await resp.json();
+    const d = json?.data;
+
+    const driverLat = d?.driver?.lat ?? d?.driver?.latitude ?? d?.lat ?? d?.latitude ?? null;
+    const driverLng = d?.driver?.lng ?? d?.driver?.longitude ?? d?.lng ?? d?.longitude ?? null;
+
+    if (driverLat != null && driverLng != null) {
+      await supabase.from("ride_driver_positions").upsert({
+        ride_id: rideId,
+        lat: driverLat,
+        lng: driverLng,
+        updated_at: new Date().toISOString(),
+      }).eq("ride_id", rideId);
+      return { lat: driverLat, lng: driverLng };
+    }
+  } catch { /* best-effort */ }
+
+  return null;
+}
+
 Deno.serve(async (req: Request) => {
   if (req.method === "OPTIONS") {
     return new Response(null, { status: 200, headers: corsHeaders });
@@ -171,10 +268,10 @@ Deno.serve(async (req: Request) => {
     const supabaseKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
     const supabase = createClient(supabaseUrl, supabaseKey);
 
-    // Find all en_route rides with passenger phone
+    // Find all en_route rides with passenger phone and machine_order_id
     const { data: rides } = await supabase
       .from("rides")
-      .select("id, company_id, passenger_phone, origin_lat, origin_lng")
+      .select("id, company_id, passenger_phone, origin_lat, origin_lng, machine_order_id")
       .eq("status", "en_route")
       .not("passenger_phone", "is", null);
 
@@ -222,12 +319,27 @@ Deno.serve(async (req: Request) => {
 
       if (!shouldSend) { skippedCount++; continue; }
 
-      // Calculate current distance from driver position
-      const { data: pos } = await supabase
+      // Try to get driver position from local table first
+      let pos: { lat: number; lng: number } | null = null;
+      const { data: localPos } = await supabase
         .from("ride_driver_positions")
-        .select("lat, lng")
+        .select("lat, lng, updated_at")
         .eq("ride_id", ride.id)
         .maybeSingle();
+
+      if (localPos) {
+        // If position is stale (>5 min old), try refreshing from Machine API
+        const posAge = Date.now() - new Date(localPos.updated_at).getTime();
+        if (posAge > 5 * 60 * 1000 && ride.machine_order_id) {
+          pos = await fetchDriverPositionFromMachine(supabase, ride.company_id, ride.machine_order_id, ride.id);
+          if (!pos) pos = { lat: localPos.lat, lng: localPos.lng };
+        } else {
+          pos = { lat: localPos.lat, lng: localPos.lng };
+        }
+      } else if (ride.machine_order_id) {
+        // No local position — fetch from Machine API
+        pos = await fetchDriverPositionFromMachine(supabase, ride.company_id, ride.machine_order_id, ride.id);
+      }
 
       if (!pos) { skippedCount++; continue; }
 
@@ -259,6 +371,7 @@ Deno.serve(async (req: Request) => {
 
       if (ok) {
         sentCount++;
+        await saveChatMessage(supabase, ride.company_id, cleanPhone, "outgoing", updateMsg);
         await supabase.from("admin_logs").insert({
           company_id: ride.company_id,
           source: "distance_update",

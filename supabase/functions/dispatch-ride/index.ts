@@ -12,6 +12,53 @@ const supabaseServiceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
 
 const supabase = createClient(supabaseUrl, supabaseServiceKey);
 
+async function saveChatMessage(
+  companyId: string,
+  phone: string,
+  direction: "incoming" | "outgoing",
+  body: string,
+): Promise<void> {
+  if (!phone || !body) return;
+  const cleanPhone = phone.replace(/\D/g, "");
+  const { data: chat } = await supabase
+    .from("whatsapp_chats")
+    .upsert(
+      {
+        company_id: companyId,
+        phone: cleanPhone,
+        last_message_preview: body.slice(0, 200),
+        last_message_at: new Date().toISOString(),
+        unread_count: direction === "incoming" ? 1 : 0,
+      },
+      { onConflict: "company_id,phone" },
+    )
+    .select("id")
+    .maybeSingle();
+  let chatId = chat?.id;
+  if (!chatId) {
+    const { data: existing } = await supabase
+      .from("whatsapp_chats")
+      .select("id")
+      .eq("company_id", companyId)
+      .eq("phone", cleanPhone)
+      .maybeSingle();
+    chatId = existing?.id;
+  }
+  if (!chatId) return;
+  if (direction === "incoming") {
+    await supabase.rpc("increment_chat_unread", { chat_id: chatId }).catch(() => {});
+  }
+  await supabase.from("whatsapp_messages").insert({
+    chat_id: chatId,
+    company_id: companyId,
+    direction,
+    phone: cleanPhone,
+    body,
+    message_type: "text",
+    sent_at: new Date().toISOString(),
+  });
+}
+
 function toBrazilianWhatsAppNumber(raw: string): string {
   let digits = raw.replace(/\D/g, "");
   if (!digits) return "";
@@ -574,6 +621,7 @@ async function handleDriverNotification(
 
   try {
     const ok = await sendWhatsAppMessage(provider, f, driverPhone.replace(/\D/g, ""), message);
+    if (ok) await saveChatMessage(companyId, driverPhone.replace(/\D/g, ""), "outgoing", message);
 
     await supabase.from("admin_logs").insert({
       company_id: companyId,
@@ -990,6 +1038,7 @@ async function sendPassengerWhatsAppNotification(
   driverDistanceKm: number | null = null,
   previousStatus: string | null = null,
   driverChanged: boolean = false,
+  vehicleColor: string | null = null,
 ): Promise<void> {
   let message = STATUS_MESSAGES_PT[internalStatus];
   if (!message) return;
@@ -1003,6 +1052,7 @@ async function sendPassengerWhatsAppNotification(
       }
       message += `\n\nMotorista: ${driverName}`;
       if (vehicleModel) message += `\nVeiculo: ${vehicleModel}`;
+      if (vehicleColor) message += `\nCor: ${vehicleColor}`;
       if (vehiclePlate) message += `\nPlaca: ${vehiclePlate}`;
     }
 
@@ -1028,6 +1078,7 @@ async function sendPassengerWhatsAppNotification(
   try {
     const ok = await sendWhatsAppMessage(provider, f, cleanPhone, message);
     await logWhatsAppMessage(companyId, rideId, cleanPhone, "driver_assigned", message, provider, ok);
+    if (ok) await saveChatMessage(companyId, cleanPhone, "outgoing", message);
 
     await supabase.from("admin_logs").insert({
       company_id: companyId,
@@ -1092,6 +1143,7 @@ async function pollRideStatus(companyId: string, rideId: string, machineOrderId?
   let driverPhone: string | null = null;
   let vehiclePlate: string | null = null;
   let vehicleModel: string | null = null;
+  let vehicleColor: string | null = null;
 
   try {
     const detailsResp = await fetch(`${auth.baseUrl}/api/v2/integracao/corridas/${mchId}/detalhes`, {
@@ -1107,10 +1159,22 @@ async function pollRideStatus(companyId: string, rideId: string, machineOrderId?
         driverPhone = d.driver.telefone ?? null;
         vehiclePlate = d.driver.veiculo_placa ?? null;
         vehicleModel = d.driver.veiculo_modelo ?? null;
+        vehicleColor = d.driver.veiculo_cor ?? null;
       }
       // Fallback: if /status endpoint failed, use short_code from /detalhes
       if (!statusCode && d?.short_code) {
         statusCode = d.short_code;
+      }
+      // Save driver GPS position if available
+      const driverLat = d?.driver?.lat ?? d?.driver?.latitude ?? d?.lat ?? d?.latitude ?? null;
+      const driverLng = d?.driver?.lng ?? d?.driver?.longitude ?? d?.lng ?? d?.longitude ?? null;
+      if (driverLat != null && driverLng != null) {
+        await supabase.from("ride_driver_positions").upsert({
+          ride_id: rideId,
+          lat: driverLat,
+          lng: driverLng,
+          updated_at: new Date().toISOString(),
+        }).eq("ride_id", rideId);
       }
     }
   } catch {
@@ -1142,11 +1206,13 @@ async function pollRideStatus(companyId: string, rideId: string, machineOrderId?
       updatePayload.driver_phone = null;
       updatePayload.vehicle_plate = null;
       updatePayload.vehicle_model = null;
+      updatePayload.vehicle_color = null;
     } else {
       if (driverName) updatePayload.driver_name = driverName;
       if (driverPhone) updatePayload.driver_phone = driverPhone;
       if (vehiclePlate) updatePayload.vehicle_plate = vehiclePlate;
       if (vehicleModel) updatePayload.vehicle_model = vehicleModel;
+      if (vehicleColor) updatePayload.vehicle_color = vehicleColor;
     }
 
     await supabase.from("rides").update(updatePayload).eq("id", rideId);
@@ -1190,6 +1256,8 @@ async function pollRideStatus(companyId: string, rideId: string, machineOrderId?
         etaMinutes,
         driverDistanceKm,
         prevStatus,
+        false,
+        vehicleColor,
       );
     }
 
@@ -1214,6 +1282,7 @@ async function pollRideStatus(companyId: string, rideId: string, machineOrderId?
           driverDistanceKm,
           "accepted",
           true,
+          vehicleColor,
         );
       }
     }
@@ -1243,6 +1312,7 @@ async function pollRideStatus(companyId: string, rideId: string, machineOrderId?
           const { provider, fields: f } = await getCompanyWhatsAppConfig(companyId);
           const ok = await sendWhatsAppMessage(provider, f, toBrazilianWhatsAppNumber(passengerPhone), updateMsg);
           await logWhatsAppMessage(companyId, rideId, toBrazilianWhatsAppNumber(passengerPhone), "distance_update", updateMsg, provider, ok);
+          if (ok) await saveChatMessage(companyId, toBrazilianWhatsAppNumber(passengerPhone), "outgoing", updateMsg);
         }
       }
     }
@@ -1256,6 +1326,7 @@ async function pollRideStatus(companyId: string, rideId: string, machineOrderId?
     driver_phone: driverPhone,
     vehicle_plate: vehiclePlate,
     vehicle_model: vehicleModel,
+    vehicle_color: vehicleColor,
   }), {
     headers: { ...corsHeaders, "Content-Type": "application/json" },
   });
