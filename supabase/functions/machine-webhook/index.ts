@@ -217,7 +217,7 @@ async function sendWhatsAppNotification(
 
   const { provider, fields: f } = await getWhatsAppConfig();
 
-  const isConfigured = provider === "evolution"
+  const isConfigured = (provider === "evolution" || provider === "veloov")
     ? !!(f["evo_url"] && f["evo_token"])
     : provider === "zapi"
     ? !!(f["zapi_url"] && f["zapi_instance_id"] && f["zapi_instance_token"])
@@ -277,7 +277,7 @@ async function sendWhatsAppMessage(
   cleanPhone: string,
   message: string,
 ): Promise<void> {
-  if (provider === "evolution") {
+  if (provider === "evolution" || provider === "veloov") {
     const url = f["evo_url"] ?? "";
     const token = f["evo_token"] ?? "";
     if (!url || !token) return;

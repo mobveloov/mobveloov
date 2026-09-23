@@ -4,7 +4,7 @@ import { supabase } from '@/lib/supabase';
 import { inputCls, labelCls, btnGold } from '../shared';
 import type { ModuleProps } from '../Layout';
 
-type Provider = 'evolution' | 'zapi' | 'zpro' | 'meta_cloud' | 'custom_webhook';
+type Provider = 'evolution' | 'zapi' | 'zpro' | 'meta_cloud' | 'custom_webhook' | 'veloov';
 
 interface WhatsAppConfig {
   provider: Provider;
@@ -17,6 +17,7 @@ const PROVIDERS: { value: Provider; label: string; description: string }[] = [
   { value: 'zpro', label: 'Z-PRO', description: 'Plataforma Z-PRO' },
   { value: 'meta_cloud', label: 'Meta Cloud API', description: 'WhatsApp Business oficial (Meta)' },
   { value: 'custom_webhook', label: 'Webhook Customizado', description: 'Qualquer endpoint que receba JSON' },
+  { value: 'veloov', label: 'API Veloov', description: 'Infraestrutura própria Veloov (Evolution API gerenciada)' },
 ];
 
 export function IntegrationsModule({ success, error: toastError }: ModuleProps) {
@@ -186,7 +187,7 @@ export function IntegrationsModule({ success, error: toastError }: ModuleProps) 
             </p>
           </div>
 
-          {p === 'evolution' && (
+          {(p === 'evolution' || p === 'veloov') && (
             <div className="space-y-3 p-3 bg-slate-950 rounded-lg border border-slate-800/60 animate-fade-in">
               <div>
                 <label className={labelCls}>Evolution Base URL</label>
@@ -289,7 +290,7 @@ export function IntegrationsModule({ success, error: toastError }: ModuleProps) 
           )}
 
           {/* QR Code section */}
-          {(p === 'evolution' || p === 'zapi' || p === 'zpro') && (
+          {(p === 'evolution' || p === 'veloov' || p === 'zapi' || p === 'zpro') && (
             <div className="pt-2">
               {!qrData && !connected ? (
                 <button
