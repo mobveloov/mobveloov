@@ -21,7 +21,7 @@ const STATUS_LABELS: Record<OrderStatus, { label: string; color: string; icon: t
 
 interface TrackingScreenProps {
   origin: GeoPoint;
-  destination: GeoPoint;
+  destination: GeoPoint | null;
   passengerName: string;
   passengerPhone: string;
 }
@@ -44,7 +44,7 @@ export function TrackingScreen({ origin, destination, passengerName, passengerPh
 
   const selectedCategory: VehicleCategory | null = categories.find((c) => c.id === selectedCategoryId) ?? null;
 
-  const localPricing = settings
+  const localPricing = settings && destination
     ? selectedCategory
       ? calculateCategoryPricing(origin, destination, selectedCategory, settings.surge_multiplier)
       : null
@@ -74,9 +74,9 @@ export function TrackingScreen({ origin, destination, passengerName, passengerPh
         origin_label: origin.label,
         origin_lat: origin.lat,
         origin_lng: origin.lng,
-        destination_label: destination.label,
-        destination_lat: destination.lat,
-        destination_lng: destination.lng,
+        destination_label: destination?.label ?? null,
+        destination_lat: destination?.lat ?? null,
+        destination_lng: destination?.lng ?? null,
         distance_km: pricing?.distance ?? 0,
         duration_min: pricing?.duration ?? 0,
         category_label: categoryLabel,
@@ -126,7 +126,7 @@ export function TrackingScreen({ origin, destination, passengerName, passengerPh
         passenger_name: passengerName,
         passenger_phone: passengerPhone,
         origin: { lat: origin.lat, lng: origin.lng, address: origin.label },
-        destination: { lat: destination.lat, lng: destination.lng, address: destination.label },
+        destination: destination ? { lat: destination.lat, lng: destination.lng, address: destination.label } : undefined,
         category: categoryValue,
         price: estimatedPrice,
         distance: pricing?.distance ?? 0,
@@ -328,7 +328,7 @@ export function TrackingScreen({ origin, destination, passengerName, passengerPh
       )}
 
       <div className="mb-4 h-48 overflow-hidden rounded-2xl border border-neutral-200 dark:border-neutral-700">
-        <MapView origin={origin} destination={destination} className="h-full w-full" />
+        <MapView origin={origin} destination={destination ?? undefined} className="h-full w-full" />
       </div>
 
       <div className={`card p-5 mb-4 ${isCompleted ? 'border-success-500/30' : ''}`}>
@@ -343,7 +343,7 @@ export function TrackingScreen({ origin, destination, passengerName, passengerPh
               {statusInfo.label}
             </p>
             <p className="text-xs text-neutral-500 dark:text-neutral-400">
-              {origin.label.slice(0, 30)} → {destination.label.slice(0, 30)}
+              {origin.label.slice(0, 30)} → {destination ? destination.label.slice(0, 30) : 'A definir'}
             </p>
           </div>
         </div>
@@ -372,7 +372,7 @@ export function TrackingScreen({ origin, destination, passengerName, passengerPh
         </div>
       </div>
 
-      {pricing && (
+      {pricing && destination && (
         <div className="card p-5 mb-4">
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-2">

@@ -7,6 +7,7 @@ import { useWakeLock } from '@/hooks/useWakeLock';
 import { Header } from '@/components/Header';
 import { IdentifyScreen } from '@/screens/IdentifyScreen';
 import { DestinationScreen } from '@/screens/DestinationScreen';
+import { RequestScreen } from '@/screens/RequestScreen';
 import { CategoryScreen } from '@/screens/CategoryScreen';
 import { TrackingScreen } from '@/screens/TrackingScreen';
 import { TenantLoginScreen } from '@/screens/TenantLoginScreen';
@@ -20,27 +21,46 @@ import type { GeoPoint } from '@/types';
 
 function PassengerFlow() {
   const { passengerScreen } = useNav();
+  const { location } = useTenant();
   const [origin, setOrigin] = useState<GeoPoint | null>(null);
   const [destination, setDestination] = useState<GeoPoint | null>(null);
   const [passengerInfo, setPassengerInfo] = useState<{ name: string; phone: string } | null>(null);
+
+  useEffect(() => {
+    if (location?.pickup_address && location.pickup_lat != null && location.pickup_lng != null) {
+      setOrigin({ lat: location.pickup_lat, lng: location.pickup_lng, label: location.pickup_address });
+    }
+  }, [location?.id, location?.pickup_address, location?.pickup_lat, location?.pickup_lng]);
+
+  const hasFixedOrigin = !!(location?.pickup_address && location.pickup_lat != null && location.pickup_lng != null);
 
   switch (passengerScreen) {
     case 'identify':
       return <IdentifyScreen onIdentify={setPassengerInfo} />;
     case 'destination':
+      if (hasFixedOrigin && origin) {
+        return (
+          <RequestScreen
+            origin={origin}
+            destination={destination}
+            onDestinationChange={setDestination}
+          />
+        );
+      }
       return (
         <DestinationScreen
           origin={origin}
           destination={destination}
           onOriginChange={setOrigin}
           onDestinationChange={setDestination}
+          fixedOrigin={false}
         />
       );
     case 'category':
-      if (!origin || !destination) return <IdentifyScreen onIdentify={setPassengerInfo} />;
+      if (!origin) return <IdentifyScreen onIdentify={setPassengerInfo} />;
       return <CategoryScreen origin={origin} destination={destination} />;
     case 'tracking':
-      if (!origin || !destination || !passengerInfo) return <IdentifyScreen onIdentify={setPassengerInfo} />;
+      if (!origin || !passengerInfo) return <IdentifyScreen onIdentify={setPassengerInfo} />;
       return (
         <TrackingScreen
           origin={origin}

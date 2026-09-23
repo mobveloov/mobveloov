@@ -202,7 +202,7 @@ export function IdentifyScreen({ onIdentify }: IdentifyScreenProps) {
         {formError && <p className="text-xs font-medium text-error-500">{formError}</p>}
 
         <button type="submit" className="btn-primary w-full text-base flex items-center justify-center gap-2">
-          Escolher destino
+          {location?.pickup_address ? 'Avancar' : 'Escolher destino'}
           <ArrowRight className="h-5 w-5" />
         </button>
       </form>

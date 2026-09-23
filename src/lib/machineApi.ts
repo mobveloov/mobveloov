@@ -40,7 +40,7 @@ export interface DispatchPayload {
   passenger_name: string;
   passenger_phone: string;
   origin: { lat: number; lng: number; address: string };
-  destination: { lat: number; lng: number; address: string };
+  destination?: { lat: number; lng: number; address: string };
   category: string;
   price: number;
   distance: number;

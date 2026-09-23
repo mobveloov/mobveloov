@@ -10,6 +10,7 @@ interface DestinationScreenProps {
   destination: GeoPoint | null;
   onOriginChange: (p: GeoPoint | null) => void;
   onDestinationChange: (p: GeoPoint | null) => void;
+  fixedOrigin?: boolean;
 }
 
 interface SearchResult {
@@ -94,6 +95,7 @@ export function DestinationScreen({
   destination,
   onOriginChange,
   onDestinationChange,
+  fixedOrigin = false,
 }: DestinationScreenProps) {
   const { goPassenger } = useNav();
   const [originQuery, setOriginQuery] = useState(origin?.label ?? '');
@@ -170,7 +172,7 @@ export function DestinationScreen({
   };
 
   useEffect(() => {
-    if (!origin && !originSetByGps.current) {
+    if (!fixedOrigin && !origin && !originSetByGps.current) {
       useGpsLocation();
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -303,12 +305,22 @@ export function DestinationScreen({
       <BackButton onClick={() => goPassenger('identify')} label="Voltar" />
 
       <h1 className="mb-6 text-2xl font-extrabold text-neutral-900 dark:text-neutral-100">
-        Para onde vamos?
+        {fixedOrigin ? 'Para onde deseja ir?' : 'Para onde vamos?'}
       </h1>
 
       <div className="mb-4 h-48 overflow-hidden rounded-2xl border border-neutral-200 dark:border-neutral-700">
         <MapView origin={origin} destination={destination} className="h-full w-full" />
       </div>
+
+      {fixedOrigin && origin && (
+        <div className="mb-4 flex items-center gap-2 rounded-xl bg-success-500/10 border border-success-500/20 px-4 py-3">
+          <MapPin className="h-4 w-4 shrink-0 text-success-600" />
+          <div className="min-w-0">
+            <p className="text-xs font-semibold text-success-700 dark:text-success-400">Embarque fixo</p>
+            <p className="text-sm text-neutral-700 dark:text-neutral-300 truncate">{origin.label}</p>
+          </div>
+        </div>
+      )}
 
       <div className="space-y-4">
         <div>

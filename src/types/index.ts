@@ -71,6 +71,9 @@ export interface CompanyLocation {
   state: string | null;
   lat: number | null;
   lng: number | null;
+  pickup_address: string | null;
+  pickup_lat: number | null;
+  pickup_lng: number | null;
   is_active: boolean;
   sort_order: number;
   device_fingerprint: string | null;

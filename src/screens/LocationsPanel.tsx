@@ -1,10 +1,16 @@
-import { useState, useEffect } from 'react';
-import { MapPin, Plus, Trash2, Loader2, AlertCircle, CheckCircle2, Save, Building2, ExternalLink, Copy, Smartphone, Lock } from 'lucide-react';
+import { useState, useEffect, useRef } from 'react';
+import { MapPin, Plus, Trash2, Loader2, AlertCircle, CheckCircle2, Save, Building2, ExternalLink, Copy, Smartphone, Lock, Navigation } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 import { useAuth } from '@/context/AuthContext';
 import { CityAutocomplete } from '@/components/CityAutocomplete';
 import { slugify } from '@/lib/utils';
 import type { CompanyLocation } from '@/types';
+
+interface AddressSearchResult {
+  lat: string;
+  lon: string;
+  display_name: string;
+}
 
 export function LocationsPanel() {
   const { company, session } = useAuth();
@@ -22,6 +28,12 @@ export function LocationsPanel() {
   const [state, setState] = useState('');
   const [lat, setLat] = useState('');
   const [lng, setLng] = useState('');
+  const [pickupAddress, setPickupAddress] = useState('');
+  const [pickupLat, setPickupLat] = useState('');
+  const [pickupLng, setPickupLng] = useState('');
+  const [pickupResults, setPickupResults] = useState<AddressSearchResult[]>([]);
+  const [pickupSearching, setPickupSearching] = useState(false);
+  const pickupTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const loadLocations = async () => {
     if (!company) return;
@@ -45,6 +57,10 @@ export function LocationsPanel() {
     setState('');
     setLat('');
     setLng('');
+    setPickupAddress('');
+    setPickupLat('');
+    setPickupLng('');
+    setPickupResults([]);
     setEditingId(null);
     setShowForm(false);
     setError(null);
@@ -95,6 +111,9 @@ export function LocationsPanel() {
       state: state || null,
       lat: lat ? parseFloat(lat) : null,
       lng: lng ? parseFloat(lng) : null,
+      pickup_address: pickupAddress || null,
+      pickup_lat: pickupLat ? parseFloat(pickupLat) : null,
+      pickup_lng: pickupLng ? parseFloat(pickupLng) : null,
       is_active: true,
       updated_at: new Date().toISOString(),
     };
@@ -135,6 +154,9 @@ export function LocationsPanel() {
     setState(loc.state ?? '');
     setLat(loc.lat?.toString() ?? '');
     setLng(loc.lng?.toString() ?? '');
+    setPickupAddress(loc.pickup_address ?? '');
+    setPickupLat(loc.pickup_lat?.toString() ?? '');
+    setPickupLng(loc.pickup_lng?.toString() ?? '');
     setShowForm(true);
     setError(null);
     window.scrollTo({ top: 0, behavior: 'smooth' });
@@ -152,6 +174,40 @@ export function LocationsPanel() {
       .update({ is_active: !loc.is_active, updated_at: new Date().toISOString() })
       .eq('id', loc.id);
     loadLocations();
+  };
+
+  const searchPickupAddress = async (query: string) => {
+    if (query.length < 3) {
+      setPickupResults([]);
+      return;
+    }
+    setPickupSearching(true);
+    try {
+      const res = await fetch(
+        `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(query)}&limit=5&countrycodes=br`,
+        { headers: { 'Accept-Language': 'pt-BR' } }
+      );
+      const data: AddressSearchResult[] = await res.json();
+      setPickupResults(data);
+    } catch {
+      setPickupResults([]);
+    } finally {
+      setPickupSearching(false);
+    }
+  };
+
+  const handlePickupInput = (value: string) => {
+    setPickupAddress(value);
+    if (pickupTimer.current) clearTimeout(pickupTimer.current);
+    pickupTimer.current = setTimeout(() => searchPickupAddress(value), 500);
+  };
+
+  const selectPickupResult = (result: AddressSearchResult) => {
+    const label = result.display_name.split(',').slice(0, 4).join(', ');
+    setPickupAddress(label);
+    setPickupLat(result.lat);
+    setPickupLng(result.lon);
+    setPickupResults([]);
   };
 
   const copyUrl = (loc: CompanyLocation) => {
@@ -283,6 +339,50 @@ export function LocationsPanel() {
                 setLng(loc.lng);
               }}
             />
+          </div>
+
+          <div className="rounded-lg border border-primary-500/20 bg-primary-500/5 p-4 space-y-3">
+            <p className="text-xs font-bold text-primary-700 dark:text-primary-300">
+              Endereço de embarque fixo
+            </p>
+            <p className="text-xs text-neutral-500 dark:text-neutral-400">
+              Defina o endereço exato onde este totem está instalado. O passageiro não precisará digitar a origem — apenas o destino.
+            </p>
+            <div className="relative">
+              <Navigation className="absolute left-3.5 top-1/2 h-5 w-5 -translate-y-1/2 text-primary-500" />
+              <input
+                type="text"
+                value={pickupAddress}
+                onChange={(e) => handlePickupInput(e.target.value)}
+                placeholder="Ex: Rua das Flores, 123, Centro"
+                className="input-field pl-12"
+              />
+              {pickupSearching && (
+                <Loader2 className="absolute right-3.5 top-1/2 h-5 w-5 -translate-y-1/2 animate-spin text-neutral-400" />
+              )}
+            </div>
+            {pickupResults.length > 0 && (
+              <div className="overflow-hidden rounded-xl border border-neutral-200 dark:border-neutral-700 bg-white dark:bg-neutral-800 shadow-md">
+                {pickupResults.map((r, i) => (
+                  <button
+                    key={i}
+                    onClick={() => selectPickupResult(r)}
+                    className="flex w-full items-start gap-2 px-4 py-3 text-left hover:bg-neutral-50 dark:hover:bg-neutral-700/50 transition-colors border-b border-neutral-100 dark:border-neutral-700 last:border-0"
+                  >
+                    <MapPin className="h-4 w-4 mt-0.5 shrink-0 text-primary-500" />
+                    <span className="text-sm text-neutral-700 dark:text-neutral-300 line-clamp-2">
+                      {r.display_name}
+                    </span>
+                  </button>
+                ))}
+              </div>
+            )}
+            {pickupAddress && pickupLat && (
+              <p className="flex items-center gap-1 text-xs text-success-600">
+                <CheckCircle2 className="h-3 w-3" />
+                Endereço definido: {pickupAddress}
+              </p>
+            )}
           </div>
 
           {error && (

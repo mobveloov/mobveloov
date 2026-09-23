@@ -10,7 +10,7 @@ import type { GeoPoint, CategoryPricing, VehicleCategory } from '@/types';
 
 interface CategoryScreenProps {
   origin: GeoPoint;
-  destination: GeoPoint;
+  destination: GeoPoint | null;
 }
 
 interface QuoteCache {
@@ -40,6 +40,7 @@ export function CategoryScreen({ origin, destination }: CategoryScreenProps) {
 
   useEffect(() => {
     if (!company || !settings || !isMachineMode || !hasLinkedCategories) return;
+    if (!destination) return;
 
     const cacheKey = `${company.slug}:${origin.lat},${origin.lng}:${destination.lat},${destination.lng}`;
     if (quoteCache && quoteCache.key === cacheKey && Date.now() - quoteCache.timestamp < CACHE_TTL) {
@@ -55,6 +56,7 @@ export function CategoryScreen({ origin, destination }: CategoryScreenProps) {
     setEstimateError(null);
 
     (async () => {
+      if (!destination) return;
       const result = await fetchMachineEstimates(company.slug, origin, destination);
       if (currentFetchId !== fetchIdRef.current) return;
 
@@ -94,6 +96,13 @@ export function CategoryScreen({ origin, destination }: CategoryScreenProps) {
 
   const pricedCategories: (CategoryPricing & { machine_category_id?: string })[] = categories.length > 0
     ? categories.map((cat: VehicleCategory) => {
+        if (!destination) {
+          return {
+            ...calculateCategoryPricing(origin, origin, cat, surge),
+            base_price: 0,
+            final_price: 0,
+          };
+        }
         const localPricing = calculateCategoryPricing(origin, destination, cat, surge).pricing;
         const machineCat = cat.machine_category_id ? machineEstimates[cat.machine_category_id] : null;
         if (machineCat) {
@@ -112,10 +121,12 @@ export function CategoryScreen({ origin, destination }: CategoryScreenProps) {
           label: settings.category_label,
           description: settings.category_description,
           base_price: 0,
-          final_price: Math.max(
-            settings.min_fee,
-            (settings.base_fee + 0 * settings.per_km_rate) * surge
-          ),
+          final_price: destination
+            ? Math.max(
+                settings.min_fee,
+                (settings.base_fee + 0 * settings.per_km_rate) * surge
+              )
+            : 0,
           eta_minutes: settings.eta_minutes,
           sort_order: 0,
         },
@@ -126,6 +137,7 @@ export function CategoryScreen({ origin, destination }: CategoryScreenProps) {
   const showMachineError = isMachineMode && hasLinkedCategories && !loadingEstimates && !estimatesAvailable && estimateError !== null;
 
   const isPriceUnavailable = (cat: CategoryPricing & { machine_category_id?: string }): boolean => {
+    if (!destination) return true;
     if (!isMachineMode || !hasLinkedCategories) return false;
     if (loadingEstimates) return false;
     if (estimatesAvailable && cat.machine_category_id && machineEstimates[cat.machine_category_id]) return false;
@@ -141,7 +153,7 @@ export function CategoryScreen({ origin, destination }: CategoryScreenProps) {
       </h1>
 
       <div className="mb-4 h-44 overflow-hidden rounded-2xl border border-neutral-200 dark:border-neutral-700">
-        <MapView origin={origin} destination={destination} className="h-full w-full" />
+        <MapView origin={origin} destination={destination ?? undefined} className="h-full w-full" />
       </div>
 
       <div className="card p-5 mb-4">
@@ -161,7 +173,7 @@ export function CategoryScreen({ origin, destination }: CategoryScreenProps) {
             <div>
               <p className="text-[10px] font-semibold uppercase text-neutral-400">Destino</p>
               <p className="text-sm text-neutral-700 dark:text-neutral-300 line-clamp-1">
-                {destination.label}
+                {destination ? destination.label : 'A definir pelo motorista'}
               </p>
             </div>
           </div>
@@ -219,7 +231,7 @@ export function CategoryScreen({ origin, destination }: CategoryScreenProps) {
           const hasMachinePrice = !!(cat as CategoryPricing & { machine_category_id?: string }).machine_category_id && estimatesAvailable;
           const priceUnavailable = isPriceUnavailable(cat);
           const showFallbackPrice = priceUnavailable && !isCalculating;
-          const disableButton = (isCalculating && !hasMachinePrice && isMachineMode && hasLinkedCategories) || (showFallbackPrice && requirePrice);
+          const disableButton = (isCalculating && !hasMachinePrice && isMachineMode && hasLinkedCategories && !!destination) || (showFallbackPrice && requirePrice && !!destination);
 
           return (
             <button
