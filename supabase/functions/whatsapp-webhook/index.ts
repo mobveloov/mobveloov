@@ -513,6 +513,10 @@ async function handleIncomingMessage(companyId: string, data: Record<string, unk
             message: `Cancel via WhatsApp failed (${resp.status}): ${errorBody.slice(0, 300)}`,
             ride_id: ride.id,
           });
+          // On transient errors (429, 5xx), don't cancel locally — ride may still be active
+          if (resp.status !== 404 && resp.status !== 410 && resp.status !== 409) {
+            return;
+          }
         }
       } catch (err) {
         const msg = err instanceof Error ? err.message : "Cancel request failed";
@@ -523,6 +527,8 @@ async function handleIncomingMessage(companyId: string, data: Record<string, unk
           message: `Cancel via WhatsApp exception: ${msg}`,
           ride_id: ride.id,
         });
+        // Network exception — don't cancel locally, ride may still be active
+        return;
       }
     }
   }

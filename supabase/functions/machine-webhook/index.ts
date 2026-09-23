@@ -9,15 +9,56 @@ const corsHeaders = {
 };
 
 async function verifyMachineSignature(req: Request): Promise<boolean> {
-  const secret = Deno.env.get("MACHINE_WEBHOOK_SECRET");
-  if (!secret) return true;
-  const signature = req.headers.get("Signature-V2") ?? req.headers.get("x-machine-signature");
-  if (!signature) return false;
+  // Signature-V2 = HMAC-SHA512 over raw body, keyed by the company's API key.
+  // We need the raw body to compute the hash, then we'll re-parse it.
   const rawBody = await req.clone().text();
-  const hmac = createHmac("sha512", secret);
+  const signature = req.headers.get("Signature-V2");
+  if (!signature) return false;
+
+  // Try to extract company_id from the body to look up the API key
+  let bodyJson: { request_id?: string; company_id?: string; data?: Array<{ company_id?: string; request_id?: string }> } = {};
+  try { bodyJson = JSON.parse(rawBody); } catch { return false; }
+
+  // Determine company_id from the payload
+  let companyId: string | undefined = bodyJson.company_id;
+  if (!companyId && Array.isArray(bodyJson.data) && bodyJson.data.length > 0) {
+    companyId = bodyJson.data[0]?.company_id;
+  }
+  if (!companyId && bodyJson.request_id) {
+    // Look up ride by machine_order_id to find company_id
+    const { data: ride } = await supabase
+      .from("rides")
+      .select("company_id")
+      .eq("machine_order_id", String(bodyJson.request_id))
+      .maybeSingle();
+    companyId = ride?.company_id;
+  }
+  if (!companyId) return false;
+
+  // Fetch the company's API key
+  const { data: credentials } = await supabase
+    .from("company_credentials")
+    .select("machine_api_key")
+    .eq("company_id", companyId)
+    .maybeSingle();
+  const { data: tenantRows } = await supabase
+    .from("tenant_secrets")
+    .select("secret_name, secret_value")
+    .eq("tenant_id", companyId);
+  const tenantMap = new Map(
+    (tenantRows ?? []).map((r: { secret_name: string; secret_value: string }) => [r.secret_name, r.secret_value])
+  );
+  const apiKey = tenantMap.get("MACHINE_API_KEY") || credentials?.machine_api_key || "";
+  if (!apiKey) return false;
+
+  const hmac = createHmac("sha512", apiKey);
   hmac.update(rawBody);
   const expected = hmac.digest("hex");
- return signature === expected;
+  // Constant-time comparison
+  const sigBytes = Buffer.from(signature);
+  const expBytes = Buffer.from(expected);
+  if (sigBytes.length !== expBytes.length) return false;
+  return crypto.timingSafeEqual(sigBytes, expBytes);
 }
 
 const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
@@ -89,17 +130,19 @@ const STATUS_MAP: Record<string, string> = {
   D: "pending",
   G: "pending",
   P: "pending",
-  N: "pending",
+  N: "canceled", // NOT_SERVED — no driver accepted
   A: "accepted",
   AP: "en_route",
   E: "in_progress",
   S: "in_progress",
   F: "completed",
   C: "canceled",
-  L: "in_progress",
-  R: "in_progress",
+  L: "in_progress", // WAITING_RELEASE
+  R: "completed", // WAITING_PAYMENT — ride finished
   U: "in_progress",
   ER: "in_progress",
+  O: "in_progress", // Partida prolongada
+  T: "in_progress", // Alteração de trajeto
 };
 
 const STATUS_MESSAGES_PT: Record<string, string> = {
@@ -126,7 +169,23 @@ Deno.serve(async (req: Request) => {
 
   try {
     const body = await req.json();
-    const { request_id, status_code, status_label, data: batchData } = body;
+    const { request_id, status_code, status_label, data: batchData, event_id } = body;
+
+    // Deduplicate by event_id — Machine API may redeliver webhooks
+    if (event_id) {
+      const { data: existing } = await supabase
+        .from("admin_logs")
+        .select("id")
+        .eq("source", "machine_webhook")
+        .contains("payload", { event_id })
+        .limit(1)
+        .maybeSingle();
+      if (existing) {
+        return new Response(JSON.stringify({ success: true, note: "duplicate event" }), {
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+    }
 
     if (batchData && Array.isArray(batchData)) {
       for (const pos of batchData) {
@@ -172,15 +231,14 @@ Deno.serve(async (req: Request) => {
           .maybeSingle();
         if (existingRide) {
           const newDetails = await fetchRideDetails(ride.company_id, machineOrderId);
-          const newDriverName = newDetails?.driver?.nome ?? null;
-          const newDriverPhone = newDetails?.driver?.telefone ?? null;
-          const newVehiclePlate = newDetails?.driver?.veiculo_placa ?? null;
+          const newDriverName = newDetails?.nome_condutor ?? newDetails?.driver?.nome ?? null;
+          const newDriverPhone = newDetails?.telefone_condutor ?? newDetails?.driver?.telefone ?? null;
+          const newVehiclePlate = newDetails?.placa_veiculo ?? newDetails?.driver?.veiculo_placa ?? null;
           if (newDriverName && newDriverName !== existingRide.driver_name) {
             driverChanged = true;
           } else if (newVehiclePlate && newVehiclePlate !== existingRide.vehicle_plate) {
             driverChanged = true;
           } else if (!newDriverName && !newDriverPhone) {
-            // Same status, same driver — skip
             return new Response(JSON.stringify({ success: true, note: "no change" }), {
               headers: { ...corsHeaders, "Content-Type": "application/json" },
             });
@@ -196,21 +254,20 @@ Deno.serve(async (req: Request) => {
 
       if (internalStatus === "accepted" || internalStatus === "en_route" || internalStatus === "in_progress") {
         const details = await fetchRideDetails(ride.company_id, machineOrderId);
-        if (details?.driver) {
-          driverName = details.driver.nome ?? null;
-          driverPhone = details.driver.telefone ?? null;
-          vehiclePlate = details.driver.veiculo_placa ?? null;
-          vehicleModel = details.driver.veiculo_modelo ?? null;
-          vehicleColor = details.driver.veiculo_cor ?? null;
+        if (details) {
+          driverName = details.nome_condutor ?? details.driver?.nome ?? null;
+          driverPhone = details.telefone_condutor ?? details.driver?.telefone ?? null;
+          vehiclePlate = details.placa_veiculo ?? details.driver?.veiculo_placa ?? null;
+          vehicleModel = details.veiculo ?? details.driver?.veiculo_modelo ?? null;
+          vehicleColor = details.cor_veiculo ?? details.driver?.veiculo_cor ?? null;
         }
-        // Save driver GPS position if available
-        const driverLat = details?.driver?.lat ?? details?.driver?.latitude ?? details?.lat ?? details?.latitude ?? null;
-        const driverLng = details?.driver?.lng ?? details?.driver?.longitude ?? details?.lng ?? details?.longitude ?? null;
-        if (driverLat != null && driverLng != null) {
+        // Fetch driver GPS from the dedicated position endpoint
+        const driverPos = await fetchDriverPosition(ride.company_id, machineOrderId);
+        if (driverPos) {
           await supabase.from("ride_driver_positions").upsert({
             ride_id: ride.id,
-            lat: driverLat,
-            lng: driverLng,
+            lat: driverPos.lat,
+            lng: driverPos.lng,
             updated_at: new Date().toISOString(),
           }).eq("ride_id", ride.id);
         }
@@ -358,7 +415,49 @@ async function fetchRideDetails(companyId: string, machineOrderId: string): Prom
   if (!apiKey || !user || !pass) return null;
 
   try {
-    const resp = await fetch(`${baseUrl}/api/v2/integracao/corridas/${machineOrderId}/detalhes`, {
+    // Use POST /corridas/consultar — returns telefone_condutor, veiculo, placa_veiculo, cor_veiculo
+    const resp = await fetch(`${baseUrl}/api/v2/integracao/corridas/consultar`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "api-key": apiKey,
+        "Authorization": `Basic ${btoa(`${user}:${pass}`)}`,
+      },
+      body: JSON.stringify({ id_mch: machineOrderId }),
+    });
+
+    if (!resp.ok) return null;
+    const json = await resp.json();
+    return json?.data ?? null;
+  } catch {
+    return null;
+  }
+}
+
+async function fetchDriverPosition(companyId: string, machineOrderId: string): Promise<{ lat: number; lng: number } | null> {
+  const { data: credentials } = await supabase
+    .from("company_credentials")
+    .select("machine_api_url, machine_api_key, taximetro_username, taximetro_password")
+    .eq("company_id", companyId)
+    .maybeSingle();
+
+  const { data: tenantRows } = await supabase
+    .from("tenant_secrets")
+    .select("secret_name, secret_value")
+    .eq("tenant_id", companyId);
+  const tenantMap = new Map(
+    (tenantRows ?? []).map((r: { secret_name: string; secret_value: string }) => [r.secret_name, r.secret_value])
+  );
+
+  const baseUrl = (credentials?.machine_api_url || "https://api.taximachine.com.br").replace(/\/+$/, "");
+  const apiKey = tenantMap.get("MACHINE_API_KEY") || credentials?.machine_api_key || "";
+  const user = tenantMap.get("TAXIMETRO_USER") || credentials?.taximetro_username || "";
+  const pass = tenantMap.get("TAXIMETRO_PASSWORD") || credentials?.taximetro_password || "";
+
+  if (!apiKey || !user || !pass) return null;
+
+  try {
+    const resp = await fetch(`${baseUrl}/api/v2/integracao/corridas/${machineOrderId}/condutor/posicao`, {
       method: "GET",
       headers: {
         "Content-Type": "application/json",
@@ -369,7 +468,11 @@ async function fetchRideDetails(companyId: string, machineOrderId: string): Prom
 
     if (!resp.ok) return null;
     const json = await resp.json();
-    return json?.data ?? null;
+    const data = json?.data;
+    if (data?.lat_condutor != null && data?.lng_condutor != null) {
+      return { lat: data.lat_condutor, lng: data.lng_condutor };
+    }
+    return null;
   } catch {
     return null;
   }

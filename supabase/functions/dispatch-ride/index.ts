@@ -440,11 +440,11 @@ async function dispatchToMachine(
   if (apiResponse.status >= 200 && apiResponse.status < 300) {
     updatePayload.status = "pending";
 
+    // Persist the fare returned by Machine API if available
     const d = dispatchData?.data ?? dispatchData;
-    if (d?.driver_name) updatePayload.driver_name = d.driver_name;
-    if (d?.driver_phone) updatePayload.driver_phone = d.driver_phone;
-    if (d?.vehicle_plate) updatePayload.vehicle_plate = d.vehicle_plate;
-    if (d?.vehicle_model) updatePayload.vehicle_model = d.vehicle_model;
+    if (d?.valor_corrida != null) {
+      updatePayload.estimated_price = parseFloat(String(d.valor_corrida));
+    }
   }
 
   await supabase
@@ -669,10 +669,15 @@ async function handleDriverNotification(
 
 // ── Machine API status code → internal status ──
 const MACHINE_STATUS_MAP: Record<string, string> = {
-  D: "pending", G: "pending", P: "pending", N: "pending",
+  D: "pending", G: "pending", P: "pending",
+  N: "canceled", // NOT_SERVED — no driver accepted
   A: "accepted", AP: "en_route", E: "in_progress", S: "in_progress",
-  F: "completed", C: "canceled", L: "in_progress", R: "in_progress",
+  F: "completed", C: "canceled",
+  L: "in_progress", // WAITING_RELEASE — ride finished, awaiting release
+  R: "completed", // WAITING_PAYMENT — ride finished, awaiting payment
   U: "in_progress", ER: "in_progress",
+  O: "in_progress", // Partida prolongada
+  T: "in_progress", // Alteração de trajeto
 };
 
 async function getMachineAuthHeaders(companyId: string): Promise<{ headers: Record<string, string>; baseUrl: string } | null> {
@@ -752,13 +757,20 @@ async function cancelRideOnMachine(companyId: string, rideId: string, machineOrd
         message: `Machine API cancel error ${resp.status}: ${errorBody}`,
         ride_id: rideId,
       });
-      // Still cancel locally
-      await supabase.from("rides").update({
-        status: "canceled",
-        updated_at: new Date().toISOString(),
-      }).eq("id", rideId);
-
-      return new Response(JSON.stringify({ success: true, canceled: true, note: "machine cancel failed, canceled locally" }), {
+      // Only cancel locally on definitive failure (404, 410, 409)
+      // On transient errors (429, 5xx), keep the ride active so the Machine ride isn't orphaned
+      if (resp.status === 404 || resp.status === 410 || resp.status === 409) {
+        await supabase.from("rides").update({
+          status: "canceled",
+          updated_at: new Date().toISOString(),
+        }).eq("id", rideId);
+        return new Response(JSON.stringify({ success: true, canceled: true, note: "machine cancel definitive failure, canceled locally" }), {
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+      // Transient error — don't cancel locally, ride may still be active on Machine
+      return new Response(JSON.stringify({ success: false, canceled: false, error: `Machine cancel failed (${resp.status}) — ride still active` }), {
+        status: 200,
         headers: { ...corsHeaders, "Content-Type": "application/json" },
       });
     }
@@ -780,13 +792,8 @@ async function cancelRideOnMachine(companyId: string, rideId: string, machineOrd
       message: `Cancel exception: ${msg}`,
       ride_id: rideId,
     });
-    // Cancel locally anyway
-    await supabase.from("rides").update({
-      status: "canceled",
-      updated_at: new Date().toISOString(),
-    }).eq("id", rideId);
-
-    return new Response(JSON.stringify({ success: true, canceled: true, note: "exception, canceled locally" }), {
+    // Network exception — don't cancel locally, ride may still be active on Machine
+    return new Response(JSON.stringify({ success: false, canceled: false, error: `Cancel failed: ${msg} — ride still active` }), {
       headers: { ...corsHeaders, "Content-Type": "application/json" },
     });
   }
@@ -1145,29 +1152,46 @@ async function pollRideStatus(companyId: string, rideId: string, machineOrderId?
   let vehicleModel: string | null = null;
   let vehicleColor: string | null = null;
 
+  // Use POST /corridas/consultar for driver info (telefone_condutor, veiculo, placa_veiculo, cor_veiculo)
+  // and GET /corridas/{id}/condutor/posicao for GPS — /detalhes only returns {id, nome} for driver
   try {
-    const detailsResp = await fetch(`${auth.baseUrl}/api/v2/integracao/corridas/${mchId}/detalhes`, {
+    const consultarResp = await fetch(`${auth.baseUrl}/api/v2/integracao/corridas/consultar`, {
+      method: "POST",
+      headers: auth.headers,
+      body: JSON.stringify({ id_mch: mchId }),
+    });
+
+    if (consultarResp.ok) {
+      const consultarJson = await consultarResp.json();
+      const d = consultarJson?.data;
+      if (d) {
+        driverName = d.nome_condutor ?? d.driver?.nome ?? null;
+        driverPhone = d.telefone_condutor ?? d.driver?.telefone ?? null;
+        vehiclePlate = d.placa_veiculo ?? d.driver?.veiculo_placa ?? null;
+        vehicleModel = d.veiculo ?? d.driver?.veiculo_modelo ?? null;
+        vehicleColor = d.cor_veiculo ?? d.driver?.veiculo_cor ?? null;
+        // Fallback status from consultar if /status failed
+        if (!statusCode && d.status_solicitacao) {
+          statusCode = String(d.status_solicitacao);
+        }
+      }
+    }
+  } catch {
+    // best-effort
+  }
+
+  // Fetch driver GPS position from the dedicated position endpoint
+  try {
+    const posResp = await fetch(`${auth.baseUrl}/api/v2/integracao/corridas/${mchId}/condutor/posicao`, {
       method: "GET",
       headers: auth.headers,
     });
 
-    if (detailsResp.ok) {
-      const detailsJson = await detailsResp.json();
-      const d = detailsJson?.data;
-      if (d?.driver) {
-        driverName = d.driver.nome ?? null;
-        driverPhone = d.driver.telefone ?? null;
-        vehiclePlate = d.driver.veiculo_placa ?? null;
-        vehicleModel = d.driver.veiculo_modelo ?? null;
-        vehicleColor = d.driver.veiculo_cor ?? null;
-      }
-      // Fallback: if /status endpoint failed, use short_code from /detalhes
-      if (!statusCode && d?.short_code) {
-        statusCode = d.short_code;
-      }
-      // Save driver GPS position if available
-      const driverLat = d?.driver?.lat ?? d?.driver?.latitude ?? d?.lat ?? d?.latitude ?? null;
-      const driverLng = d?.driver?.lng ?? d?.driver?.longitude ?? d?.lng ?? d?.longitude ?? null;
+    if (posResp.ok) {
+      const posJson = await posResp.json();
+      const posData = posJson?.data;
+      const driverLat = posData?.lat_condutor ?? null;
+      const driverLng = posData?.lng_condutor ?? null;
       if (driverLat != null && driverLng != null) {
         await supabase.from("ride_driver_positions").upsert({
           ride_id: rideId,
