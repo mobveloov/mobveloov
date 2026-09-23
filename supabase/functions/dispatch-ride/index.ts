@@ -1484,7 +1484,6 @@ async function listMachineCategories(
     }
 
     const data = await resp.json();
-    console.log("[listMachineCategories] raw categories response:", JSON.stringify(data).slice(0, 2000));
     const rawCats: unknown[] = data?.data ?? (Array.isArray(data) ? data : []);
 
     // Return only id + nome + descricao — the Machine API categorias endpoint

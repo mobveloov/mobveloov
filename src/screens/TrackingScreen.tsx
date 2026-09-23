@@ -399,7 +399,7 @@ export function TrackingScreen({ origin, destination, passengerName, passengerPh
                 {ride.driver_name}
               </p>
               <p className="text-sm text-neutral-500 dark:text-neutral-400">
-                {ride.vehicle_model} · {ride.vehicle_plate}
+                {ride.vehicle_color ? `${ride.vehicle_color} · ` : ''}{ride.vehicle_model} · {ride.vehicle_plate}
               </p>
             </div>
             <a

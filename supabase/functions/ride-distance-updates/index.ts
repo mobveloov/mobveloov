@@ -205,17 +205,23 @@ async function fetchDriverPositionFromMachine(
     .eq("company_id", companyId)
     .maybeSingle();
 
-  if (!credentials) return null;
+  const { data: tenantRows } = await supabase
+    .from("tenant_secrets")
+    .select("secret_name, secret_value")
+    .eq("tenant_id", companyId);
+  const tenantMap = new Map(
+    (tenantRows ?? []).map((r: { secret_name: string; secret_value: string }) => [r.secret_name, r.secret_value])
+  );
 
-  const baseUrl = (credentials.machine_api_url || "https://api.taximachine.com.br").replace(/\/+$/, "");
-  const apiKey = credentials.machine_api_key || "";
-  const user = credentials.taximetro_username || "";
-  const pass = credentials.taximetro_password || "";
+  const baseUrl = (credentials?.machine_api_url || "https://api.taximachine.com.br").replace(/\/+$/, "");
+  const apiKey = tenantMap.get("MACHINE_API_KEY") || credentials?.machine_api_key || "";
+  const user = tenantMap.get("TAXIMETRO_USER") || credentials?.taximetro_username || "";
+  const pass = tenantMap.get("TAXIMETRO_PASSWORD") || credentials?.taximetro_password || "";
 
   if (!apiKey || !user || !pass) return null;
 
   try {
-    const resp = await fetch(`${baseUrl}/api/v2/integracao/corridas/${machineOrderId}/detalhes`, {
+    const resp = await fetch(`${baseUrl}/api/v2/integracao/corridas/${machineOrderId}/condutor/posicao`, {
       method: "GET",
       headers: {
         "Content-Type": "application/json",
@@ -228,8 +234,8 @@ async function fetchDriverPositionFromMachine(
     const json = await resp.json();
     const d = json?.data;
 
-    const driverLat = d?.driver?.lat ?? d?.driver?.latitude ?? d?.lat ?? d?.latitude ?? null;
-    const driverLng = d?.driver?.lng ?? d?.driver?.longitude ?? d?.lng ?? d?.longitude ?? null;
+    const driverLat = d?.lat_condutor ? parseFloat(d.lat_condutor) : (d?.lat ?? d?.latitude ?? null);
+    const driverLng = d?.lng_condutor ? parseFloat(d.lng_condutor) : (d?.lng ?? d?.longitude ?? null);
 
     if (driverLat != null && driverLng != null) {
       await supabase.from("ride_driver_positions").upsert({

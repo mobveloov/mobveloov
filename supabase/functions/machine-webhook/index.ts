@@ -1,5 +1,6 @@
 import { createClient } from "npm:@supabase/supabase-js@2.57.4";
 import { createHmac } from "node:crypto";
+// machine-webhook: handles Machine API status + position webhooks (v2).
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -9,14 +10,14 @@ const corsHeaders = {
 
 async function verifyMachineSignature(req: Request): Promise<boolean> {
   const secret = Deno.env.get("MACHINE_WEBHOOK_SECRET");
-  if (!secret) return true; // If no secret configured, skip verification (backwards compat)
-  const signature = req.headers.get("x-machine-signature");
+  if (!secret) return true;
+  const signature = req.headers.get("Signature-V2") ?? req.headers.get("x-machine-signature");
   if (!signature) return false;
   const rawBody = await req.clone().text();
-  const hmac = createHmac("sha256", secret);
+  const hmac = createHmac("sha512", secret);
   hmac.update(rawBody);
   const expected = hmac.digest("hex");
-  return signature === expected;
+ return signature === expected;
 }
 
 const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
@@ -339,14 +340,20 @@ async function fetchRideDetails(companyId: string, machineOrderId: string): Prom
     .from("company_credentials")
     .select("machine_api_url, machine_api_key, taximetro_username, taximetro_password")
     .eq("company_id", companyId)
-    .single();
+    .maybeSingle();
 
-  if (!credentials) return null;
+  const { data: tenantRows } = await supabase
+    .from("tenant_secrets")
+    .select("secret_name, secret_value")
+    .eq("tenant_id", companyId);
+  const tenantMap = new Map(
+    (tenantRows ?? []).map((r: { secret_name: string; secret_value: string }) => [r.secret_name, r.secret_value])
+  );
 
-  const baseUrl = (credentials.machine_api_url || "https://api.taximachine.com.br").replace(/\/+$/, "");
-  const apiKey = credentials.machine_api_key || "";
-  const user = credentials.taximetro_username || "";
-  const pass = credentials.taximetro_password || "";
+  const baseUrl = (credentials?.machine_api_url || "https://api.taximachine.com.br").replace(/\/+$/, "");
+  const apiKey = tenantMap.get("MACHINE_API_KEY") || credentials?.machine_api_key || "";
+  const user = tenantMap.get("TAXIMETRO_USER") || credentials?.taximetro_username || "";
+  const pass = tenantMap.get("TAXIMETRO_PASSWORD") || credentials?.taximetro_password || "";
 
   if (!apiKey || !user || !pass) return null;
 

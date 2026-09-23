@@ -1,4 +1,5 @@
 // auto-cancel-rides edge function — cancels rides pending >10 minutes (v2)
+// Updated: tenant_secrets fallback for Machine API credentials.
 import { createClient } from "npm:@supabase/supabase-js@2.57.4";
 
 const corsHeaders = {
@@ -62,15 +63,27 @@ Deno.serve(async (req: Request) => {
           .eq("company_id", ride.company_id)
           .maybeSingle();
 
-        if (creds?.machine_api_url && creds?.machine_api_key && creds?.taximetro_username && creds?.taximetro_password) {
+        const { data: tenantRows } = await supabase
+          .from("tenant_secrets")
+          .select("secret_name, secret_value")
+          .eq("tenant_id", ride.company_id);
+        const tenantMap = new Map(
+          (tenantRows ?? []).map((r: { secret_name: string; secret_value: string }) => [r.secret_name, r.secret_value])
+        );
+
+        const baseUrl = (creds?.machine_api_url || "https://api.taximachine.com.br").replace(/\/+$/, "");
+        const apiKey = tenantMap.get("MACHINE_API_KEY") || creds?.machine_api_key || "";
+        const user = tenantMap.get("TAXIMETRO_USER") || creds?.taximetro_username || "";
+        const pass = tenantMap.get("TAXIMETRO_PASSWORD") || creds?.taximetro_password || "";
+
+        if (apiKey && user && pass) {
           try {
-            const baseUrl = creds.machine_api_url.replace(/\/+$/, "");
             const cancelResp = await fetch(`${baseUrl}/api/v2/integracao/corridas/${ride.machine_order_id}/cancelar`, {
               method: "POST",
               headers: {
                 "Content-Type": "application/json",
-                "api-key": creds.machine_api_key,
-                "Authorization": `Basic ${btoa(`${creds.taximetro_username}:${creds.taximetro_password}`)}`,
+                "api-key": apiKey,
+                "Authorization": `Basic ${btoa(`${user}:${pass}`)}`,
               },
               body: JSON.stringify({ motivo_id: 3 }),
             });
