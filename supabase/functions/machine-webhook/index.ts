@@ -134,7 +134,7 @@ const STATUS_MAP: Record<string, string> = {
 };
 
 const STATUS_MESSAGES_PT: Record<string, string> = {
-  accepted: "\u2705 Corrida confirmada. Confira abaixo os dados do seu motorista:",
+  accepted: "\u2705 Corrida confirmada! Seu motorista est\u00e1 a caminho.",
   en_route: "\U0001F697 Seu motorista chegou ao local de embarque! Procure pelo veículo.",
   in_progress: "\U0001F695 Sua viagem está em andamento.",
   completed: "\U0001F3C6 Sua viagem foi concluída. Obrigado pela preferência!",
@@ -504,14 +504,17 @@ async function fetchRideDetails(companyId: string, machineOrderId: string): Prom
 
 async function fetchRideDetailsWithRetry(companyId: string, machineOrderId: string): Promise<Record<string, unknown> | null> {
   const str = (v: unknown): string | null => { const s = v != null ? String(v).trim() : ""; return s || null; };
-  let details = await fetchRideDetails(companyId, machineOrderId);
   const hasDriver = (d: Record<string, unknown> | null): boolean => {
     if (!d) return false;
-    return !!(str(d.nome_condutor) ?? str((d.driver as Record<string, unknown>)?.nome));
+    return !!(str(d.nome_condutor) ?? str((d.driver as Record<string, unknown>)?.nome) ?? str(d.placa_veiculo) ?? str((d.driver as Record<string, unknown>)?.veiculo_placa));
   };
-  if (!hasDriver(details)) {
-    await new Promise(r => setTimeout(r, 3000));
+  let details = await fetchRideDetails(companyId, machineOrderId);
+  if (hasDriver(details)) return details;
+  const delays = [3000, 5000, 8000, 12000];
+  for (const delay of delays) {
+    await new Promise(r => setTimeout(r, delay));
     details = await fetchRideDetails(companyId, machineOrderId);
+    if (hasDriver(details)) return details;
   }
   return details;
 }
