@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
-import { Settings2, Save, QrCode, RefreshCw, Loader2, AlertCircle, CheckCircle2, Link2, MessageSquare } from 'lucide-react';
+import { Settings2, Save, QrCode, RefreshCw, Loader2, AlertCircle, CheckCircle2, Link2, MessageSquare, Power } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 import { inputCls, labelCls, btnGold } from '../shared';
 import type { ModuleProps } from '../Layout';
@@ -47,6 +47,25 @@ export function IntegrationsModule({ success, error: toastError }: ModuleProps) 
           provider: parsed.provider ?? 'evolution',
           fields: parsed.fields ?? {},
         });
+        if ((parsed.provider === 'evolution' || parsed.provider === 'veloov') && parsed.fields?.evo_url && parsed.fields?.evo_token) {
+          const baseUrl = parsed.fields.evo_url.replace(/\/$/, '');
+          const instance = parsed.fields.evo_instance || 'veloov';
+          try {
+            const resp = await fetch(`${baseUrl}/instance/status/${encodeURIComponent(instance)}`, {
+              headers: { apikey: parsed.fields.evo_token },
+            });
+            if (resp.ok) {
+              const statusData = await resp.json() as Record<string, unknown>;
+              const state = String(
+                (statusData.instance as Record<string, unknown> | undefined)?.state
+                ?? statusData.status
+                ?? statusData.state
+                ?? ''
+              ).toLowerCase();
+              if (state === 'open' || state === 'connected') setConnected(true);
+            }
+          } catch { /* status check is best-effort */ }
+        }
       } catch {
         setConfig({ provider: 'evolution', fields: {} });
       }
@@ -111,7 +130,7 @@ export function IntegrationsModule({ success, error: toastError }: ModuleProps) 
     setQrData(null);
     setConnected(false);
 
-    if (config.provider !== 'evolution' && config.provider !== 'zapi' && config.provider !== 'zpro') {
+    if (config.provider !== 'evolution' && config.provider !== 'veloov' && config.provider !== 'zapi' && config.provider !== 'zpro') {
       setQrError('QR Code não está disponível para este provedor.');
       setQrLoading(false);
       return;
@@ -145,6 +164,31 @@ export function IntegrationsModule({ success, error: toastError }: ModuleProps) 
       }
     } catch {
       setQrError('Não foi possível conectar ao gateway. Verifique a configuração e tente novamente.');
+    } finally {
+      setQrLoading(false);
+    }
+  };
+
+  const handleDisconnect = async () => {
+    const baseUrl = (config.fields.evo_url ?? '').replace(/\/$/, '');
+    const token = config.fields.evo_token ?? '';
+    const instance = config.fields.evo_instance || 'veloov';
+    if (!baseUrl || !token) {
+      setQrError('URL e token da Evolution não estão configurados.');
+      return;
+    }
+    setQrLoading(true);
+    setQrError(null);
+    try {
+      await fetch(`${baseUrl}/instance/logout/${encodeURIComponent(instance)}`, {
+        method: 'DELETE',
+        headers: { apikey: token },
+      });
+      setConnected(false);
+      setQrData(null);
+      success('Instância desconectada. Clique em "Gerar QR Code" para reconectar.');
+    } catch {
+      setQrError('Erro ao desconectar a instância.');
     } finally {
       setQrLoading(false);
     }
@@ -199,7 +243,7 @@ export function IntegrationsModule({ success, error: toastError }: ModuleProps) 
               </div>
               <div>
                 <label className={labelCls}>Nome da Instância</label>
-                <input className={inputCls} value={config.fields.evo_instance ?? ''} onChange={(e) => updateField('evo_instance', e.target.value)} placeholder="VeoovMob" />
+                <input className={inputCls} value={config.fields.evo_instance ?? ''} onChange={(e) => updateField('evo_instance', e.target.value)} placeholder="veloov" />
               </div>
             </div>
           )}
@@ -306,9 +350,14 @@ export function IntegrationsModule({ success, error: toastError }: ModuleProps) 
                 <div className="bg-slate-950 border border-emerald-700/40 rounded-xl p-4 flex flex-col items-center justify-center min-h-[200px] gap-3 animate-fade-in">
                   <CheckCircle2 className="h-10 w-10 text-emerald-400" />
                   <p className="text-xs font-bold text-emerald-400">Instância já conectada!</p>
-                  <button type="button" onClick={() => { setConnected(false); generateQR(); }} className="text-[10px] text-slate-400 hover:text-white flex items-center gap-1">
-                    <RefreshCw className="h-3 w-3" /> Gerar novo QR Code
-                  </button>
+                  <div className="flex gap-3">
+                    <button type="button" onClick={() => { setConnected(false); generateQR(); }} className="text-[10px] text-slate-400 hover:text-white flex items-center gap-1">
+                      <RefreshCw className="h-3 w-3" /> Gerar novo QR Code
+                    </button>
+                    <button type="button" onClick={handleDisconnect} disabled={qrLoading} className="text-[10px] text-red-400 hover:text-red-300 flex items-center gap-1">
+                      <Power className="h-3 w-3" /> Desconectar
+                    </button>
+                  </div>
                 </div>
               ) : (
                 <div className="bg-slate-950 border border-slate-800 rounded-xl p-4 flex flex-col items-center justify-center min-h-[250px] gap-3 animate-fade-in">
