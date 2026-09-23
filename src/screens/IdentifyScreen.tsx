@@ -47,7 +47,7 @@ export function IdentifyScreen({ onIdentify, origin, destination, onDestinationC
   const [destQuery, setDestQuery] = useState(destination?.label ?? '');
   const [destResults, setDestResults] = useState<SearchResult[]>([]);
   const [searching, setSearching] = useState(false);
-  const [destNumber, setDestNumber] = useState('');
+  const [destNumber, setDestNumber] = useState(() => extractHouseNumber(destination?.label ?? ''));
   const [formError, setFormError] = useState<string | null>(null);
   const searchTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -77,16 +77,6 @@ export function IdentifyScreen({ onIdentify, origin, destination, onDestinationC
         ? await nominatimResponse.json() as Array<{ lat: string; lon: string; display_name: string; address?: { house_number?: string } }>
         : [];
 
-      if (nominatimResults.length > 0) {
-        setDestResults(nominatimResults.map((result) => ({
-          lat: parseFloat(result.lat),
-          lng: parseFloat(result.lon),
-          label: result.display_name,
-          housenumber: result.address?.house_number,
-        })));
-        return;
-      }
-
       const photonResponse = await fetch(
         `https://photon.komoot.io/api/?q=${encodeURIComponent(trimmedQuery)}&limit=6&lang=pt`,
       );
@@ -99,7 +89,7 @@ export function IdentifyScreen({ onIdentify, origin, destination, onDestinationC
         geometry: { coordinates: [number, number] };
         properties: { name?: string; street?: string; housenumber?: string; city?: string; state?: string; country?: string };
       }> };
-      const results: SearchResult[] = (data.features ?? []).map((feature) => {
+      const photonResults: SearchResult[] = (data.features ?? []).map((feature) => {
         const properties = feature.properties;
         const parts = [
           properties.name,
@@ -115,7 +105,13 @@ export function IdentifyScreen({ onIdentify, origin, destination, onDestinationC
           housenumber: properties.housenumber,
         };
       });
-      setDestResults(results);
+      const addressResults: SearchResult[] = nominatimResults.map((result) => ({
+        lat: parseFloat(result.lat),
+        lng: parseFloat(result.lon),
+        label: result.display_name,
+        housenumber: result.address?.house_number,
+      }));
+      setDestResults(addressResults.length > 0 ? addressResults : photonResults);
     } catch {
       setDestResults([]);
     } finally {
@@ -379,7 +375,7 @@ export function IdentifyScreen({ onIdentify, origin, destination, onDestinationC
                 ))}
               </div>
             )}
-            {destination && (
+            {hasFixedOrigin && destQuery.trim().length > 0 && (
               <div className="mt-2 flex items-center gap-2">
                 <input
                   type="text"
@@ -387,19 +383,17 @@ export function IdentifyScreen({ onIdentify, origin, destination, onDestinationC
                   onChange={(e) => {
                     const newNumber = e.target.value;
                     setDestNumber(newNumber);
+                    if (!destination) return;
                     const baseLabel = destQuery.split(',').map((p) => p.trim()).filter((p) => !/^\d+[A-Za-z]?$/.test(p)).join(', ');
-                    if (newNumber.trim()) {
-                      const updated = addHouseNumber(baseLabel, newNumber);
-                      setDestQuery(updated);
-                      onDestinationChange({ lat: destination.lat, lng: destination.lng, label: updated });
-                    } else {
-                      setDestQuery(baseLabel);
-                      onDestinationChange({ lat: destination.lat, lng: destination.lng, label: baseLabel });
-                    }
+                    const updated = newNumber.trim() ? addHouseNumber(baseLabel, newNumber) : baseLabel;
+                    setDestQuery(updated);
+                    onDestinationChange({ lat: destination.lat, lng: destination.lng, label: updated });
                   }}
                   placeholder="Número do endereço"
                   className="input-field flex-1 text-sm py-2"
+                  inputMode="numeric"
                 />
+                {!destination && <span className="text-xs text-slate-400">Selecione uma sugestão primeiro</span>}
               </div>
             )}
             {!destination && destQuery.length === 0 && (
