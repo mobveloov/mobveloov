@@ -422,7 +422,7 @@ export function TrackingScreen({ origin, destination, passengerName, passengerPh
       )}
 
       <div className="flex gap-3">
-        {!isCompleted && !isCanceled && (
+        {!isCompleted && !isCanceled && currentStatus !== 'en_route' && currentStatus !== 'in_progress' && (
           <button onClick={handleCancel} className="btn-secondary flex-1 text-error-500">
             Cancelar
           </button>

@@ -745,33 +745,39 @@ async function cancelRideOnMachine(companyId: string, rideId: string, machineOrd
 
 async function cancelRideByPhone(companyId: string, phone: string): Promise<Response> {
   const cleanPhone = phone.replace(/\D/g, "");
-  const phoneVariants = [
-    cleanPhone,
-    cleanPhone.replace(/^55/, ""),
-    `55${cleanPhone.replace(/^55/, "")}`,
-  ];
+  const normalizedQueryDigits = cleanPhone.replace(/^55/, "");
 
-  let ride: { id: string; machine_order_id: string | null } | null = null;
+  const { data: activeRides } = await supabase
+    .from("rides")
+    .select("id, machine_order_id, passenger_phone, status")
+    .eq("company_id", companyId)
+    .in("status", ["pending", "accepted", "en_route"])
+    .order("created_at", { ascending: false })
+    .limit(50);
 
-  for (const p of phoneVariants) {
-    const { data: found } = await supabase
-      .from("rides")
-      .select("id, machine_order_id")
-      .eq("company_id", companyId)
-      .eq("passenger_phone", p)
-      .in("status", ["pending", "accepted", "en_route"])
-      .order("created_at", { ascending: false })
-      .limit(1)
-      .single();
-
-    if (found) {
-      ride = found;
-      break;
-    }
-  }
+  const ride = activeRides?.find((r) => {
+    const storedDigits = (r.passenger_phone ?? "").replace(/\D/g, "");
+    const storedNo55 = storedDigits.replace(/^55/, "");
+    return storedDigits === cleanPhone ||
+      storedNo55 === normalizedQueryDigits ||
+      storedDigits === normalizedQueryDigits;
+  }) ?? null;
 
   if (!ride) {
     return new Response(JSON.stringify({ success: false, error: "Nenhuma corrida ativa encontrada para este telefone" }), {
+      status: 200,
+      headers: { ...corsHeaders, "Content-Type": "application/json" },
+    });
+  }
+
+  // Block cancellation when driver has arrived or ride is in progress
+  if (ride.status === "en_route" || ride.status === "in_progress") {
+    return new Response(JSON.stringify({
+      success: false,
+      error: ride.status === "en_route"
+        ? "Seu motorista ja chegou ao local de embarque. Nao e possivel cancelar neste momento."
+        : "Sua viagem ja esta em andamento. Nao e possivel cancelar.",
+    }), {
       status: 200,
       headers: { ...corsHeaders, "Content-Type": "application/json" },
     });
@@ -786,6 +792,7 @@ const STATUS_MESSAGES_PT: Record<string, string> = {
   in_progress: "Sua viagem esta em andamento.",
   completed: "Sua viagem foi concluida. Obrigado pela preferencia!",
   canceled: "Sua corrida foi cancelada.",
+  pending: "Seu motorista cancelou. Estamos procurando um novo motorista para sua corrida. Aguarde.",
 };
 
 async function getWhatsAppConfig(): Promise<{ provider: string; fields: Record<string, string> }> {
@@ -980,6 +987,8 @@ async function sendPassengerWhatsAppNotification(
   vehiclePlate: string | null,
   etaMinutes: number | null = null,
   driverDistanceKm: number | null = null,
+  previousStatus: string | null = null,
+  driverChanged: boolean = false,
 ): Promise<void> {
   let message = STATUS_MESSAGES_PT[internalStatus];
   if (!message) return;
@@ -988,6 +997,9 @@ async function sendPassengerWhatsAppNotification(
 
   if (internalStatus === "accepted" && driverName) {
     if (features.send_driver_info) {
+      if (driverChanged) {
+        message = "Seu motorista foi trocado! Um novo motorista aceitou sua corrida.";
+      }
       message += `\n\nMotorista: ${driverName}`;
       if (vehicleModel) message += `\nVeiculo: ${vehicleModel}`;
       if (vehiclePlate) message += `\nPlaca: ${vehiclePlate}`;
@@ -1122,10 +1134,19 @@ async function pollRideStatus(companyId: string, rideId: string, machineOrderId?
       status: internalStatus,
       updated_at: new Date().toISOString(),
     };
-    if (driverName) updatePayload.driver_name = driverName;
-    if (driverPhone) updatePayload.driver_phone = driverPhone;
-    if (vehiclePlate) updatePayload.vehicle_plate = vehiclePlate;
-    if (vehicleModel) updatePayload.vehicle_model = vehicleModel;
+
+    // When ride goes back to pending (driver cancelled), clear old driver info
+    if (internalStatus === "pending" && prevStatus !== "pending") {
+      updatePayload.driver_name = null;
+      updatePayload.driver_phone = null;
+      updatePayload.vehicle_plate = null;
+      updatePayload.vehicle_model = null;
+    } else {
+      if (driverName) updatePayload.driver_name = driverName;
+      if (driverPhone) updatePayload.driver_phone = driverPhone;
+      if (vehiclePlate) updatePayload.vehicle_plate = vehiclePlate;
+      if (vehicleModel) updatePayload.vehicle_model = vehicleModel;
+    }
 
     await supabase.from("rides").update(updatePayload).eq("id", rideId);
 
@@ -1167,7 +1188,33 @@ async function pollRideStatus(companyId: string, rideId: string, machineOrderId?
         vehiclePlate,
         etaMinutes,
         driverDistanceKm,
+        prevStatus,
       );
+    }
+
+    // Detect driver change while status stays "accepted" (driver cancelled, new one accepted)
+    if (prevStatus === "accepted" && internalStatus === "accepted" && passengerPhone && driverName) {
+      const { data: existing } = await supabase
+        .from("rides")
+        .select("driver_name, vehicle_plate")
+        .eq("id", rideId)
+        .single();
+
+      if (existing && (existing.driver_name !== driverName || existing.vehicle_plate !== vehiclePlate)) {
+        await sendPassengerWhatsAppNotification(
+          companyId,
+          rideId,
+          passengerPhone,
+          internalStatus,
+          driverName,
+          vehicleModel,
+          vehiclePlate,
+          etaMinutes,
+          driverDistanceKm,
+          "accepted",
+          true,
+        );
+      }
     }
 
     // Configurable periodic distance updates while en_route

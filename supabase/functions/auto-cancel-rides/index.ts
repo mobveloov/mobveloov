@@ -45,18 +45,21 @@ Deno.serve(async (req: Request) => {
       if (ride.machine_order_id) {
         const { data: creds } = await supabase
           .from("company_credentials")
-          .select("machine_api_url, machine_api_key")
+          .select("machine_api_url, machine_api_key, taximetro_username, taximetro_password")
           .eq("company_id", ride.company_id)
           .maybeSingle();
 
-        if (creds?.machine_api_url && creds?.machine_api_key) {
+        if (creds?.machine_api_url && creds?.machine_api_key && creds?.taximetro_username && creds?.taximetro_password) {
           try {
-            await fetch(`${creds.machine_api_url.replace(/\/+$/, "")}/v2/corridas/${ride.machine_order_id}`, {
-              method: "DELETE",
+            const baseUrl = creds.machine_api_url.replace(/\/+$/, "");
+            await fetch(`${baseUrl}/api/v2/integracao/corridas/${ride.machine_order_id}/cancelar`, {
+              method: "POST",
               headers: {
-                "Authorization": `Bearer ${creds.machine_api_key}`,
                 "Content-Type": "application/json",
+                "api-key": creds.machine_api_key,
+                "Authorization": `Basic ${btoa(`${creds.taximetro_username}:${creds.taximetro_password}`)}`,
               },
+              body: JSON.stringify({ motivo_id: 3 }),
             });
           } catch {
             // Best-effort cancel; DB update proceeds regardless

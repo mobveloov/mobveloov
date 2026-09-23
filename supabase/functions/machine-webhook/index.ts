@@ -47,6 +47,7 @@ const STATUS_MESSAGES_PT: Record<string, string> = {
   in_progress: "Sua viagem esta em andamento.",
   completed: "Sua viagem foi concluida. Obrigado pela preferencia!",
   canceled: "Sua corrida foi cancelada.",
+  pending: "Seu motorista cancelou. Estamos procurando um novo motorista para sua corrida. Aguarde.",
 };
 
 Deno.serve(async (req: Request) => {
@@ -85,10 +86,37 @@ Deno.serve(async (req: Request) => {
         });
       }
 
-      if (ride.status === internalStatus) {
+      if (ride.status === internalStatus && internalStatus !== "accepted") {
         return new Response(JSON.stringify({ success: true, note: "no change" }), {
           headers: { ...corsHeaders, "Content-Type": "application/json" },
         });
+      }
+
+      // Detect driver change: if status is accepted and the ride was already accepted,
+      // check if the driver is different — if so, re-send notification with new driver info
+      let driverChanged = false;
+      if (internalStatus === "accepted" && ride.status === "accepted") {
+        const { data: existingRide } = await supabase
+          .from("rides")
+          .select("driver_name, driver_phone, vehicle_plate")
+          .eq("id", ride.id)
+          .single();
+        if (existingRide) {
+          const newDetails = await fetchRideDetails(ride.company_id, machineOrderId);
+          const newDriverName = newDetails?.driver?.nome ?? null;
+          const newDriverPhone = newDetails?.driver?.telefone ?? null;
+          const newVehiclePlate = newDetails?.driver?.veiculo_placa ?? null;
+          if (newDriverName && newDriverName !== existingRide.driver_name) {
+            driverChanged = true;
+          } else if (newVehiclePlate && newVehiclePlate !== existingRide.vehicle_plate) {
+            driverChanged = true;
+          } else if (!newDriverName && !newDriverPhone) {
+            // Same status, same driver — skip
+            return new Response(JSON.stringify({ success: true, note: "no change" }), {
+              headers: { ...corsHeaders, "Content-Type": "application/json" },
+            });
+          }
+        }
       }
 
       let driverName: string | null = null;
@@ -106,15 +134,23 @@ Deno.serve(async (req: Request) => {
         }
       }
 
+      // When ride goes back to pending (driver cancelled), clear old driver info
+      if (internalStatus === "pending" && ride.status !== "pending") {
+        driverName = null;
+        driverPhone = null;
+        vehiclePlate = null;
+        vehicleModel = null;
+      }
+
       const updatePayload: Record<string, unknown> = {
         status: internalStatus,
         updated_at: new Date().toISOString(),
       };
 
-      if (driverName) updatePayload.driver_name = driverName;
-      if (driverPhone) updatePayload.driver_phone = driverPhone;
-      if (vehiclePlate) updatePayload.vehicle_plate = vehiclePlate;
-      if (vehicleModel) updatePayload.vehicle_model = vehicleModel;
+      updatePayload.driver_name = driverName;
+      updatePayload.driver_phone = driverPhone;
+      updatePayload.vehicle_plate = vehiclePlate;
+      updatePayload.vehicle_model = vehicleModel;
 
       await supabase.from("rides").update(updatePayload).eq("id", ride.id);
 
@@ -129,6 +165,33 @@ Deno.serve(async (req: Request) => {
 
       // Send WhatsApp notification to passenger via Evolution API
       // (passengers don't have the Machine app, so push notifications won't reach them)
+
+      // Fetch driver position for distance/ETA calculation
+      let driverDistanceKm: number | null = null;
+      let etaMinutes: number | null = null;
+      try {
+        const { data: pos } = await supabase
+          .from("ride_driver_positions")
+          .select("lat, lng")
+          .eq("ride_id", ride.id)
+          .maybeSingle();
+        if (pos) {
+          const { data: rideCoords } = await supabase
+            .from("rides")
+            .select("origin_lat, origin_lng")
+            .eq("id", ride.id)
+            .single();
+          if (rideCoords) {
+            const R = 6371;
+            const dLat = ((pos.lat - rideCoords.origin_lat) * Math.PI) / 180;
+            const dLng = ((pos.lng - rideCoords.origin_lng) * Math.PI) / 180;
+            const a = Math.sin(dLat/2)**2 + Math.cos(rideCoords.origin_lat * Math.PI/180) * Math.cos(pos.lat * Math.PI/180) * Math.sin(dLng/2)**2;
+            driverDistanceKm = R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+            etaMinutes = Math.max(1, Math.round(driverDistanceKm * 2.5));
+          }
+        }
+      } catch { /* best-effort */ }
+
       await sendWhatsAppNotification(
         ride.company_id,
         ride.id,
@@ -137,6 +200,10 @@ Deno.serve(async (req: Request) => {
         driverName,
         vehicleModel,
         vehiclePlate,
+        etaMinutes,
+        driverDistanceKm,
+        ride.status,
+        driverChanged,
       );
 
       return new Response(JSON.stringify({ success: true }), {
@@ -215,6 +282,10 @@ async function sendWhatsAppNotification(
   driverName: string | null,
   vehicleModel: string | null,
   vehiclePlate: string | null,
+  etaMinutes: number | null = null,
+  driverDistanceKm: number | null = null,
+  previousStatus: string | null = null,
+  driverChanged: boolean = false,
 ): Promise<void> {
   let message = STATUS_MESSAGES_PT[internalStatus];
   if (!message) return;
@@ -223,10 +294,27 @@ async function sendWhatsAppNotification(
 
   if (internalStatus === "accepted" && driverName) {
     if (features.send_driver_info) {
+      const isDriverChange = previousStatus === "accepted" && driverChanged;
+      if (isDriverChange) {
+        message = "Seu motorista foi trocado! Um novo motorista aceitou sua corrida.";
+      }
       message += `\n\nMotorista: ${driverName}`;
       if (vehicleModel) message += `\nVeiculo: ${vehicleModel}`;
       if (vehiclePlate) message += `\nPlaca: ${vehiclePlate}`;
     }
+
+    if (features.send_eta && etaMinutes != null) {
+      message += `\nTempo estimado de chegada: ${etaMinutes} min`;
+    }
+
+    if (features.distance_update_interval_min > 0 && driverDistanceKm != null) {
+      if (driverDistanceKm >= 1) {
+        message += `\nO motorista esta a ${driverDistanceKm.toFixed(1)} km de distancia`;
+      } else {
+        message += `\nO motorista esta a ${Math.round(driverDistanceKm * 1000)} m de distancia`;
+      }
+    }
+
     message += `\n\nPara cancelar, responda "cancelar".`;
   }
 

@@ -302,29 +302,22 @@ async function handleIncomingMessage(companyId: string, data: Record<string, unk
 
   // Find the passenger's active ride by phone number across ALL companies
   // (the global Veloov instance serves all companies)
-  const phoneVariants = [
-    cleanPhone,
-    cleanPhone.replace(/^55/, ""),
-    `55${cleanPhone.replace(/^55/, "")}`,
-  ];
+  const normalizedQueryDigits = cleanPhone.replace(/^55/, "");
 
-  let ride: { id: string; machine_order_id: string | null; company_id: string; passenger_name: string } | null = null;
+  const { data: activeRides } = await supabase
+    .from("rides")
+    .select("id, machine_order_id, company_id, passenger_name, passenger_phone, status")
+    .in("status", ["pending", "accepted", "en_route"])
+    .order("created_at", { ascending: false })
+    .limit(50);
 
-  for (const phone of phoneVariants) {
-    const { data: found } = await supabase
-      .from("rides")
-      .select("id, machine_order_id, company_id, passenger_name")
-      .eq("passenger_phone", phone)
-      .in("status", ["pending", "accepted", "en_route"])
-      .order("created_at", { ascending: false })
-      .limit(1)
-      .maybeSingle();
-
-    if (found) {
-      ride = found;
-      break;
-    }
-  }
+  const ride = activeRides?.find((r) => {
+    const storedDigits = (r.passenger_phone ?? "").replace(/\D/g, "");
+    const storedNo55 = storedDigits.replace(/^55/, "");
+    return storedDigits === cleanPhone ||
+      storedNo55 === normalizedQueryDigits ||
+      storedDigits === normalizedQueryDigits;
+  }) ?? null;
 
   if (!ride) {
     await supabase.from("admin_logs").insert({
@@ -332,6 +325,25 @@ async function handleIncomingMessage(companyId: string, data: Record<string, unk
       source: "whatsapp_webhook",
       level: "info",
       message: `Mensagem "cancelar" recebida de ${cleanPhone} mas nenhuma corrida ativa encontrada`,
+    });
+    return;
+  }
+
+  // Block cancellation when driver has arrived (en_route) or ride is in progress
+  if (ride.status === "en_route" || ride.status === "in_progress") {
+    try {
+      const { provider, fields: f } = await getWhatsAppConfig();
+      const msg = ride.status === "en_route"
+        ? "Seu motorista ja chegou ao local de embarque. Nao e possivel cancelar neste momento."
+        : "Sua viagem ja esta em andamento. Nao e possivel cancelar.";
+      await sendWhatsAppMessageWithProvider(provider, f, cleanPhone, msg);
+    } catch { /* best-effort */ }
+    await supabase.from("admin_logs").insert({
+      company_id: companyId,
+      source: "whatsapp_webhook",
+      level: "info",
+      message: `Cancelamento via WhatsApp bloqueado — corrida ${ride.id.slice(0, 8)} status: ${ride.status}`,
+      ride_id: ride.id,
     });
     return;
   }

@@ -10,7 +10,14 @@ const corsHeaders = {
   "Access-Control-Allow-Headers": "Content-Type, Authorization, X-Client-Info, Apikey",
 };
 
-const ASAAS_API_URL = ""; // not used here
+function toBrazilianWhatsAppNumber(raw: string): string {
+  let digits = raw.replace(/\D/g, "");
+  if (!digits) return "";
+  if (digits.startsWith("55") && digits.length >= 12) return digits;
+  if (digits.length === 10 || digits.length === 11) return `55${digits}`;
+  if (digits.length === 12 || digits.length === 13) return digits;
+  return `55${digits}`;
+}
 
 async function getWhatsAppConfig(supabase: ReturnType<typeof createClient>): Promise<{ provider: string; fields: Record<string, string> }> {
   const { data } = await supabase
@@ -27,14 +34,38 @@ async function getWhatsAppConfig(supabase: ReturnType<typeof createClient>): Pro
   return { provider: "evolution", fields: {} };
 }
 
+async function getCompanyWhatsAppConfig(supabase: ReturnType<typeof createClient>, companyId: string): Promise<{ provider: string; fields: Record<string, string> }> {
+  const { data: instance } = await supabase
+    .from("whatsapp_instances")
+    .select("whatsapp_provider, evolution_api_url, evolution_global_token, instance_name, provider_token, provider_phone_id, provider_waba_id, provider_api_url, connection_status")
+    .eq("company_id", companyId)
+    .maybeSingle();
+
+  if (instance && instance.connection_status === "connected" && instance.whatsapp_provider && instance.whatsapp_provider !== "veloov") {
+    const fields: Record<string, string> = {};
+    if (instance.evolution_api_url) fields["evo_url"] = instance.evolution_api_url;
+    if (instance.evolution_global_token) fields["evo_token"] = instance.evolution_global_token;
+    if (instance.instance_name) fields["evo_instance"] = instance.instance_name;
+    if (instance.provider_api_url) fields["zapi_url"] = instance.provider_api_url;
+    if (instance.provider_token) fields["zapi_instance_token"] = instance.provider_token;
+    if (instance.provider_token) fields["meta_token"] = instance.provider_token;
+    if (instance.provider_phone_id) fields["meta_phone_id"] = instance.provider_phone_id;
+    if (instance.provider_waba_id) fields["meta_waba_id"] = instance.provider_waba_id;
+    return { provider: instance.whatsapp_provider, fields };
+  }
+
+  return await getWhatsAppConfig(supabase);
+}
+
 async function sendWhatsAppMessage(
   supabase: ReturnType<typeof createClient>,
   cleanPhone: string,
   message: string,
+  companyId: string,
 ): Promise<{ ok: boolean; provider: string }> {
-  const { provider, fields: f } = await getWhatsAppConfig(supabase);
+  const { provider, fields: f } = await getCompanyWhatsAppConfig(supabase, companyId);
 
-  if (provider === "evolution") {
+  if (provider === "evolution" || provider === "veloov") {
     const url = f["evo_url"] ?? "";
     const token = f["evo_token"] ?? "";
     if (!url || !token) return { ok: false, provider };
@@ -52,6 +83,20 @@ async function sendWhatsAppMessage(
     const instanceId = f["zapi_instance_id"] ?? "";
     const instanceToken = f["zapi_instance_token"] ?? "";
     const clientToken = f["zapi_client_token"] ?? "";
+    if (!url || !instanceId || !instanceToken) return { ok: false, provider };
+    const resp = await fetch(`${url}/instances/${instanceId}/token/${instanceToken}/send-text`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "Client-Token": clientToken },
+      body: JSON.stringify({ phone: cleanPhone, message }),
+    });
+    return { ok: resp.ok, provider };
+  }
+
+  if (provider === "zpro") {
+    const url = f["zpro_url"] ?? "";
+    const instanceId = f["zpro_instance_id"] ?? "";
+    const instanceToken = f["zpro_instance_token"] ?? "";
+    const clientToken = f["zpro_client_token"] ?? "";
     if (!url || !instanceId || !instanceToken) return { ok: false, provider };
     const resp = await fetch(`${url}/instances/${instanceId}/token/${instanceToken}/send-text`, {
       method: "POST",
@@ -180,10 +225,10 @@ Deno.serve(async (req: Request) => {
         ? `Atualizacao: O motorista esta a ${distanceKm.toFixed(1)} km de distancia. Tempo estimado: ${etaMin} min.`
         : `Atualizacao: O motorista esta a ${Math.round(distanceKm * 1000)} m de distancia. Quase no local!`;
 
-      const cleanPhone = ride.passenger_phone.replace(/\D/g, "");
+      const cleanPhone = toBrazilianWhatsAppNumber(ride.passenger_phone);
       if (!cleanPhone) { skippedCount++; continue; }
 
-      const { ok, provider } = await sendWhatsAppMessage(supabase, cleanPhone, updateMsg);
+      const { ok, provider } = await sendWhatsAppMessage(supabase, cleanPhone, updateMsg, ride.company_id);
 
       // Log the message
       try {
