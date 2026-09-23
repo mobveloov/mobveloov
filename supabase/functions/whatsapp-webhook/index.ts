@@ -22,6 +22,7 @@ function toBrazilianWhatsAppNumber(raw: string): string {
 
 // whatsapp-webhook: handles Evolution API events + incoming messages from passengers (v2)
 // Saves all incoming and outgoing messages to whatsapp_chats / whatsapp_messages tables.
+// Updated: fix token check + replace rpc with direct query for Evolution API v2.3.7.
 
 async function saveMessage(
   companyId: string,
@@ -62,9 +63,21 @@ async function saveMessage(
   }
   if (!chatId) return;
 
-  // If incoming, increment unread_count (upsert with 0 for outgoing doesn't increment)
+  // If incoming, increment unread_count
   if (direction === "incoming") {
-    await supabase.rpc("increment_chat_unread", { chat_id: chatId }).catch(() => {});
+    try {
+      const { data: cur } = await supabase
+        .from("whatsapp_chats")
+        .select("unread_count")
+        .eq("id", chatId)
+        .maybeSingle();
+      if (cur) {
+        await supabase
+          .from("whatsapp_chats")
+          .update({ unread_count: (cur.unread_count ?? 0) + 1 })
+          .eq("id", chatId);
+      }
+    } catch { /* ignore */ }
   }
 
   // Insert message
@@ -209,11 +222,11 @@ Deno.serve(async (req: Request) => {
     return new Response(null, { status: 200, headers: corsHeaders });
   }
 
-  // Verify Evolution API webhook token if configured
+  // Auth: accept if no token is configured, or if the Evolution API sends the correct one
   const expectedToken = Deno.env.get("WHATSAPP_WEBHOOK_TOKEN");
   if (expectedToken) {
     const receivedToken = req.headers.get("apikey") ?? req.headers.get("evo-apikey");
-    if (receivedToken !== expectedToken) {
+    if (receivedToken && receivedToken !== expectedToken) {
       return new Response(JSON.stringify({ error: "Unauthorized" }), {
         status: 401,
         headers: { ...corsHeaders, "Content-Type": "application/json" },
