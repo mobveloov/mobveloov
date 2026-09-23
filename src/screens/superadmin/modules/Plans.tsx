@@ -134,12 +134,19 @@ function PlanFormModal({ plan, onClose, onSaved, onError, onLog }: {
   const [name, setName] = useState(plan?.name ?? '');
   const [totemLimit, setTotemLimit] = useState(plan?.totem_limit?.toString() ?? '1');
   const [baseMonthly, setBaseMonthly] = useState(plan?.base_monthly_price?.toString() ?? plan?.price?.toString() ?? '0');
-  const [quarterly, setQuarterly] = useState(plan?.quarterly_price?.toString() ?? '0');
-  const [semiannual, setSemiannual] = useState(plan?.semiannual_price?.toString() ?? '0');
-  const [annual, setAnnual] = useState(plan?.annual_price?.toString() ?? '0');
-  const [quarterlyDiscount, setQuarterlyDiscount] = useState(plan?.quarterly_discount_percent?.toString() ?? '0');
-  const [semiannualDiscount, setSemiannualDiscount] = useState(plan?.semiannual_discount_percent?.toString() ?? '0');
-  const [annualDiscount, setAnnualDiscount] = useState(plan?.annual_discount_percent?.toString() ?? '0');
+  const [quarterlyDiscount, setQuarterlyDiscount] = useState(plan?.quarterly_discount_percent?.toString() ?? '5');
+  const [semiannualDiscount, setSemiannualDiscount] = useState(plan?.semiannual_discount_percent?.toString() ?? '10');
+  const [annualDiscount, setAnnualDiscount] = useState(plan?.annual_discount_percent?.toString() ?? '15');
+
+  const calcPrice = (months: number, discountPct: string) => {
+    const base = parseFloat(baseMonthly) || 0;
+    const disc = parseFloat(discountPct) || 0;
+    return (base * months * (1 - disc / 100)).toFixed(2);
+  };
+
+  const quarterly = calcPrice(3, quarterlyDiscount);
+  const semiannual = calcPrice(6, semiannualDiscount);
+  const annual = calcPrice(12, annualDiscount);
   const [messageTier, setMessageTier] = useState(plan?.message_tier ?? 'A');
   const [isActive, setIsActive] = useState(plan?.is_active ?? true);
   const [sortOrder, setSortOrder] = useState(plan?.sort_order?.toString() ?? '0');
@@ -197,36 +204,26 @@ function PlanFormModal({ plan, onClose, onSaved, onError, onLog }: {
             </select>
           </div>
         </div>
-        <div className="grid grid-cols-3 gap-3">
-          <div>
-            <label className={labelCls}>Mensal (R$)</label>
-            <input type="number" step="0.01" className={inputCls} value={baseMonthly} onChange={(e) => setBaseMonthly(e.target.value)} />
-          </div>
-          <div>
-            <label className={labelCls}>Trimestral (R$)</label>
-            <input type="number" step="0.01" className={inputCls} value={quarterly} onChange={(e) => setQuarterly(e.target.value)} />
-          </div>
-          <div>
-            <label className={labelCls}>Semestral (R$)</label>
-            <input type="number" step="0.01" className={inputCls} value={semiannual} onChange={(e) => setSemiannual(e.target.value)} />
-          </div>
-          <div>
-            <label className={labelCls}>Anual (R$)</label>
-            <input type="number" step="0.01" className={inputCls} value={annual} onChange={(e) => setAnnual(e.target.value)} />
-          </div>
+        <div>
+          <label className={labelCls}>Valor mensal (R$)</label>
+          <input type="number" step="0.01" className={inputCls} value={baseMonthly} onChange={(e) => setBaseMonthly(e.target.value)} />
+          <p className="mt-1 text-[11px] text-slate-500">Os valores de trimestral, semestral e anual sao calculados automaticamente: mensal × meses - desconto.</p>
         </div>
         <div className="grid grid-cols-3 gap-3">
           <div>
             <label className={labelCls}>Desc. Trimestral (%)</label>
             <input type="number" step="0.01" min="0" max="100" className={inputCls} value={quarterlyDiscount} onChange={(e) => setQuarterlyDiscount(e.target.value)} />
+            <p className="mt-1 text-[11px] text-emerald-400 font-bold">R$ {quarterly}</p>
           </div>
           <div>
             <label className={labelCls}>Desc. Semestral (%)</label>
             <input type="number" step="0.01" min="0" max="100" className={inputCls} value={semiannualDiscount} onChange={(e) => setSemiannualDiscount(e.target.value)} />
+            <p className="mt-1 text-[11px] text-emerald-400 font-bold">R$ {semiannual}</p>
           </div>
           <div>
             <label className={labelCls}>Desc. Anual (%)</label>
             <input type="number" step="0.01" min="0" max="100" className={inputCls} value={annualDiscount} onChange={(e) => setAnnualDiscount(e.target.value)} />
+            <p className="mt-1 text-[11px] text-emerald-400 font-bold">R$ {annual}</p>
           </div>
         </div>
         <div className="grid grid-cols-2 gap-3">

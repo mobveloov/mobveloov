@@ -35,3 +35,7 @@ entrypoint = "./functions/manage-company-admin/index.ts"
 [functions.ride-distance-updates]
 verify_jwt = false
 entrypoint = "./functions/ride-distance-updates/index.ts"
+
+[functions.create-checkout]
+verify_jwt = true
+entrypoint = "./functions/create-checkout/index.ts"

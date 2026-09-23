@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Crown, CreditCard, Check, Clock, AlertCircle, Download, Loader2, Calendar, TrendingUp, Diamond, Sparkles } from 'lucide-react';
+import { Crown, CreditCard, Check, Clock, AlertCircle, Download, Loader2, Calendar, TrendingUp, Diamond, Sparkles, Zap, X, Copy, QrCode } from 'lucide-react';
 import { useAuth } from '@/context/AuthContext';
 import { supabase } from '@/lib/supabase';
 import { PageHeader, Card, Badge, Button, LoadingState, StatCard } from '@/components/admin/ui';
@@ -15,6 +15,17 @@ export function SubscriptionModule() {
   const [billingCycle, setBillingCycle] = useState<'monthly' | 'quarterly' | 'semiannual' | 'annual'>('monthly');
   const [totemCount, setTotemCount] = useState(0);
   const [rideCount, setRideCount] = useState(0);
+  const [checkoutLoading, setCheckoutLoading] = useState(false);
+  const [checkoutError, setCheckoutError] = useState<string | null>(null);
+  const [pixModal, setPixModal] = useState<{
+    qrCode: string;
+    copiaECola: string;
+    amount: number;
+    planName: string;
+    cycle: string;
+    paymentId: string;
+  } | null>(null);
+  const [copied, setCopied] = useState(false);
 
   useEffect(() => {
     if (!company) return;
@@ -73,10 +84,64 @@ export function SubscriptionModule() {
 
   const cycleLabel = billingCycle === 'annual' ? '/ano' : billingCycle === 'semiannual' ? '/semestre' : billingCycle === 'quarterly' ? '/trimestre' : '/mês';
 
-  const handleCheckout = (plan: SubscriptionPlan) => {
-    if (companyData?.asaas_checkout_url) {
-      window.open(companyData.asaas_checkout_url, '_blank', 'noopener,noreferrer');
+  const handleCheckout = async (plan: SubscriptionPlan) => {
+    if (!company) return;
+    setCheckoutLoading(true);
+    setCheckoutError(null);
+    try {
+      const apiUrl = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/create-checkout`;
+      const response = await fetch(apiUrl, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${(await supabase.auth.getSession()).data.session?.access_token ?? ''}`,
+        },
+        body: JSON.stringify({
+          company_id: company.id,
+          plan_id: plan.id,
+          billing_cycle: billingCycle,
+        }),
+      });
+
+      if (!response.ok) {
+        const errData = await response.json().catch(() => ({ error: 'Erro ao criar checkout' }));
+        throw new Error(errData.error ?? `Erro ${response.status}`);
+      }
+
+      const data = await response.json();
+      if (!data.pixQrCodeBase64 && !data.qrCode) {
+        throw new Error('QR Code PIX nao retornado pelo servidor');
+      }
+
+      setPixModal({
+        qrCode: data.pixQrCodeBase64 || data.qrCode || data.image || '',
+        copiaECola: data.pixCopiaECola || data.payload || data.copiaECola || data.copyAndPaste || data.qrCodeText || '',
+        amount: data.amount ?? 0,
+        planName: data.planName ?? plan.name,
+        cycle: data.cycle ?? billingCycle,
+        paymentId: data.paymentId ?? '',
+      });
+      setCompanyData((prev) => prev ? { ...prev, plan_id: plan.id } : prev);
+    } catch (err) {
+      setCheckoutError(err instanceof Error ? err.message : 'Erro ao iniciar checkout');
+    } finally {
+      setCheckoutLoading(false);
     }
+  };
+
+  const handleCopyPix = () => {
+    if (pixModal?.copiaECola) {
+      navigator.clipboard.writeText(pixModal.copiaECola);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    }
+  };
+
+  const cycleLabelFull = (cycle: string) => {
+    if (cycle === 'annual') return 'Anual';
+    if (cycle === 'semiannual') return 'Semestral';
+    if (cycle === 'quarterly') return 'Trimestral';
+    return 'Mensal';
   };
 
   const isUnlimited = (plan: SubscriptionPlan) => plan.totem_limit >= 999999;
@@ -129,13 +194,7 @@ export function SubscriptionModule() {
                 </p>
               </div>
             </div>
-            <div className="flex gap-2">
-              {companyData?.asaas_checkout_url && (
-                <Button onClick={() => window.open(companyData.asaas_checkout_url, '_blank', 'noopener,noreferrer')}>
-                  <CreditCard className="h-4 w-4" /> Gerenciar Pagamento
-                </Button>
-              )}
-            </div>
+            <div className="flex gap-2" />
           </div>
         </div>
 
@@ -218,6 +277,18 @@ export function SubscriptionModule() {
         ))}
       </div>
 
+      {/* Checkout error */}
+      {checkoutError && (
+        <div className="flex items-center gap-3 rounded-xl border border-error-500/30 bg-error-500/10 p-4">
+          <AlertCircle className="h-5 w-5 shrink-0 text-error-400" />
+          <div className="flex-1">
+            <p className="text-sm font-semibold text-error-300">Erro ao iniciar pagamento</p>
+            <p className="text-xs text-slate-400">{checkoutError}</p>
+          </div>
+          <button onClick={() => setCheckoutError(null)} className="text-xs text-slate-500 hover:text-slate-300">Fechar</button>
+        </div>
+      )}
+
       {/* Plans comparison */}
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5">
         {plans.map((plan) => {
@@ -267,8 +338,9 @@ export function SubscriptionModule() {
               {isCurrent ? (
                 <Button variant="secondary" disabled className="w-full">Plano atual</Button>
               ) : (
-                <Button onClick={() => handleCheckout(plan)} className="w-full">
-                  Assinar {billingCycle === 'monthly' ? 'mensal' : billingCycle === 'quarterly' ? 'trimestral' : billingCycle === 'semiannual' ? 'semestral' : 'anual'}
+                <Button onClick={() => handleCheckout(plan)} disabled={checkoutLoading} className="w-full">
+                  {checkoutLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Zap className="h-4 w-4" />}
+                  {checkoutLoading ? 'Processando...' : `Assinar ${billingCycle === 'monthly' ? 'mensal' : billingCycle === 'quarterly' ? 'trimestral' : billingCycle === 'semiannual' ? 'semestral' : 'anual'}`}
                 </Button>
               )}
             </Card>
@@ -278,58 +350,21 @@ export function SubscriptionModule() {
 
       {/* Payment method */}
       <Card className="p-5">
-        <div className="mb-4 flex items-center justify-between">
+        <div className="mb-4">
           <h3 className="text-sm font-bold text-slate-200">Forma de Pagamento</h3>
-          {companyData?.asaas_checkout_url && (
-            <Button variant="secondary" onClick={() => window.open(companyData.asaas_checkout_url, '_blank', 'noopener,noreferrer')}>
-              <CreditCard className="h-4 w-4" /> Alterar
-            </Button>
-          )}
         </div>
-        {companyData?.asaas_customer_id ? (
-          <div className="space-y-3">
+        <div className="space-y-3">
             <div className="flex items-center gap-3 rounded-xl border border-slate-800 bg-slate-800/30 p-4">
               <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-success-500/15">
-                <CreditCard className="h-5 w-5 text-success-500" />
+                <QrCode className="h-5 w-5 text-success-500" />
               </div>
               <div className="flex-1">
-                <p className="text-sm font-semibold text-slate-200">Pagamento via Asaas</p>
-                <p className="text-xs text-slate-500">Cartão de crédito ou Pix</p>
+                <p className="text-sm font-semibold text-slate-200">Pix via Asaas</p>
+                <p className="text-xs text-slate-500">Pagamento instantâneo — escaneie o QR Code ao assinar</p>
               </div>
               <Badge variant="success">Ativo</Badge>
             </div>
-            <div className="grid gap-3 sm:grid-cols-2">
-              <div className="flex items-center gap-3 rounded-xl border border-slate-800 bg-slate-800/20 p-3">
-                <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-gold-500/15">
-                  <CreditCard className="h-4 w-4 text-gold-400" />
-                </div>
-                <div>
-                  <p className="text-xs font-bold text-slate-200">Cartão de crédito</p>
-                  <p className="text-[11px] text-slate-500">Cobrança automática mensal</p>
-                </div>
-              </div>
-              <div className="flex items-center gap-3 rounded-xl border border-slate-800 bg-slate-800/20 p-3">
-                <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-gold-500/15">
-                  <CreditCard className="h-4 w-4 text-gold-400" />
-                </div>
-                <div>
-                  <p className="text-xs font-bold text-slate-200">Pix</p>
-                  <p className="text-[11px] text-slate-500">Pagamento instantâneo</p>
-                </div>
-              </div>
-            </div>
-          </div>
-        ) : (
-          <div className="flex items-center gap-3 rounded-xl border border-slate-800 bg-slate-800/20 p-4">
-            <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-slate-800">
-              <CreditCard className="h-5 w-5 text-slate-600" />
-            </div>
-            <div>
-              <p className="text-sm font-semibold text-slate-400">Nenhuma forma de pagamento cadastrada</p>
-              <p className="text-xs text-slate-600">Selecione um plano acima para iniciar o pagamento</p>
-            </div>
-          </div>
-        )}
+        </div>
       </Card>
 
       {/* Invoice history */}
@@ -394,6 +429,62 @@ export function SubscriptionModule() {
           Os dados fiscais são editados na seção "Dados da Empresa". Para emitir notas fiscais, garanta que o CNPJ esteja correto.
         </p>
       </Card>
+
+      {/* PIX Payment Modal */}
+      {pixModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4" onClick={() => setPixModal(null)}>
+          <div className="w-full max-w-md rounded-2xl border border-slate-700 bg-slate-900 p-6 shadow-2xl" onClick={(e) => e.stopPropagation()}>
+            <div className="mb-4 flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <QrCode className="h-5 w-5 text-gold-400" />
+                <h3 className="text-base font-extrabold text-slate-100">Pagamento PIX</h3>
+              </div>
+              <button onClick={() => setPixModal(null)} className="text-slate-500 hover:text-slate-300">
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+
+            <div className="mb-4 rounded-xl border border-slate-800 bg-slate-800/30 p-3 text-center">
+              <p className="text-xs text-slate-500">Plano</p>
+              <p className="text-sm font-bold text-slate-200">{pixModal.planName} — {cycleLabelFull(pixModal.cycle)}</p>
+              <p className="mt-1 text-2xl font-extrabold text-gold-400">R$ {pixModal.amount.toFixed(2).replace('.', ',')}</p>
+            </div>
+
+            <div className="mb-4 flex justify-center">
+              {pixModal.qrCode ? (
+                <div className="rounded-xl border-2 border-slate-700 bg-white p-3">
+                  <img src={pixModal.qrCode} alt="QR Code PIX" className="h-52 w-52" />
+                </div>
+              ) : (
+                <div className="flex h-52 w-52 items-center justify-center rounded-xl border-2 border-slate-700 bg-slate-800">
+                  <Loader2 className="h-8 w-8 animate-spin text-slate-500" />
+                </div>
+              )}
+            </div>
+
+            <p className="mb-2 text-center text-xs text-slate-500">Escaneie o QR Code com o app do seu banco ou copie o codigo PIX abaixo:</p>
+
+            <div className="mb-4">
+              <div className="flex items-center gap-2 rounded-xl border border-slate-800 bg-slate-800/50 p-3">
+                <p className="flex-1 truncate text-xs text-slate-400 font-mono">{pixModal.copiaECola || 'Codigo PIX indisponivel'}</p>
+                <button
+                  onClick={handleCopyPix}
+                  className="flex shrink-0 items-center gap-1 rounded-lg bg-gold-500/15 px-3 py-1.5 text-xs font-semibold text-gold-300 transition-all hover:bg-gold-500/25"
+                >
+                  {copied ? <Check className="h-3 w-3" /> : <Copy className="h-3 w-3" />}
+                  {copied ? 'Copiado!' : 'Copiar'}
+                </button>
+              </div>
+            </div>
+
+            <div className="rounded-xl border border-success-500/20 bg-success-500/10 p-3">
+              <p className="text-center text-xs text-success-400">
+                Após o pagamento, sua assinatura sera ativada automaticamente em alguns segundos.
+              </p>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

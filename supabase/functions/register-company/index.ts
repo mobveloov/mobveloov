@@ -12,7 +12,7 @@ const supabaseServiceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
 const supabase = createClient(supabaseUrl, supabaseServiceKey);
 
 const ASAAS_API_KEY = Deno.env.get("ASAAS_API_KEY") ?? "";
-const ASAAS_API_URL = "https://asaas.com";
+const ASAAS_API_URL = "https://api.asaas.com";
 
 interface RegisterBody {
   company_name: string;

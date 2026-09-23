@@ -726,18 +726,18 @@ export function ManualModule() {
             </SubSection>
             <SubSection title="Ciclo de cobrança">
               <p className="text-sm text-neutral-600 dark:text-neutral-400 mb-2">
-                Escolha entre cobrança Mensal ou Anual. O plano anual tem desconto e exibe um badge "Economize".
+                Escolha entre quatro ciclos de cobrança: Mensal, Trimestral (3 meses), Semestral (6 meses) ou Anual (12 meses). Quanto maior o ciclo, maior o desconto aplicado sobre o valor mensal.
               </p>
               <div className="flex items-start gap-2 rounded-lg bg-green-500/10 p-3">
                 <CheckCircle2 className="h-4 w-4 text-green-500 shrink-0 mt-0.5" />
                 <p className="text-xs text-neutral-600 dark:text-neutral-400">
-                  Planos trimestrais e semestrais também estão disponíveis com descontos progressivos.
+                  O cálculo é automático: valor mensal × número de meses - desconto percentual. Por exemplo, R$ 99/mês no plano anual (15% de desconto) = R$ 1.009,80/ano.
                 </p>
               </div>
             </SubSection>
             <SubSection title="Forma de pagamento">
               <p className="text-sm text-neutral-600 dark:text-neutral-400">
-                As cobranças são processadas via Asaas. Formas aceitas: Boleto bancário, Pix e Cartão de crédito. Para atualizar a forma de pagamento, clique em "Gerenciar Pagamento" e serás redirecionado ao checkout do Asaas.
+                As cobranças são processadas via Asaas. Formas aceitas: Pix e Cartão de crédito. Para atualizar a forma de pagamento, clique em "Gerenciar Pagamento" e serás redirecionado ao checkout do Asaas.
               </p>
             </SubSection>
             <SubSection title="Histórico de faturas">

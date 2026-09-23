@@ -1,14 +1,11 @@
-// asaas-webhook edge function — Veloov Mob
-// Handles payment events (subscription invoices + license activation) and NFS-e invoice events.
-import { createClient } from "npm:@supabase/supabase-js@2.57.4";
+// asaas-webhook edge function — handles subscription PIX payment confirmations
+import { createClient } from "npm:@supabase/supabase-js@2";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS",
   "Access-Control-Allow-Headers": "Content-Type, Authorization, X-Client-Info, Apikey",
 };
-
-const ASAAS_API_URL = "https://asaas.com";
 
 const PERIOD_DAYS: Record<string, number> = {
   monthly: 30,
@@ -59,7 +56,7 @@ Deno.serve(async (req: Request) => {
     const body = await req.json();
     const { event, payment, invoice } = body;
 
-    // --- NFS-e invoice events (INVOICE_CREATED, INVOICE_AUTHORIZED, INVOICE_ERROR, etc.) ---
+    // --- NFS-e invoice events ---
     if (INVOICE_EVENTS.has(event) && invoice) {
       const invoiceId: string = invoice.id ?? "";
       const invoiceStatus: string = invoice.status ?? "";
@@ -103,7 +100,7 @@ Deno.serve(async (req: Request) => {
     const asaasStatus: string = payment.status || "";
     const externalRef: string = payment.externalReference || "";
 
-    // Look up subscription_invoice by asaas_payment_id, then by externalReference (slug)
+    // Look up subscription_invoice by asaas_payment_id, then by externalReference (company_id)
     let subInvoice: {
       id: string;
       company_id: string;
@@ -124,6 +121,8 @@ Deno.serve(async (req: Request) => {
         .from("subscription_invoices")
         .select("id, company_id, plan_id, cycle, status")
         .eq("company_id", externalRef)
+        .order("created_at", { ascending: false })
+        .limit(1)
         .maybeSingle();
       subInvoice = invByRef ?? null;
     }
@@ -137,7 +136,6 @@ Deno.serve(async (req: Request) => {
         .maybeSingle();
 
       if (company) {
-        // Fetch plan for cycle info
         const { data: plan } = await supabase
           .from("subscription_plans")
           .select("id, billing_period, name")
@@ -146,7 +144,6 @@ Deno.serve(async (req: Request) => {
 
         const cycle = plan?.billing_period ?? "monthly";
 
-        // Create a subscription_invoice record on-the-fly
         const { data: newInv } = await supabase
           .from("subscription_invoices")
           .insert({
@@ -216,22 +213,24 @@ Deno.serve(async (req: Request) => {
         let nfseId: string | null = null;
         if (asaasApiKey) {
           try {
+            const isSandbox = asaasApiKey.includes("hmlg");
+            const baseUrl = isSandbox
+              ? "https://sandbox.asaas.com/api/v3"
+              : "https://api.asaas.com/v3";
+
             const { data: plan } = await supabase
               .from("subscription_plans")
               .select("name")
               .eq("id", subInvoice.plan_id)
               .maybeSingle();
 
-            // Determine which municipal service to use
-            // If the company has the mobility service add-on, use the mobility service ID
-            // from system_settings instead of the account's default service.
             const invoicePayload: Record<string, unknown> = {
               payment: paymentId,
-              description: `Disponibilização, hospedagem e processamento de dados de plataforma e aplicativo de mobilidade urbana e gestão de motoristas parceiros Veloov Mob (SaaS). Referente à assinatura do plano ${plan?.name ?? "contratado"}.`,
-              observations: "Referente à assinatura de plataforma de tecnologia de mobilidade Veloov Mob.",
+              description: `Disponibilizacao, hospedagem e processamento de dados de plataforma e aplicativo de mobilidade urbana e gestao de motoristas parceiros Veloov Mob (SaaS). Referente a assinatura do plano ${plan?.name ?? "contratado"}.`,
+              observations: "Referente a assinatura de plataforma de tecnologia de mobilidade Veloov Mob.",
             };
 
-            const invoiceRes = await fetch(`${ASAAS_API_URL}/v3/invoices`, {
+            const invoiceRes = await fetch(`${baseUrl}/invoices`, {
               method: "POST",
               headers: {
                 "Content-Type": "application/json",
@@ -259,7 +258,7 @@ Deno.serve(async (req: Request) => {
               company_id: company.id,
               source: "asaas_webhook",
               level: "warning",
-              message: `Erro de conexão ao emitir NFSe: ${msg}`,
+              message: `Erro de conexao ao emitir NFSe: ${msg}`,
               payload: { event, payment_id: paymentId, invoice_error: msg },
             });
           }
@@ -269,7 +268,7 @@ Deno.serve(async (req: Request) => {
           company_id: company.id,
           source: "asaas_webhook",
           level: "info",
-          message: `Pagamento confirmado (${event}). Licença estendida por ${cycleDays} dias. NFSe: ${nfseId ?? "não emitida"}${company.has_mobility_service ? " (serviço: mobilidade)" : ""}. Nova expiração: ${newExpiry.toISOString()}`,
+          message: `Pagamento confirmado (${event}). Licenca estendida por ${cycleDays} dias. NFSe: ${nfseId ?? "nao emitida"}${company.has_mobility_service ? " (servico: mobilidade)" : ""}. Nova expiracao: ${newExpiry.toISOString()}`,
           payload: { event, payment_id: paymentId, cycle_days: cycleDays, nfse_id: nfseId, mobility_service: company.has_mobility_service },
         });
       }
