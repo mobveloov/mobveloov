@@ -1,11 +1,11 @@
 import { useState, useEffect, useRef } from 'react';
-import { Clock, MapPin, Navigation, Phone, X, CheckCircle2, Car, Bell, Loader2 } from 'lucide-react';
+import { Clock, Navigation, Phone, X, CheckCircle2, Car, Loader2 } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 import { useTenant } from '@/context/TenantContext';
 import { useNav } from '@/context/NavContext';
-import { dispatchRide, cancelRide, pollRideStatus, calculateCategoryPricing } from '@/lib/machineApi';
+import { dispatchRide, cancelRide, pollRideStatus } from '@/lib/machineApi';
 import { MapView } from '@/components/MapView';
-import { formatCurrency, haversineDistance } from '@/lib/utils';
+import { haversineDistance } from '@/lib/utils';
 import type { GeoPoint, OrderStatus, Ride, VehicleCategory } from '@/types';
 
 const STATUS_FLOW: OrderStatus[] = ['pending', 'accepted', 'en_route', 'in_progress', 'completed'];
@@ -28,7 +28,7 @@ interface TrackingScreenProps {
 
 export function TrackingScreen({ origin, destination, passengerName, passengerPhone }: TrackingScreenProps) {
   const { company, settings, categories, location } = useTenant();
-  const { goPassenger, selectedCategoryId, selectedCategoryPrice, machineDistance, machineDuration } = useNav();
+  const { goPassenger, selectedCategoryId } = useNav();
 
   const [ride, setRide] = useState<Ride | null>(null);
   const [creating, setCreating] = useState(true);
@@ -44,22 +44,7 @@ export function TrackingScreen({ origin, destination, passengerName, passengerPh
 
   const selectedCategory: VehicleCategory | null = categories.find((c) => c.id === selectedCategoryId) ?? null;
 
-  const localPricing = settings && destination
-    ? selectedCategory
-      ? calculateCategoryPricing(origin, destination, selectedCategory, settings.surge_multiplier)
-      : null
-    : null;
-
-  // Use Machine API distance/duration when available, otherwise fall back to local haversine
-  const effectiveDistance = machineDistance ?? localPricing?.distance ?? 0;
-  const effectiveDuration = machineDuration ?? localPricing?.duration ?? 0;
-  const pricing = localPricing
-    ? { ...localPricing, distance: effectiveDistance, duration: effectiveDuration }
-    : null;
-
   const categoryLabel = selectedCategory?.label ?? settings?.category_label ?? 'Econômico';
-  const calculatedPrice = selectedCategoryPrice ?? pricing?.pricing.final_price ?? settings?.min_fee ?? 0;
-  const estimatedPrice = ride?.estimated_price != null ? Number(ride.estimated_price) : calculatedPrice;
 
   useEffect(() => {
     if (createdRef.current || !company || !settings) return;
@@ -77,10 +62,10 @@ export function TrackingScreen({ origin, destination, passengerName, passengerPh
         destination_label: destination?.label ?? null,
         destination_lat: destination?.lat ?? null,
         destination_lng: destination?.lng ?? null,
-        distance_km: pricing?.distance ?? 0,
-        duration_min: pricing?.duration ?? 0,
+        distance_km: 0,
+        duration_min: 0,
         category_label: categoryLabel,
-        estimated_price: estimatedPrice,
+        estimated_price: 0,
         status: 'pending',
       };
 
@@ -128,8 +113,8 @@ export function TrackingScreen({ origin, destination, passengerName, passengerPh
         origin: { lat: origin.lat, lng: origin.lng, address: origin.label },
         destination: destination ? { lat: destination.lat, lng: destination.lng, address: destination.label } : undefined,
         category: categoryValue,
-        price: estimatedPrice,
-        distance: pricing?.distance ?? 0,
+        price: 0,
+        distance: 0,
         simulation_mode: settings?.simulation_mode ?? false,
       };
 
@@ -371,32 +356,6 @@ export function TrackingScreen({ origin, destination, passengerName, passengerPh
           <span>Concluído</span>
         </div>
       </div>
-
-      {pricing && destination && (
-        <div className="card p-5 mb-4">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-2">
-              <Car className="h-5 w-5 text-neutral-500" />
-              <span className="text-sm font-semibold text-neutral-700 dark:text-neutral-300">
-                {categoryLabel}
-              </span>
-            </div>
-            <span className="text-2xl font-extrabold text-gold-600 dark:text-gold-400">
-              {formatCurrency(estimatedPrice)}
-            </span>
-          </div>
-          <div className="mt-2 flex gap-4 text-sm text-neutral-500 dark:text-neutral-400">
-            <span className="flex items-center gap-1">
-              <MapPin className="h-4 w-4" />
-              {(pricing.distance).toFixed(1)} km
-            </span>
-            <span className="flex items-center gap-1">
-              <Clock className="h-4 w-4" />
-              ~{pricing.duration} min
-            </span>
-          </div>
-        </div>
-      )}
 
       {ride?.driver_name && currentStatus !== 'pending' && currentStatus !== 'canceled' && (
         <div className="card p-4 mb-4 animate-fade-in">

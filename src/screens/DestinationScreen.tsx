@@ -476,7 +476,7 @@ export function DestinationScreen({
         disabled={!canProceed}
         className="btn-primary mt-6 w-full text-base flex items-center justify-center gap-2"
       >
-        Ver categoria e preço
+        Ver categorias
         <ArrowRight className="h-5 w-5" />
       </button>
     </div>

@@ -239,7 +239,7 @@ export function RequestScreen({ origin, onDestinationChange, destination }: Requ
         {formError && <p className="text-xs font-medium text-error-500">{formError}</p>}
 
         <button type="submit" className="btn-primary w-full text-base flex items-center justify-center gap-2">
-          {destination ? 'Ver categoria e preço' : 'Chamar corrida'}
+          {destination ? 'Ver categorias' : 'Chamar corrida'}
           <ArrowRight className="h-5 w-5" />
         </button>
       </form>
