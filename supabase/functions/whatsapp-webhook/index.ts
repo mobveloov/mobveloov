@@ -95,6 +95,29 @@ async function getWhatsAppConfig(): Promise<{ provider: string; fields: Record<s
   return { provider: "evolution", fields: {} };
 }
 
+async function getCompanyWhatsAppConfig(companyId: string): Promise<{ provider: string; fields: Record<string, string> }> {
+  const { data: instance } = await supabase
+    .from("whatsapp_instances")
+    .select("whatsapp_provider, evolution_api_url, evolution_global_token, instance_name, provider_token, provider_phone_id, provider_waba_id, provider_api_url, connection_status")
+    .eq("company_id", companyId)
+    .maybeSingle();
+
+  if (instance && instance.connection_status === "connected" && instance.whatsapp_provider && instance.whatsapp_provider !== "veloov") {
+    const fields: Record<string, string> = {};
+    if (instance.evolution_api_url) fields["evo_url"] = instance.evolution_api_url;
+    if (instance.evolution_global_token) fields["evo_token"] = instance.evolution_global_token;
+    if (instance.instance_name) fields["evo_instance"] = instance.instance_name;
+    if (instance.provider_api_url) fields["zapi_url"] = instance.provider_api_url;
+    if (instance.provider_token) fields["zapi_instance_token"] = instance.provider_token;
+    if (instance.provider_token) fields["meta_token"] = instance.provider_token;
+    if (instance.provider_phone_id) fields["meta_phone_id"] = instance.provider_phone_id;
+    if (instance.provider_waba_id) fields["meta_waba_id"] = instance.provider_waba_id;
+    return { provider: instance.whatsapp_provider, fields };
+  }
+
+  return await getWhatsAppConfig();
+}
+
 async function sendWhatsAppMessageWithProvider(
   provider: string,
   f: Record<string, string>,
@@ -326,7 +349,7 @@ Deno.serve(async (req: Request) => {
         if (message) {
           const cleanPhone = toBrazilianWhatsAppNumber(String(data.passenger_phone));
           try {
-            const { provider, fields: f } = await getWhatsAppConfig();
+            const { provider, fields: f } = await getCompanyWhatsAppConfig(waInstance.company_id);
             await sendWhatsAppMessageWithProvider(provider, f, cleanPhone, message);
             await saveMessage(waInstance.company_id, cleanPhone, "outgoing", message);
           } catch {
@@ -430,10 +453,8 @@ async function handleIncomingMessage(companyId: string, data: Record<string, unk
   // Block cancellation when driver has arrived (en_route)
   if (ride.status === "en_route") {
     try {
-      const { provider, fields: f } = await getWhatsAppConfig();
-      const msg = ride.status === "en_route"
-        ? "Seu motorista ja chegou ao local de embarque. Nao e possivel cancelar neste momento."
-        : "Sua viagem ja esta em andamento. Nao e possivel cancelar.";
+      const { provider, fields: f } = await getCompanyWhatsAppConfig(companyId);
+      const msg = "Seu motorista ja chegou ao local de embarque. Nao e possivel cancelar neste momento.";
       await sendWhatsAppMessageWithProvider(provider, f, cleanPhone, msg);
       await saveMessage(companyId, cleanPhone, "outgoing", msg);
     } catch { /* best-effort */ }
@@ -452,15 +473,23 @@ async function handleIncomingMessage(companyId: string, data: Record<string, unk
     .from("company_credentials")
     .select("machine_api_url, machine_api_key, taximetro_username, taximetro_password")
     .eq("company_id", ride.company_id)
-    .single();
+    .maybeSingle();
+
+  const { data: tenantRows } = await supabase
+    .from("tenant_secrets")
+    .select("secret_name, secret_value")
+    .eq("tenant_id", ride.company_id);
+  const tenantMap = new Map(
+    (tenantRows ?? []).map((r: { secret_name: string; secret_value: string }) => [r.secret_name, r.secret_value])
+  );
 
   let machineCanceled = false;
 
   if (ride.machine_order_id && credentials) {
     const baseUrl = (credentials.machine_api_url || "https://api.taximachine.com.br").replace(/\/+$/, "");
-    const apiKey = credentials.machine_api_key || "";
-    const user = credentials.taximetro_username || "";
-    const pass = credentials.taximetro_password || "";
+    const apiKey = tenantMap.get("MACHINE_API_KEY") || credentials.machine_api_key || "";
+    const user = tenantMap.get("TAXIMETRO_USER") || credentials.taximetro_username || "";
+    const pass = tenantMap.get("TAXIMETRO_PASSWORD") || credentials.taximetro_password || "";
 
     if (apiKey && user && pass) {
       try {
@@ -514,7 +543,7 @@ async function handleIncomingMessage(companyId: string, data: Record<string, unk
 
   // Send confirmation message back to passenger via global WhatsApp provider
   try {
-    const { provider, fields: f } = await getWhatsAppConfig();
+    const { provider, fields: f } = await getCompanyWhatsAppConfig(companyId);
     const confirmMsg = "Sua corrida foi cancelada com sucesso. Para solicitar uma nova viagem, use o totem.";
     await sendWhatsAppMessageWithProvider(provider, f, cleanPhone, confirmMsg);
     await saveMessage(companyId, cleanPhone, "outgoing", confirmMsg);

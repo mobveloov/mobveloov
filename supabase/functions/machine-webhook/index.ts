@@ -449,16 +449,19 @@ async function sendWhatsAppNotification(
   if (!cleanPhone) return;
 
   try {
-    await sendWhatsAppMessage(provider, f, cleanPhone, message);
-    await saveChatMessage(companyId, cleanPhone, "outgoing", message);
-    await logWhatsAppMessage(companyId, rideId, cleanPhone, "status_update", message, provider, true);
-
-    await supabase.from("admin_logs").insert({
-      company_id: companyId,
-      source: "machine_webhook",
-      level: "info",
-      message: `Notificacao WhatsApp enviada para passageiro (${internalStatus}, ${features.plan_name})`,
-    });
+    const ok = await sendWhatsAppMessage(provider, f, cleanPhone, message);
+    if (ok) {
+      await saveChatMessage(companyId, cleanPhone, "outgoing", message);
+      await logWhatsAppMessage(companyId, rideId, cleanPhone, "status_update", message, provider, true);
+      await supabase.from("admin_logs").insert({
+        company_id: companyId,
+        source: "machine_webhook",
+        level: "info",
+        message: `Notificacao WhatsApp enviada para passageiro (${internalStatus}, ${features.plan_name})`,
+      });
+    } else {
+      await logWhatsAppMessage(companyId, rideId, cleanPhone, "status_update", message, provider, false, "HTTP error response");
+    }
   } catch (err) {
     const errMsg = err instanceof Error ? err.message : "unknown error";
     await logWhatsAppMessage(companyId, rideId, cleanPhone, "status_update", message, provider, false, errMsg);
@@ -566,18 +569,18 @@ async function sendWhatsAppMessage(
   f: Record<string, string>,
   cleanPhone: string,
   message: string,
-): Promise<void> {
+): Promise<boolean> {
   if (provider === "evolution" || provider === "veloov") {
     const url = f["evo_url"] ?? "";
     const token = f["evo_token"] ?? "";
-    if (!url || !token) return;
+    if (!url || !token) return false;
     const instance = f["evo_instance"] || "veloov";
-    await fetch(`${url}/message/sendText/${instance}`, {
+    const resp = await fetch(`${url}/message/sendText/${instance}`, {
       method: "POST",
       headers: { "Content-Type": "application/json", apikey: token },
       body: JSON.stringify({ number: cleanPhone, text: message }),
     });
-    return;
+    return resp.ok;
   }
 
   if (provider === "zapi") {
@@ -585,13 +588,13 @@ async function sendWhatsAppMessage(
     const instanceId = f["zapi_instance_id"] ?? "";
     const instanceToken = f["zapi_instance_token"] ?? "";
     const clientToken = f["zapi_client_token"] ?? "";
-    if (!url || !instanceId || !instanceToken) return;
-    await fetch(`${url}/instances/${instanceId}/token/${instanceToken}/send-text`, {
+    if (!url || !instanceId || !instanceToken) return false;
+    const resp = await fetch(`${url}/instances/${instanceId}/token/${instanceToken}/send-text`, {
       method: "POST",
       headers: { "Content-Type": "application/json", "Client-Token": clientToken },
       body: JSON.stringify({ phone: cleanPhone, message }),
     });
-    return;
+    return resp.ok;
   }
 
   if (provider === "zpro") {
@@ -599,20 +602,20 @@ async function sendWhatsAppMessage(
     const instanceId = f["zpro_instance_id"] ?? "";
     const instanceToken = f["zpro_instance_token"] ?? "";
     const clientToken = f["zpro_client_token"] ?? "";
-    if (!url || !instanceId || !instanceToken) return;
-    await fetch(`${url}/instances/${instanceId}/token/${instanceToken}/send-text`, {
+    if (!url || !instanceId || !instanceToken) return false;
+    const resp = await fetch(`${url}/instances/${instanceId}/token/${instanceToken}/send-text`, {
       method: "POST",
       headers: { "Content-Type": "application/json", "Client-Token": clientToken },
       body: JSON.stringify({ phone: cleanPhone, message }),
     });
-    return;
+    return resp.ok;
   }
 
   if (provider === "meta_cloud") {
     const token = f["meta_token"] ?? "";
     const phoneId = f["meta_phone_id"] ?? "";
-    if (!token || !phoneId) return;
-    await fetch(`https://graph.facebook.com/v20.0/${phoneId}/messages`, {
+    if (!token || !phoneId) return false;
+    const resp = await fetch(`https://graph.facebook.com/v20.0/${phoneId}/messages`, {
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
       body: JSON.stringify({
@@ -622,17 +625,17 @@ async function sendWhatsAppMessage(
         text: { body: message },
       }),
     });
-    return;
+    return resp.ok;
   }
 
   if (provider === "custom_webhook") {
     const url = f["custom_url"] ?? "";
     const token = f["custom_token"] ?? "";
     const headersJson = f["custom_headers"] ?? "{}";
-    if (!url) return;
+    if (!url) return false;
     let extraHeaders: Record<string, string> = {};
     try { extraHeaders = JSON.parse(headersJson); } catch { /* ignore */ }
-    await fetch(url, {
+    const resp = await fetch(url, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -641,6 +644,8 @@ async function sendWhatsAppMessage(
       },
       body: JSON.stringify({ phone: cleanPhone, message, text: message, number: cleanPhone }),
     });
-    return;
+    return resp.ok;
   }
+
+  return false;
 }
