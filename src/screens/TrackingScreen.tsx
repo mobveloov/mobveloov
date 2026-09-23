@@ -177,14 +177,15 @@ export function TrackingScreen({ origin, destination, passengerName, passengerPh
     }
   }, [ride?.status]);
 
-  // Auto-return to identify screen once the ride is accepted,
+  // Auto-return to identify screen once the ride is accepted or canceled,
   // so the totem is free for the next passenger. The current passenger
   // follows the ride via WhatsApp notifications.
   useEffect(() => {
-    if (ride?.status === 'accepted') {
+    if (ride?.status === 'accepted' || ride?.status === 'canceled') {
+      const delay = ride.status === 'accepted' ? 5000 : 4000;
       const timer = setTimeout(() => {
         goPassenger('identify');
-      }, 5000);
+      }, delay);
       return () => clearTimeout(timer);
     }
   }, [ride?.status, goPassenger]);
@@ -299,6 +300,7 @@ export function TrackingScreen({ origin, destination, passengerName, passengerPh
         .update({ status: 'canceled', updated_at: new Date().toISOString() })
         .eq('id', rideRef.current);
     }
+    setCancelReason('A corrida foi cancelada.');
     setRide((prev) => (prev ? { ...prev, status: 'canceled' } : prev));
   };
 
@@ -433,7 +435,7 @@ export function TrackingScreen({ origin, destination, passengerName, passengerPh
             <X className="h-5 w-5 shrink-0 text-error-500" />
             <div>
               <p className="text-sm font-semibold text-error-600 dark:text-error-500">
-                {isCanceled ? 'Não foi possível encontrar motorista' : 'Erro de comunicação com a central'}
+                {isCanceled ? 'Corrida cancelada' : 'Erro de comunicação com a central'}
               </p>
               <p className="text-xs text-neutral-500 dark:text-neutral-400 mt-1">
                 {cancelReason || apiError || 'Seu pedido foi registrado e será processado.'}

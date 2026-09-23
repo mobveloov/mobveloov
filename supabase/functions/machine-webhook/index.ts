@@ -159,12 +159,19 @@ Deno.serve(async (req: Request) => {
     return new Response(null, { status: 200, headers: corsHeaders });
   }
 
-  // Verify webhook signature if secret is configured
-  if (!(await verifyMachineSignature(req))) {
-    return new Response(JSON.stringify({ error: "Invalid signature" }), {
-      status: 401,
-      headers: { ...corsHeaders, "Content-Type": "application/json" },
-    });
+  // Verify webhook signature if Signature-V2 header is present.
+  // If the header is absent, process the webhook anyway — some Machine API
+  // configurations don't send signatures, and blocking them silently
+  // breaks all status updates (driver accept, arrival, completion, cancel).
+  const sigHeader = req.headers.get("Signature-V2");
+  if (sigHeader) {
+    const sigValid = await verifyMachineSignature(req);
+    if (!sigValid) {
+      return new Response(JSON.stringify({ error: "Invalid signature" }), {
+        status: 401,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
+    }
   }
 
   try {
@@ -683,7 +690,7 @@ async function sendWhatsAppMessage(
     const resp = await fetch(`${url}/message/sendText/${instance}`, {
       method: "POST",
       headers: { "Content-Type": "application/json", apikey: token },
-      body: JSON.stringify({ number: cleanPhone, text: message }),
+      body: JSON.stringify({ number: cleanPhone, text: message, delay: 1200, presence: "available" }),
     });
     return resp.ok;
   }

@@ -430,10 +430,18 @@ async function dispatchToMachine(
 
   if (dispatchData?.data?.id_mch) {
     updatePayload.machine_order_id = String(dispatchData.data.id_mch);
+  } else if (dispatchData?.id_mch) {
+    updatePayload.machine_order_id = String(dispatchData.id_mch);
   } else if (dispatchData?.id) {
-    updatePayload.machine_order_id = dispatchData.id;
+    updatePayload.machine_order_id = String(dispatchData.id);
   } else if (dispatchData?.data?.id) {
     updatePayload.machine_order_id = String(dispatchData.data.id);
+  } else if (dispatchData?.response?.id_mch) {
+    updatePayload.machine_order_id = String(dispatchData.response.id_mch);
+  } else if (dispatchData?.response?.id) {
+    updatePayload.machine_order_id = String(dispatchData.response.id);
+  } else if (dispatchData?.uuid) {
+    updatePayload.machine_order_id = String(dispatchData.uuid);
   }
 
   // On successful dispatch (200/201), keep status as pending — the Machine API
@@ -441,16 +449,10 @@ async function dispatchToMachine(
   if (apiResponse.status >= 200 && apiResponse.status < 300) {
     updatePayload.status = "pending";
 
-    // Only overwrite the price if the Machine API explicitly returns a different fare.
-    // The totem already stored the confirmed estimate from the category screen;
-    // overwriting with a null/0/empty value would erase the correct price.
-    const d = dispatchData?.data ?? dispatchData;
-    if (d?.valor_corrida != null) {
-      const machinePrice = parseFloat(String(d.valor_corrida));
-      if (!isNaN(machinePrice) && machinePrice > 0) {
-        updatePayload.estimated_price = machinePrice;
-      }
-    }
+    // Do NOT overwrite the totem's calculated price with the Machine API's price.
+    // The passenger already saw and agreed to the totem's price on the category screen.
+    // The Machine API may return a different fare (e.g. 0 or a tariff-adjusted value),
+    // which would confuse the passenger and break the displayed value.
   }
 
   await supabase
@@ -909,8 +911,17 @@ async function sendWhatsAppMessage(
     const resp = await fetch(`${url}/message/sendText/${instance}`, {
       method: "POST",
       headers: { "Content-Type": "application/json", apikey: token },
-      body: JSON.stringify({ number: cleanPhone, text: message }),
+      body: JSON.stringify({ number: cleanPhone, text: message, delay: 1200, presence: "available" }),
     });
+    if (!resp.ok) {
+      const errorBody = await resp.text().catch(() => "");
+      await supabase.from("admin_logs").insert({
+        company_id: f["company_id"] ?? "",
+        source: "whatsapp",
+        level: "error",
+        message: `Evolution sendText failed (${resp.status}): ${errorBody.slice(0, 300)}`,
+      });
+    }
     return resp.ok;
   }
 
