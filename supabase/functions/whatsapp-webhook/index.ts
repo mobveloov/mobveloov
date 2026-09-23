@@ -267,7 +267,7 @@ Deno.serve(async (req: Request) => {
     }
 
     // Handle connection.update events
-    if (event === "connection.update" || event === "status.connect") {
+    if (event === "connection.update" || event === "CONNECTION_UPDATE" || event === "status.connect") {
       const state = data?.state ?? data?.status ?? "";
 
       if (state === "open" || state === "CONNECTED") {
@@ -301,7 +301,7 @@ Deno.serve(async (req: Request) => {
     }
 
     // Handle incoming messages from passengers (e.g. "cancelar")
-    if (event === "messages.upsert" || event === "message.receive") {
+    if (event === "messages.upsert" || event === "MESSAGES_UPSERT" || event === "message.receive") {
       // Save ALL incoming messages to chat history (not just "cancelar")
       const key = data?.key as Record<string, unknown> | undefined;
       const msg = data?.message as Record<string, unknown> | undefined;
