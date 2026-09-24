@@ -41,6 +41,7 @@ export function LocationsPanel() {
       .from('company_locations')
       .select('*')
       .eq('company_id', company.id)
+      .is('bot_connection_id', null)
       .order('sort_order', { ascending: true });
     setLocations((data ?? []) as CompanyLocation[]);
     setLoading(false);

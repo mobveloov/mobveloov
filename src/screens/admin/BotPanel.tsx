@@ -565,7 +565,7 @@ function CategorySelectorSection({ conn, companyId, companySlug, onError, onSucc
 
   const loadLocations = useCallback(async () => {
     setLoadingLocs(true);
-    const result = await callBotApi('list_locations', { companyId });
+    const result = await callBotApi('list_locations', { companyId, connectionId: conn.id });
     if (result.ok && result.data) {
       setLocations((result.data as { locations: CompanyLocationInfo[] }).locations ?? []);
     }
@@ -608,6 +608,7 @@ function CategorySelectorSection({ conn, companyId, companySlug, onError, onSucc
     setCreatingLocation(true);
     const result = await callBotApi('create_location', {
       companyId,
+      connectionId: conn.id,
       name: newLocationName.trim() || newLocation.city,
       city: newLocation.city,
       state: newLocation.state,

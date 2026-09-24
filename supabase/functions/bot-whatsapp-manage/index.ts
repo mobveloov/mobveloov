@@ -322,16 +322,19 @@ Deno.serve(async (req: Request) => {
     }
 
     if (action === "list_locations") {
+      if (!connectionId) return err400("connectionId required");
       const { data: locations } = await supabase
         .from("company_locations")
         .select("id, name, slug, city, state, lat, lng, is_active")
         .eq("company_id", companyId)
+        .eq("bot_connection_id", connectionId)
         .eq("is_active", true)
         .order("name", { ascending: true });
       return json({ success: true, locations: locations ?? [] });
     }
 
     if (action === "create_location") {
+      if (!connectionId) return err400("connectionId required");
       const { name, city, state, lat, lng } = body;
       if (!name || !city) return err400("Nome e cidade são obrigatórios");
 
@@ -349,6 +352,7 @@ Deno.serve(async (req: Request) => {
         .from("company_locations")
         .insert({
           company_id: companyId,
+          bot_connection_id: connectionId,
           name: String(name).trim(),
           slug,
           city: String(city).trim(),
@@ -361,7 +365,7 @@ Deno.serve(async (req: Request) => {
         .single();
 
       if (locationError) {
-        return err500(locationError.code === "23505" ? "Já existe uma localização com este nome" : "Erro ao cadastrar localização");
+        return err500(locationError.code === "23505" ? "Já existe uma localização com este nome nesta instância" : "Erro ao cadastrar localização");
       }
 
       return json({ success: true, location });
@@ -377,46 +381,32 @@ Deno.serve(async (req: Request) => {
     }
 
     if (action === "delete_location") {
+      if (!connectionId) return err400("connectionId required");
       const { locationId: locToDelete } = body;
       if (!locToDelete) return err400("locationId required");
 
-      // Verify the location belongs to this company
+      // Verify the location belongs to this company AND this connection
       const { data: loc } = await supabase
         .from("company_locations")
         .select("id, name")
         .eq("id", locToDelete)
         .eq("company_id", companyId)
+        .eq("bot_connection_id", connectionId)
         .maybeSingle();
-      if (!loc) return err400("Localização não encontrada");
+      if (!loc) return err400("Localização não encontrada nesta instância");
 
-      // Refuse if any OTHER bot connection (not this one) is linked to this location
-      let otherConnQuery = supabase
-        .from("bot_whatsapp_conexoes")
-        .select("id, instance_name")
-        .eq("company_id", companyId)
-        .eq("location_id", locToDelete);
-      if (connectionId) {
-        otherConnQuery = otherConnQuery.neq("id", connectionId);
-      }
-      const { data: otherConns } = await otherConnQuery;
-      if (otherConns && otherConns.length > 0) {
-        const names = otherConns.map((c: { instance_name: string }) => c.instance_name).join(", ");
-        return err400(`Esta localização está em uso por outra instância do bot (${names}). Desvincule antes de excluir.`);
-      }
+      // Clear the location_id on this connection if it was selected
+      await supabase.from("bot_whatsapp_conexoes")
+        .update({ location_id: null, updated_at: new Date().toISOString() })
+        .eq("id", connectionId).eq("company_id", companyId).eq("location_id", locToDelete);
 
-      // Clear the location_id on this connection if it was the one using it
-      if (connectionId) {
-        await supabase.from("bot_whatsapp_conexoes")
-          .update({ location_id: null, updated_at: new Date().toISOString() })
-          .eq("id", connectionId).eq("company_id", companyId);
-      }
-
-      // Delete the location (vehicle_categories.location_id and rides.location_id are ON DELETE SET NULL)
+      // Delete the location — only affects this instance's private location
       const { error: delErr } = await supabase
         .from("company_locations")
         .delete()
         .eq("id", locToDelete)
-        .eq("company_id", companyId);
+        .eq("company_id", companyId)
+        .eq("bot_connection_id", connectionId);
       if (delErr) return err500("Erro ao excluir localização: " + delErr.message);
       return json({ success: true });
     }
