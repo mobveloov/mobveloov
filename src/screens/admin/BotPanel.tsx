@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
-import { Bot, QrCode, Loader2, CheckCircle2, XCircle, RefreshCw, Trash2, Plus, AlertCircle, Phone, Wifi, WifiOff, MapPin, MessageSquare, Settings, ChevronDown, ChevronRight, Edit3, Save, Mic, Check } from 'lucide-react';
+import { Bot, QrCode, Loader2, CheckCircle2, XCircle, RefreshCw, Trash2, Plus, AlertCircle, Phone, Wifi, WifiOff, MapPin, MessageSquare, Settings, ChevronDown, ChevronRight, Edit3, Save, Mic, Check, Building2 } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 import { useAuth } from '@/context/AuthContext';
 import { slugify } from '@/lib/utils';
@@ -225,11 +225,16 @@ function ConnectionCard({ conn, companyId, expanded, onToggle, onRefreshQr, onDe
         </div>
         <div className="flex-1 min-w-0">
           <p className="text-sm font-bold text-slate-200 truncate">{conn.instance_name}</p>
-          <div className="flex items-center gap-2 mt-0.5">
+          <div className="flex items-center gap-2 mt-0.5 flex-wrap">
             {conn.phone_number && <span className="text-xs text-slate-400 flex items-center gap-1"><Phone className="h-3 w-3" />{conn.phone_number}</span>}
             <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${conn.connection_status === 'connected' ? 'bg-success-500/15 text-success-400' : 'bg-slate-700/30 text-slate-500'}`}>
               {conn.connection_status === 'connected' ? 'ONLINE' : 'OFFLINE'}
             </span>
+            {conn.company_locations?.city && (
+              <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-gold-500/10 text-gold-400 flex items-center gap-1">
+                <Building2 className="h-2.5 w-2.5" />{conn.company_locations.city}
+              </span>
+            )}
           </div>
         </div>
         {conn.connection_status !== 'connected' && conn.qr_code && (
@@ -249,7 +254,8 @@ function ConnectionCard({ conn, companyId, expanded, onToggle, onRefreshQr, onDe
 
       {expanded && (
         <div className="border-t border-slate-800 p-4 space-y-4 bg-slate-950/30">
-          <CategorySelectorSection connId={conn.id} companyId={companyId} onError={onError} onSuccess={onSuccess} />
+          <LocationSelectorSection conn={conn} companyId={companyId} onError={onError} onSuccess={onSuccess} onUpdate={onUpdate} />
+          <CategorySelectorSection connId={conn.id} conn={conn} companyId={companyId} onError={onError} onSuccess={onSuccess} />
           <AddressSuggestionsSection connId={conn.id} companyId={companyId} onError={onError} onSuccess={onSuccess} />
           <CustomMessagesSection conn={conn} companyId={companyId} onError={onError} onSuccess={onSuccess} />
         </div>
@@ -403,21 +409,43 @@ function CreateConnectionModal({ companyId, defaultInstanceName, onClose, onCrea
   onCreated: () => void;
   onError: (msg: string) => void;
 }) {
+  const [provider, setProvider] = useState<'evolution' | 'zapi' | 'zpro' | 'meta_cloud'>('evolution');
   const [apiUrl, setApiUrl] = useState('');
   const [globalToken, setGlobalToken] = useState('');
   const [instanceName, setInstanceName] = useState(defaultInstanceName);
   const [saving, setSaving] = useState(false);
   const [qrCode, setQrCode] = useState<string | null>(null);
+  const [created, setCreated] = useState(false);
+  const [locations, setLocations] = useState<CompanyLocationInfo[]>([]);
+  const [selectedLocationId, setSelectedLocationId] = useState<string>('');
+
+  useEffect(() => {
+    callBotApi('list_locations', { companyId }).then((res) => {
+      if (res.ok && res.data) setLocations((res.data as { locations: CompanyLocationInfo[] }).locations ?? []);
+    });
+  }, [companyId]);
+
+  const PROVIDERS = [
+    { value: 'evolution', label: 'Evolution API', needsUrl: true, needsToken: true, needsInstance: true, qr: true },
+    { value: 'zapi', label: 'Z-API', needsUrl: true, needsToken: true, needsInstance: false, qr: false },
+    { value: 'zpro', label: 'Z-Pro', needsUrl: true, needsToken: true, needsInstance: false, qr: false },
+    { value: 'meta_cloud', label: 'Meta Cloud API', needsUrl: false, needsToken: true, needsInstance: false, qr: false },
+  ] as const;
+  const current = PROVIDERS.find((p) => p.value === provider)!;
 
   const handleCreate = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!apiUrl || !globalToken || !instanceName) { onError('Preencha todos os campos'); return; }
+    if (current.needsUrl && !apiUrl) { onError('Preencha a URL da API'); return; }
+    if (current.needsToken && !globalToken) { onError('Preencha o token'); return; }
+    if (current.needsInstance && !instanceName) { onError('Preencha o nome da instância'); return; }
     setSaving(true);
-    const result = await callBotApi('create', { companyId, apiUrl, globalToken, instanceName });
+    setQrCode(null);
+    const result = await callBotApi('create', { companyId, apiUrl: apiUrl || undefined, globalToken, instanceName: instanceName || undefined, provider, locationId: selectedLocationId || undefined });
     setSaving(false);
     if (result.ok && result.data) {
       const conn = (result.data as { connection: BotWhatsappConexao }).connection;
       if (conn?.qr_code) setQrCode(normalizeQrCode(conn.qr_code));
+      setCreated(true);
       onCreated();
     } else {
       onError(result.error ?? 'Erro ao criar conexão');
@@ -425,31 +453,136 @@ function CreateConnectionModal({ companyId, defaultInstanceName, onClose, onCrea
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4" onClick={onClose}>
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4" onClick={created ? onClose : undefined}>
       <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6 max-w-md w-full space-y-4" onClick={(e) => e.stopPropagation()}>
         <div className="flex items-center gap-2">
           <QrCode className="h-5 w-5 text-gold-400" />
           <h3 className="text-sm font-bold text-slate-100">Conectar Novo Número do Bot</h3>
         </div>
-        <form onSubmit={handleCreate} className="space-y-3">
-          <Input label="URL da Evolution API" value={apiUrl} onChange={setApiUrl} placeholder="https://api.evolution.com" />
-          <Input label="Token Global" value={globalToken} onChange={setGlobalToken} placeholder="Token da Evolution API" type="password" />
-          <Input label="Nome da Instância" value={instanceName} onChange={setInstanceName} placeholder="empresa-bot" />
-          {qrCode && (
+        {created && qrCode ? (
+          <div className="space-y-4">
             <div className="flex flex-col items-center gap-2 py-3">
-              <img src={qrCode} alt="QR Code" className="h-48 w-48 rounded-lg border border-slate-700" />
-              <p className="text-xs text-slate-400">Escaneie o QR Code no WhatsApp para conectar</p>
+              <img src={qrCode} alt="QR Code" className="h-56 w-56 rounded-lg border border-slate-700" />
+              <p className="text-xs text-slate-400 text-center">Escaneie o QR Code no WhatsApp para conectar.<br />O QR Code também fica disponível na lista de conexões para atualizar.</p>
             </div>
-          )}
-          <div className="flex gap-3 justify-end pt-2">
-            <button type="button" onClick={onClose} className="px-4 py-2 rounded-lg text-slate-400 hover:bg-slate-800 text-sm font-medium">Cancelar</button>
-            <button type="submit" disabled={saving} className="px-4 py-2 rounded-lg bg-gold-500 text-slate-900 font-bold text-sm hover:bg-gold-400 disabled:opacity-50 flex items-center gap-2">
-              {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" />}
-              Criar e Gerar QR
-            </button>
+            <div className="flex justify-end">
+              <button type="button" onClick={onClose} className="px-4 py-2 rounded-lg bg-gold-500 text-slate-900 font-bold text-sm hover:bg-gold-400">Concluído</button>
+            </div>
           </div>
-        </form>
+        ) : created && !qrCode ? (
+          <div className="space-y-4">
+            <div className="flex items-center gap-2 text-sm text-success-400 bg-success-500/10 rounded-lg px-4 py-3">
+              <CheckCircle2 className="h-4 w-4 shrink-0" /> Conexão criada! Este provedor não usa QR Code — a conexão é via token.
+            </div>
+            <div className="flex justify-end">
+              <button type="button" onClick={onClose} className="px-4 py-2 rounded-lg bg-gold-500 text-slate-900 font-bold text-sm hover:bg-gold-400">Concluído</button>
+            </div>
+          </div>
+        ) : (
+          <form onSubmit={handleCreate} className="space-y-3">
+            <div>
+              <label className="text-xs text-slate-400 block mb-1">Provedor</label>
+              <select value={provider} onChange={(e) => setProvider(e.target.value as typeof provider)} className="w-full px-3 py-2 text-sm rounded-lg bg-slate-800 border border-slate-700 text-slate-200">
+                {PROVIDERS.map((p) => (
+                  <option key={p.value} value={p.value}>{p.label}</option>
+                ))}
+              </select>
+            </div>
+            {current.needsUrl && (
+              <Input label="URL da API" value={apiUrl} onChange={setApiUrl} placeholder="https://api.exemplo.com" />
+            )}
+            {current.needsToken && (
+              <Input label="Token / Chave de API" value={globalToken} onChange={setGlobalToken} placeholder="Token de acesso" type="password" />
+            )}
+            {current.needsInstance && (
+              <Input label="Nome da Instância" value={instanceName} onChange={setInstanceName} placeholder="empresa-bot" />
+            )}
+            <div>
+              <label className="text-xs text-slate-400 block mb-1">Cidade / Local (opcional)</label>
+              <select value={selectedLocationId} onChange={(e) => setSelectedLocationId(e.target.value)} className="w-full px-3 py-2 text-sm rounded-lg bg-slate-800 border border-slate-700 text-slate-200">
+                <option value="">Todas as cidades (sem filtro)</option>
+                {locations.map((loc) => (
+                  <option key={loc.id} value={loc.id}>{loc.name}{loc.city ? ` — ${loc.city}/${loc.state ?? ''}` : ''}</option>
+                ))}
+              </select>
+              <p className="text-[10px] text-slate-500 mt-1">Selecione a cidade que este número vai atender. As categorias serão filtradas pela cidade.</p>
+            </div>
+            <div className="flex gap-3 justify-end pt-2">
+              <button type="button" onClick={onClose} className="px-4 py-2 rounded-lg text-slate-400 hover:bg-slate-800 text-sm font-medium">Cancelar</button>
+              <button type="submit" disabled={saving} className="px-4 py-2 rounded-lg bg-gold-500 text-slate-900 font-bold text-sm hover:bg-gold-400 disabled:opacity-50 flex items-center gap-2">
+                {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" />}
+                Criar Conexão
+              </button>
+            </div>
+          </form>
+        )}
       </div>
+    </div>
+  );
+}
+
+interface CompanyLocationInfo {
+  id: string;
+  name: string;
+  slug: string;
+  city: string | null;
+  state: string | null;
+  is_active: boolean;
+}
+
+function LocationSelectorSection({ conn, companyId, onError, onSuccess, onUpdate }: { conn: BotWhatsappConexao; companyId: string; onError: (m: string) => void; onSuccess: (m: string) => void; onUpdate: () => void }) {
+  const [locations, setLocations] = useState<CompanyLocationInfo[]>([]);
+  const [selectedId, setSelectedId] = useState<string | null>(conn.location_id ?? null);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    const result = await callBotApi('list_locations', { companyId });
+    if (result.ok && result.data) {
+      setLocations((result.data as { locations: CompanyLocationInfo[] }).locations ?? []);
+    }
+    setLoading(false);
+  }, [companyId]);
+
+  useEffect(() => { load(); }, [load]);
+
+  const handleSave = async () => {
+    setSaving(true);
+    const result = await callBotApi('update_connection_location', { companyId, connectionId: conn.id, locationId: selectedId });
+    setSaving(false);
+    if (result.ok) { onSuccess('Cidade salva'); setTimeout(() => onSuccess(''), 2000); onUpdate(); }
+    else onError(result.error ?? 'Erro ao salvar cidade');
+  };
+
+  if (loading) return <div className="text-xs text-slate-500 py-2">Carregando cidades...</div>;
+
+  return (
+    <div>
+      <div className="flex items-center justify-between mb-2">
+        <div className="flex items-center gap-2">
+          <Building2 className="h-4 w-4 text-gold-400" />
+          <h4 className="text-xs font-bold text-slate-300 uppercase tracking-wide">Cidade / Local</h4>
+        </div>
+        <button onClick={handleSave} disabled={saving} className="text-xs text-gold-400 hover:text-gold-300 font-bold flex items-center gap-1">
+          {saving ? <Loader2 className="h-3 w-3 animate-spin" /> : <Save className="h-3 w-3" />} Salvar
+        </button>
+      </div>
+      <p className="text-[11px] text-slate-500 mb-2">Selecione a cidade que este número do bot vai atender. As categorias carregadas abaixo serão filtradas pela cidade escolhida.</p>
+      {locations.length === 0 ? (
+        <div className="text-xs text-slate-600 py-2">Nenhuma cidade cadastrada. Cadastre locais na aba Locais.</div>
+      ) : (
+        <select
+          value={selectedId ?? ''}
+          onChange={(e) => setSelectedId(e.target.value || null)}
+          className="w-full px-3 py-2 text-xs rounded-lg bg-slate-800 border border-slate-700 text-slate-200"
+        >
+          <option value="">Todas as cidades (sem filtro)</option>
+          {locations.map((loc) => (
+            <option key={loc.id} value={loc.id}>{loc.name}{loc.city ? ` — ${loc.city}/${loc.state ?? ''}` : ''}</option>
+          ))}
+        </select>
+      )}
     </div>
   );
 }
@@ -462,7 +595,7 @@ interface VehicleCategoryInfo {
   sort_order: number;
 }
 
-function CategorySelectorSection({ connId, companyId, onError, onSuccess }: { connId: string; companyId: string; onError: (m: string) => void; onSuccess: (m: string) => void }) {
+function CategorySelectorSection({ connId, conn, companyId, onError, onSuccess }: { connId: string; conn: BotWhatsappConexao; companyId: string; onError: (m: string) => void; onSuccess: (m: string) => void }) {
   const [categories, setCategories] = useState<VehicleCategoryInfo[]>([]);
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [loading, setLoading] = useState(true);
@@ -470,20 +603,13 @@ function CategorySelectorSection({ connId, companyId, onError, onSuccess }: { co
 
   const load = useCallback(async () => {
     setLoading(true);
-    const [catRes, connRes] = await Promise.all([
-      callBotApi('list_categories', { companyId }),
-      callBotApi('list', { companyId }),
-    ]);
+    const catRes = await callBotApi('list_categories', { companyId, locationId: conn.location_id ?? undefined });
     if (catRes.ok && catRes.data) {
       setCategories((catRes.data as { categories: VehicleCategoryInfo[] }).categories ?? []);
     }
-    if (connRes.ok && connRes.data) {
-      const conns = (connRes.data as { connections: BotWhatsappConexao[] }).connections ?? [];
-      const conn = conns.find((c) => c.id === connId);
-      setSelectedIds((conn as unknown as Record<string, unknown>)?.bot_category_ids as string[] ?? []);
-    }
+    setSelectedIds(conn.bot_category_ids ?? []);
     setLoading(false);
-  }, [companyId, connId]);
+  }, [companyId, connId, conn.location_id, conn.bot_category_ids]);
 
   useEffect(() => { load(); }, [load]);
 
@@ -510,7 +636,7 @@ function CategorySelectorSection({ connId, companyId, onError, onSuccess }: { co
           {saving ? <Loader2 className="h-3 w-3 animate-spin" /> : <Save className="h-3 w-3" />} Salvar
         </button>
       </div>
-      <p className="text-[11px] text-slate-500 mb-2">Selecione quais categorias ficam ativas neste número. Se nenhuma for selecionada, o bot usa a primeira categoria ativa da empresa.</p>
+      <p className="text-[11px] text-slate-500 mb-2">Categorias da cidade selecionada. Se nenhuma for selecionada, o bot usa a primeira categoria ativa.</p>
 
       {loading ? (
         <div className="text-xs text-slate-500 py-2">Carregando...</div>

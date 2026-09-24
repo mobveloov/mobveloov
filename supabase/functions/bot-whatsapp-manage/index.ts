@@ -1,4 +1,4 @@
-// Bot WhatsApp management edge function — v2 with category + transcription
+// Bot WhatsApp management edge function — v3 with provider + location support
 import { createClient } from "npm:@supabase/supabase-js@2.57.4";
 
 const corsHeaders = {
@@ -18,7 +18,7 @@ Deno.serve(async (req: Request) => {
 
   try {
     const body = await req.json();
-    const { action, companyId, connectionId, apiUrl, globalToken, instanceName } = body;
+    const { action, companyId, connectionId, apiUrl, globalToken, instanceName, provider, locationId } = body;
 
     if (!companyId) {
       return new Response(JSON.stringify({ error: "companyId required" }), {
@@ -54,7 +54,7 @@ Deno.serve(async (req: Request) => {
     if (action === "list") {
       const { data: connections } = await supabase
         .from("bot_whatsapp_conexoes")
-        .select("*")
+        .select("*, company_locations(name, slug, city, state)")
         .eq("company_id", companyId)
         .order("created_at", { ascending: true });
 
@@ -101,53 +101,82 @@ Deno.serve(async (req: Request) => {
         });
       }
 
-      if (!apiUrl || !globalToken || !instanceName) {
-        return new Response(JSON.stringify({ error: "URL, token e nome da instância são obrigatórios" }), {
-          status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" },
-        });
+      const connProvider = provider || "evolution";
+
+      if (connProvider === "evolution") {
+        if (!apiUrl || !globalToken || !instanceName) {
+          return new Response(JSON.stringify({ error: "URL, token e nome da instância são obrigatórios" }), {
+            status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" },
+          });
+        }
+      } else {
+        if (!globalToken) {
+          return new Response(JSON.stringify({ error: "Token é obrigatório" }), {
+            status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" },
+          });
+        }
       }
 
-      // Create instance in Evolution API
-      const cleanUrl = apiUrl.trim().replace(/\/+$/, "");
       let qrCode: string | null = null;
       let connectionStatus = "disconnected";
+      let cleanUrl: string | null = null;
+      let finalInstanceName: string | null = null;
 
-      try {
-        const createResp = await fetch(`${cleanUrl}/instance/create`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json", apikey: globalToken },
-          body: JSON.stringify({ instanceName, qrcode: true }),
-        });
+      if (connProvider === "evolution") {
+        cleanUrl = (apiUrl as string).trim().replace(/\/+$/, "");
+        finalInstanceName = instanceName as string;
 
-        if (createResp.ok) {
-          const createData = await createResp.json();
+        try {
+          const createResp = await fetch(`${cleanUrl}/instance/create`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json", apikey: globalToken },
+            body: JSON.stringify({ instanceName: finalInstanceName, qrcode: true, integration: "WHATSAPP-BAILEYS" }),
+          });
+          const createBody = await createResp.text();
+          let createData: unknown = null;
+          try { createData = JSON.parse(createBody); } catch { /* handled below */ }
+          if (!createResp.ok) {
+            return new Response(JSON.stringify({ error: evolutionError(createData, createBody, createResp.status) }), {
+              status: 502, headers: { ...corsHeaders, "Content-Type": "application/json" },
+            });
+          }
           qrCode = extractQrCode(createData);
-        }
 
-        // Try to connect and get QR
-        const connectResp = await fetch(`${cleanUrl}/instance/connect/${instanceName}`, {
-          method: "GET",
-          headers: { apikey: globalToken },
-        });
-
-        if (connectResp.ok) {
-          const connectData = await connectResp.json();
+          const connectResp = await fetch(`${cleanUrl}/instance/connect/${encodeURIComponent(finalInstanceName)}`, {
+            method: "GET",
+            headers: { apikey: globalToken },
+          });
+          const connectBody = await connectResp.text();
+          let connectData: unknown = null;
+          try { connectData = JSON.parse(connectBody); } catch { /* handled below */ }
+          if (!connectResp.ok) {
+            return new Response(JSON.stringify({ error: evolutionError(connectData, connectBody, connectResp.status) }), {
+              status: 502, headers: { ...corsHeaders, "Content-Type": "application/json" },
+            });
+          }
           if (!qrCode) qrCode = extractQrCode(connectData);
           const state = getEvolutionState(connectData);
           if (state === "OPEN" || state === "CONNECTED") connectionStatus = "connected";
-        }
-      } catch { /* ignore — connection will be updated via webhook */ }
+        } catch { /* ignore — connection will be updated via webhook */ }
+      } else {
+        // Z-API, Z-Pro, Meta Cloud — token-based, no QR code
+        connectionStatus = "connected";
+      }
+
+      const insertData: Record<string, unknown> = {
+        company_id: companyId,
+        instance_name: finalInstanceName || `conn-${Date.now()}`,
+        evolution_api_url: cleanUrl,
+        evolution_global_token: globalToken,
+        connection_status: connectionStatus,
+        qr_code: qrCode,
+        provider: connProvider,
+      };
+      if (locationId) insertData.location_id = locationId;
 
       const { data: conn, error: connErr } = await supabase
         .from("bot_whatsapp_conexoes")
-        .insert({
-          company_id: companyId,
-          instance_name: instanceName,
-          evolution_api_url: cleanUrl,
-          evolution_global_token: globalToken,
-          connection_status: connectionStatus,
-          qr_code: qrCode,
-        })
+        .insert(insertData)
         .select("*")
         .single();
 
@@ -184,14 +213,19 @@ Deno.serve(async (req: Request) => {
 
       let qrCode: string | null = null;
       try {
-        const resp = await fetch(`${conn.evolution_api_url}/instance/connect/${conn.instance_name}`, {
+        const resp = await fetch(`${conn.evolution_api_url}/instance/connect/${encodeURIComponent(conn.instance_name)}`, {
           method: "GET",
           headers: { apikey: conn.evolution_global_token },
         });
-        if (resp.ok) {
-          const data = await resp.json();
-          qrCode = extractQrCode(data);
+        const body = await resp.text();
+        let data: unknown = null;
+        try { data = JSON.parse(body); } catch { /* handled below */ }
+        if (!resp.ok) {
+          return new Response(JSON.stringify({ error: evolutionError(data, body, resp.status) }), {
+            status: 502, headers: { ...corsHeaders, "Content-Type": "application/json" },
+          });
         }
+        qrCode = extractQrCode(data);
       } catch { /* ignore */ }
 
       await supabase
@@ -202,6 +236,25 @@ Deno.serve(async (req: Request) => {
       return new Response(JSON.stringify({ success: true, qrCode }), {
         headers: { ...corsHeaders, "Content-Type": "application/json" },
       });
+    }
+
+    if (action === "list_locations") {
+      const { data: locations } = await supabase
+        .from("company_locations")
+        .select("id, name, slug, city, state, is_active")
+        .eq("company_id", companyId)
+        .eq("is_active", true)
+        .order("name", { ascending: true });
+      return json({ success: true, locations: locations ?? [] });
+    }
+
+    if (action === "update_connection_location") {
+      if (!connectionId) return err400("connectionId required");
+      const { error: locErr } = await supabase.from("bot_whatsapp_conexoes")
+        .update({ location_id: locationId ?? null, updated_at: new Date().toISOString() })
+        .eq("id", connectionId).eq("company_id", companyId);
+      if (locErr) return err500("Erro ao salvar cidade: " + locErr.message);
+      return json({ success: true });
     }
 
     if (action === "list_suggestions") {
@@ -260,12 +313,13 @@ Deno.serve(async (req: Request) => {
     }
 
     if (action === "list_categories") {
-      const { data: categories } = await supabase
+      let catQuery = supabase
         .from("vehicle_categories")
-        .select("id, label, machine_category_id, is_active, sort_order")
+        .select("id, label, machine_category_id, is_active, sort_order, location_id")
         .eq("company_id", companyId)
-        .eq("is_active", true)
-        .order("sort_order", { ascending: true });
+        .eq("is_active", true);
+      if (locationId) catQuery = catQuery.eq("location_id", locationId);
+      const { data: categories } = await catQuery.order("sort_order", { ascending: true });
       return json({ success: true, categories: categories ?? [] });
     }
 
@@ -380,7 +434,7 @@ function json(data: unknown): Response {
 function extractQrCode(payload: unknown): string | null {
   if (typeof payload !== "object" || !payload) return null;
   const value = payload as Record<string, unknown>;
-  const candidates: unknown[] = [value.base64, value.qr, value.qrcode, value.code, value.data, value.response];
+  const candidates: unknown[] = [value.base64, value.qr, value.qrcode, value.qrCode, value.code, value.data, value.response, value.instance];
   for (const c of candidates) {
     if (typeof c === "string" && c.trim()) {
       const qr = c.trim();
@@ -394,6 +448,16 @@ function extractQrCode(payload: unknown): string | null {
     }
   }
   return null;
+}
+
+function evolutionError(payload: unknown, body: string, status: number): string {
+  if (typeof payload === "object" && payload) {
+    const value = payload as Record<string, unknown>;
+    const nested = value.response && typeof value.response === "object" ? value.response as Record<string, unknown> : null;
+    const message = value.message ?? value.error ?? nested?.message ?? nested?.error;
+    if (message) return String(message);
+  }
+  return body.trim().slice(0, 300) || `Evolution API respondeu HTTP ${status}`;
 }
 
 function getEvolutionState(payload: unknown): string {

@@ -357,6 +357,9 @@ export interface BotWhatsappConexao {
   evolution_global_token: string | null;
   bot_custom_messages: Record<string, string> | null;
   bot_category_ids: string[] | null;
+  provider: string | null;
+  location_id: string | null;
+  company_locations: { name: string; slug: string; city: string | null; state: string | null } | null;
   created_at: string;
   updated_at: string;
 }
