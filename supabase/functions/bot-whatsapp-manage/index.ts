@@ -1,4 +1,4 @@
-// Bot WhatsApp management edge function — v8: ensure verify_jwt=false is applied
+// Bot WhatsApp management edge function — v11: auto-configure webhook on create + reconnect action
 import { createClient } from "npm:@supabase/supabase-js@2.57.4";
 
 const corsHeaders = {
@@ -266,7 +266,111 @@ Deno.serve(async (req: Request) => {
         });
       }
 
+      // Auto-configure webhook on Evolution API so incoming messages and status updates flow
+      if (connProvider === "evolution" && cleanUrl && finalInstanceName) {
+        try {
+          await fetch(`${supabaseUrl}/functions/v1/configure-whatsapp-webhook`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              apiUrl: cleanUrl,
+              globalToken,
+              instanceName: finalInstanceName,
+              companyId,
+              connectionId: conn?.id,
+              isBot: true,
+            }),
+          });
+        } catch { /* best-effort — webhook config can be retried */ }
+      }
+
       return new Response(JSON.stringify({ success: true, connection: conn }), {
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
+    }
+
+    if (action === "reconnect") {
+      // Reconfigures webhook on an existing Evolution instance (after server restart, etc.)
+      if (!connectionId) {
+        return new Response(JSON.stringify({ error: "connectionId required" }), {
+          status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+
+      const { data: conn } = await supabase
+        .from("bot_whatsapp_conexoes")
+        .select("*")
+        .eq("id", connectionId)
+        .eq("company_id", companyId)
+        .maybeSingle();
+
+      if (!conn) {
+        return new Response(JSON.stringify({ error: "Conexão não encontrada" }), {
+          status: 404, headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+
+      if (conn.provider !== "evolution" || !conn.evolution_api_url) {
+        return new Response(JSON.stringify({ error: "Reconexão automática disponível apenas para Evolution API" }), {
+          status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+
+      // Check live status
+      let liveStatus = conn.connection_status;
+      let qrCode: string | null = null;
+      try {
+        const stateResp = await fetch(
+          `${conn.evolution_api_url}/instance/connect/${encodeURIComponent(conn.instance_name)}`,
+          { method: "GET", headers: { apikey: conn.evolution_global_token } },
+        );
+        const stateBody = await stateResp.text();
+        let stateData: unknown = null;
+        try { stateData = JSON.parse(stateBody); } catch { /* ignore */ }
+        const liveState = getEvolutionState(stateData);
+        if (liveState === "OPEN" || liveState === "CONNECTED") {
+          liveStatus = "connected";
+        } else if (liveState === "CLOSE" || liveState === "CLOSED" || liveState === "DISCONNECTED") {
+          liveStatus = "disconnected";
+        }
+        qrCode = extractQrCode(stateData);
+      } catch { /* network error */ }
+
+      // Reconfigure webhook regardless of connection status
+      let webhookConfigured = false;
+      try {
+        const resp = await fetch(`${supabaseUrl}/functions/v1/configure-whatsapp-webhook`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            apiUrl: conn.evolution_api_url,
+            globalToken: conn.evolution_global_token,
+            instanceName: conn.instance_name,
+            companyId,
+            connectionId: conn.id,
+            isBot: true,
+          }),
+        });
+        const data = await resp.json().catch(() => ({}));
+        webhookConfigured = data.success ?? false;
+      } catch { /* best-effort */ }
+
+      // Update status in DB
+      await supabase
+        .from("bot_whatsapp_conexoes")
+        .update({
+          connection_status: liveStatus,
+          qr_code: qrCode,
+          updated_at: new Date().toISOString(),
+        })
+        .eq("id", connectionId);
+
+      return new Response(JSON.stringify({
+        success: true,
+        connectionStatus: liveStatus,
+        qrCode,
+        webhookConfigured,
+      }), {
         headers: { ...corsHeaders, "Content-Type": "application/json" },
       });
     }

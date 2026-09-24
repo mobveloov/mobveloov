@@ -47,3 +47,7 @@ entrypoint = "./functions/send-chat-message/index.ts"
 [functions.bot-whatsapp-manage]
 verify_jwt = false
 entrypoint = "./functions/bot-whatsapp-manage/index.ts"
+
+[functions.configure-whatsapp-webhook]
+verify_jwt = false
+entrypoint = "./functions/configure-whatsapp-webhook/index.ts"

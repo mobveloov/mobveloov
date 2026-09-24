@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
-import { MessageCircle, QrCode, Loader2, CheckCircle2, XCircle, RefreshCw, Power, AlertCircle, Server, Cloud, Zap, Building2, Bell, Clock, MapPin, TrendingUp } from 'lucide-react';
+import { MessageCircle, QrCode, Loader2, CheckCircle2, XCircle, RefreshCw, Power, AlertCircle, Server, Cloud, Zap, Building2, Bell, Clock, MapPin, TrendingUp, RefreshCcwDot } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 import { useAuth } from '@/context/AuthContext';
 import { slugify } from '@/lib/utils';
@@ -307,10 +307,19 @@ export function WhatsAppPanel() {
       const state = getEvolutionState(data);
       const qr = extractQrCode(data);
 
+      // Auto-configure webhook on Evolution API so events flow without manual setup
+      if (company) {
+        try {
+          await supabase.functions.invoke('configure-whatsapp-webhook', {
+            body: { apiUrl: config.apiUrl, globalToken: config.globalToken, instanceName: config.instanceName, companyId: company.id, isBot: false },
+          });
+        } catch { /* best-effort */ }
+      }
+
       if (state === 'OPEN' || state === 'CONNECTED') {
         await upsertInstance({ connection_status: 'connected', qr_code: null, last_connected_at: new Date().toISOString() });
         setQrExpiresAt(null);
-        setSuccess('WhatsApp já está conectado.');
+        setSuccess('WhatsApp já está conectado. Webhook configurado automaticamente.');
         clearPolling();
       } else if (qr) {
         await upsertInstance({ connection_status: 'connecting', qr_code: qr });
@@ -436,6 +445,57 @@ export function WhatsAppPanel() {
     }
   };
 
+  const handleReconnect = async () => {
+    if (!company || !apiUrl || !globalToken || !instanceName) {
+      setError('Preencha a URL, token e nome da instância antes de reconectar.');
+      return;
+    }
+    setActionLoading(true);
+    setError(null);
+    setSuccess(null);
+    try {
+      // Reconfigure webhook on the Evolution API instance
+      const { error: cfgError } = await supabase.functions.invoke('configure-whatsapp-webhook', {
+        body: { apiUrl: apiUrl.trim().replace(/\/+$/, ''), globalToken: globalToken.trim(), instanceName: instanceName.trim(), companyId: company.id, isBot: false },
+      });
+      if (cfgError) throw new Error('Não foi possível reconfigurar o webhook.');
+
+      // Check live status and fetch QR if needed
+      const cleanUrl = apiUrl.trim().replace(/\/+$/, '');
+      try {
+        const res = await fetchWithTimeout(`${cleanUrl}/instance/connect/${encodeURIComponent(instanceName.trim())}`, {
+          headers: { apikey: globalToken.trim(), Accept: 'application/json' },
+        });
+        if (res.ok) {
+          const data: unknown = await res.json();
+          const state = getEvolutionState(data);
+          const qr = extractQrCode(data);
+          if (state === 'OPEN' || state === 'CONNECTED') {
+            await upsertInstance({ connection_status: 'connected', qr_code: null, last_connected_at: new Date().toISOString() });
+            setSuccess('Instância reconectada e webhook reconfigurado com sucesso!');
+            clearPolling();
+          } else if (qr) {
+            await upsertInstance({ connection_status: 'connecting', qr_code: qr });
+            setInstance(previous => previous ? { ...previous, connection_status: 'connecting', qr_code: qr } : previous);
+            setQrExpiresAt(Date.now() + QR_CODE_TTL_SECONDS * 1000);
+            setSuccess('Webhook reconfigurado. Escaneie o QR Code para conectar.');
+            startPolling();
+          } else {
+            setSuccess('Webhook reconfigurado. A instância precisa ser reconectada via QR Code — clique em "Criar instância e gerar QR".');
+          }
+        } else {
+          setSuccess('Webhook reconfigurado. A instância precisa ser reconectada via QR Code — clique em "Criar instância e gerar QR".');
+        }
+      } catch {
+        setSuccess('Webhook reconfigurado. A instância precisa ser reconectada via QR Code — clique em "Criar instância e gerar QR".');
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Erro ao reconectar');
+    } finally {
+      setActionLoading(false);
+    }
+  };
+
   const statusDisplay: Record<WhatsAppStatus, { label: string; icon: typeof CheckCircle2; cls: string }> = {
     connected: { label: 'Conectado', icon: CheckCircle2, cls: 'text-success-600' },
     connecting: { label: 'Conectando...', icon: Loader2, cls: 'text-warning-500' },
@@ -481,16 +541,29 @@ export function WhatsAppPanel() {
             ({PROVIDERS.find(p => p.value === provider)?.label})
           </span>
         </div>
-        {status === 'connected' && provider === 'evolution' && (
-          <button
-            onClick={handleDisconnect}
-            disabled={actionLoading}
-            className="flex items-center gap-1.5 text-sm text-error-500 hover:text-error-600"
-          >
-            <Power className="h-4 w-4" />
-            Desconectar
-          </button>
-        )}
+        <div className="flex items-center gap-3">
+          {provider === 'evolution' && (
+            <button
+              onClick={handleReconnect}
+              disabled={actionLoading}
+              className="flex items-center gap-1.5 text-sm text-gold-600 dark:text-gold-400 hover:text-gold-700 dark:hover:text-gold-300"
+              title="Reconfigurar webhook e reconectar a instância"
+            >
+              <RefreshCcwDot className="h-4 w-4" />
+              Reconectar
+            </button>
+          )}
+          {status === 'connected' && provider === 'evolution' && (
+            <button
+              onClick={handleDisconnect}
+              disabled={actionLoading}
+              className="flex items-center gap-1.5 text-sm text-error-500 hover:text-error-600"
+            >
+              <Power className="h-4 w-4" />
+              Desconectar
+            </button>
+          )}
+        </div>
       </div>
 
       {/* Plan Notification Rules */}

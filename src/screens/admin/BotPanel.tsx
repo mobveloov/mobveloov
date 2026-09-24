@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
-import { Bot, QrCode, Loader2, CheckCircle2, XCircle, RefreshCw, Trash2, Plus, AlertCircle, Phone, Wifi, WifiOff, MapPin, MessageSquare, Settings, ChevronDown, ChevronRight, Edit3, Save, Mic, Check, Building2 } from 'lucide-react';
+import { Bot, QrCode, Loader2, CheckCircle2, XCircle, RefreshCw, Trash2, Plus, AlertCircle, Phone, Wifi, WifiOff, MapPin, MessageSquare, Settings, ChevronDown, ChevronRight, Edit3, Save, Mic, Check, Building2, RefreshCcwDot } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 import { useAuth } from '@/context/AuthContext';
 import { slugify } from '@/lib/utils';
@@ -67,6 +67,7 @@ export function BotPanel() {
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
   const [qrRefreshId, setQrRefreshId] = useState<string | null>(null);
+  const [reconnectId, setReconnectId] = useState<string | null>(null);
   const [expandedConn, setExpandedConn] = useState<string | null>(null);
 
   const load = useCallback(async () => {
@@ -104,6 +105,25 @@ export function BotPanel() {
     setQrRefreshId(null);
     if (result.ok) load();
     else setError(result.error ?? 'Erro ao gerar QR');
+  };
+
+  const handleReconnect = async (connId: string) => {
+    if (!company) return;
+    setReconnectId(connId);
+    const result = await callBotApi('reconnect', { companyId: company.id, connectionId: connId });
+    setReconnectId(null);
+    if (result.ok && result.data) {
+      const d = result.data as { webhookConfigured: boolean; connectionStatus: string; qrCode: string | null };
+      if (d.webhookConfigured) {
+        setSuccess('Webhook reconfigurado e status atualizado!');
+      } else {
+        setError('Instância atualizada, mas houve erro ao reconfigurar o webhook. Tente novamente.');
+      }
+      setTimeout(() => { setSuccess(null); setError(null); }, 4000);
+      load();
+    } else {
+      setError(result.error ?? 'Erro ao reconectar');
+    }
   };
 
   if (loading) return <LoadingState />;
@@ -198,8 +218,10 @@ export function BotPanel() {
                 expanded={expandedConn === conn.id}
                 onToggle={() => setExpandedConn(expandedConn === conn.id ? null : conn.id)}
                 onRefreshQr={handleRefreshQr}
+                onReconnect={handleReconnect}
                 onDelete={handleDelete}
                 qrRefreshId={qrRefreshId}
+                reconnectId={reconnectId}
                 onUpdate={() => load()}
                 onError={setError}
                 onSuccess={setSuccess}
@@ -226,15 +248,17 @@ export function BotPanel() {
   );
 }
 
-function ConnectionCard({ conn, companyId, companySlug, expanded, onToggle, onRefreshQr, onDelete, qrRefreshId, onUpdate, onError, onSuccess }: {
+function ConnectionCard({ conn, companyId, companySlug, expanded, onToggle, onRefreshQr, onReconnect, onDelete, qrRefreshId, reconnectId, onUpdate, onError, onSuccess }: {
   conn: BotWhatsappConexao;
   companyId: string;
   companySlug: string;
   expanded: boolean;
   onToggle: () => void;
   onRefreshQr: (id: string) => void;
+  onReconnect: (id: string) => void;
   onDelete: (id: string) => void;
   qrRefreshId: string | null;
+  reconnectId: string | null;
   onUpdate: () => void;
   onError: (msg: string) => void;
   onSuccess: (msg: string) => void;
@@ -266,6 +290,11 @@ function ConnectionCard({ conn, companyId, companySlug, expanded, onToggle, onRe
           <img src={normalizeQrCode(conn.qr_code) ?? ''} alt="QR Code" className="h-24 w-24 rounded-lg border border-slate-700" />
         )}
         <div className="flex gap-2">
+          {conn.provider === 'evolution' && (
+            <button onClick={() => onReconnect(conn.id)} disabled={reconnectId === conn.id} className="p-2 rounded-lg bg-gold-500/10 hover:bg-gold-500/20 text-gold-400 transition-colors" title="Reconectar e reconfigurar webhook">
+              {reconnectId === conn.id ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCcwDot className="h-4 w-4" />}
+            </button>
+          )}
           {conn.connection_status !== 'connected' && (
             <button onClick={() => onRefreshQr(conn.id)} disabled={qrRefreshId === conn.id} className="p-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 transition-colors" title="Gerar QR Code">
               {qrRefreshId === conn.id ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
