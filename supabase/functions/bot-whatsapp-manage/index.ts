@@ -190,6 +190,7 @@ Deno.serve(async (req: Request) => {
         finalInstanceName = instanceName as string;
 
         try {
+          // Try to create the instance — if it already exists, fall through to connect
           const createResp = await fetch(`${cleanUrl}/instance/create`, {
             method: "POST",
             headers: { "Content-Type": "application/json", apikey: globalToken },
@@ -198,13 +199,23 @@ Deno.serve(async (req: Request) => {
           const createBody = await createResp.text();
           let createData: unknown = null;
           try { createData = JSON.parse(createBody); } catch { /* handled below */ }
-          if (!createResp.ok) {
-            return new Response(JSON.stringify({ error: evolutionError(createData, createBody, createResp.status) }), {
-              status: 502, headers: { ...corsHeaders, "Content-Type": "application/json" },
-            });
-          }
-          qrCode = extractQrCode(createData);
 
+          if (createResp.ok) {
+            qrCode = extractQrCode(createData);
+          } else {
+            // Instance likely already exists (409/400) — try connecting directly instead of failing
+            const createErrMsg = evolutionError(createData, createBody, createResp.status);
+            const alreadyExists = createResp.status === 409 || /already exist|ja existe|exists|duplicate/i.test(createErrMsg);
+
+            if (!alreadyExists) {
+              return new Response(JSON.stringify({ error: createErrMsg }), {
+                status: 502, headers: { ...corsHeaders, "Content-Type": "application/json" },
+              });
+            }
+            // Instance already exists on this Evolution server — proceed to connect
+          }
+
+          // Connect to the instance (works whether it was just created or already existed)
           const connectResp = await fetch(`${cleanUrl}/instance/connect/${encodeURIComponent(finalInstanceName)}`, {
             method: "GET",
             headers: { apikey: globalToken },
@@ -571,6 +582,18 @@ Deno.serve(async (req: Request) => {
         .update({ bot_custom_messages: customMessages ?? {}, updated_at: new Date().toISOString() })
         .eq("id", connectionId).eq("company_id", companyId);
       if (msgErr) return err500("Erro ao salvar mensagens: " + msgErr.message);
+      return json({ success: true });
+    }
+
+    if (action === "update_flow_settings") {
+      if (!connectionId) return err400("connectionId required");
+      const { flowSettings } = body;
+      const defaults = { show_welcome_menu: true, ask_destination: true, ask_payment: true, ask_category: true, confirm_address: true };
+      const merged = { ...defaults, ...(flowSettings ?? {}) };
+      const { error: flowErr } = await supabase.from("bot_whatsapp_conexoes")
+        .update({ bot_flow_settings: merged, updated_at: new Date().toISOString() })
+        .eq("id", connectionId).eq("company_id", companyId);
+      if (flowErr) return err500("Erro ao salvar configuracoes do fluxo: " + flowErr.message);
       return json({ success: true });
     }
 
@@ -982,3 +1005,5 @@ function parseErr(body: string, status: number): string {
 
 // v9: add create_location action
 // v10: bot_category_ids now text[]
+// v11: add update_flow_settings action
+// v12: handle already-existing Evolution instances on create
