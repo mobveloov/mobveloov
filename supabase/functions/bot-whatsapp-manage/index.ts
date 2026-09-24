@@ -18,7 +18,7 @@ Deno.serve(async (req: Request) => {
 
   try {
     const body = await req.json();
-    const { action, companyId, connectionId, apiUrl, globalToken, instanceName, provider, locationId } = body;
+    const { action, companyId, connectionId, apiUrl, globalToken, instanceName, provider, locationId, metaPhoneId, metaWabaId } = body;
 
     if (!companyId) {
       return new Response(JSON.stringify({ error: "companyId required" }), {
@@ -173,6 +173,10 @@ Deno.serve(async (req: Request) => {
         provider: connProvider,
       };
       if (locationId) insertData.location_id = locationId;
+      if (connProvider === "meta_cloud") {
+        if (metaPhoneId) insertData.meta_phone_id = metaPhoneId;
+        if (metaWabaId) insertData.meta_waba_id = metaWabaId;
+      }
 
       const { data: conn, error: connErr } = await supabase
         .from("bot_whatsapp_conexoes")

@@ -119,16 +119,28 @@ async function getCompanyWhatsAppConfig(companyId: string): Promise<{ provider: 
 
   if (instance && instance.connection_status === "connected" && instance.whatsapp_provider && instance.whatsapp_provider !== "veloov") {
     const fields: Record<string, string> = {};
-    if (instance.evolution_api_url) fields["evo_url"] = instance.evolution_api_url;
-    if (instance.evolution_global_token) fields["evo_token"] = instance.evolution_global_token;
-    if (instance.instance_name) fields["evo_instance"] = instance.instance_name;
-    if (instance.provider_api_url) fields["zapi_url"] = instance.provider_api_url;
-    if (instance.provider_token) fields["zapi_instance_token"] = instance.provider_token;
-    if (instance.provider_waba_id) fields["zapi_client_token"] = instance.provider_waba_id;
-    if (instance.provider_token) fields["meta_token"] = instance.provider_token;
-    if (instance.provider_phone_id) fields["meta_phone_id"] = instance.provider_phone_id;
-    if (instance.provider_waba_id) fields["meta_waba_id"] = instance.provider_waba_id;
-    return { provider: instance.whatsapp_provider, fields };
+    const p = instance.whatsapp_provider;
+    if (p === "evolution") {
+      if (instance.evolution_api_url) fields["evo_url"] = instance.evolution_api_url;
+      if (instance.evolution_global_token) fields["evo_token"] = instance.evolution_global_token;
+      if (instance.instance_name) fields["evo_instance"] = instance.instance_name;
+    } else if (p === "zapi") {
+      if (instance.provider_api_url) fields["zapi_url"] = instance.provider_api_url;
+      if (instance.provider_token) fields["zapi_instance_token"] = instance.provider_token;
+      if (instance.provider_waba_id) fields["zapi_client_token"] = instance.provider_waba_id;
+    } else if (p === "zpro") {
+      if (instance.provider_api_url) fields["zpro_url"] = instance.provider_api_url;
+      if (instance.provider_token) fields["zpro_instance_token"] = instance.provider_token;
+      if (instance.provider_waba_id) fields["zpro_client_token"] = instance.provider_waba_id;
+    } else if (p === "meta_cloud") {
+      if (instance.provider_token) fields["meta_token"] = instance.provider_token;
+      if (instance.provider_phone_id) fields["meta_phone_id"] = instance.provider_phone_id;
+      if (instance.provider_waba_id) fields["meta_waba_id"] = instance.provider_waba_id;
+    } else if (p === "custom_webhook") {
+      if (instance.provider_api_url) fields["custom_url"] = instance.provider_api_url;
+      if (instance.provider_token) fields["custom_token"] = instance.provider_token;
+    }
+    return { provider: p, fields };
   }
 
   return await getWhatsAppConfig();
@@ -236,9 +248,41 @@ interface BotConversation {
   selected_category_id: string | null;
 }
 
-async function sendBotMessage(companyId: string, phone: string, message: string): Promise<void> {
+async function getBotConnectionConfig(connectionId: string): Promise<{ provider: string; fields: Record<string, string> } | null> {
+  const { data: conn } = await supabase
+    .from("bot_whatsapp_conexoes")
+    .select("provider, evolution_api_url, evolution_global_token, instance_name, meta_phone_id, meta_waba_id")
+    .eq("id", connectionId)
+    .maybeSingle();
+  if (!conn) return null;
+  const fields: Record<string, string> = {};
+  if (conn.provider === "evolution" || conn.provider === "veloov") {
+    if (conn.evolution_api_url) fields["evo_url"] = conn.evolution_api_url;
+    if (conn.evolution_global_token) fields["evo_token"] = conn.evolution_global_token;
+    if (conn.instance_name) fields["evo_instance"] = conn.instance_name;
+  } else if (conn.provider === "meta_cloud") {
+    if (conn.evolution_global_token) fields["meta_token"] = conn.evolution_global_token;
+    if (conn.meta_phone_id) fields["meta_phone_id"] = conn.meta_phone_id;
+    if (conn.meta_waba_id) fields["meta_waba_id"] = conn.meta_waba_id;
+  } else if (conn.provider === "zapi" || conn.provider === "zpro") {
+    if (conn.evolution_api_url) fields[`${conn.provider}_url`] = conn.evolution_api_url;
+    if (conn.evolution_global_token) fields[`${conn.provider}_instance_token`] = conn.evolution_global_token;
+    if (conn.meta_waba_id) fields[`${conn.provider}_client_token`] = conn.meta_waba_id;
+  }
+  return { provider: conn.provider || "evolution", fields };
+}
+
+async function sendBotMessage(companyId: string, phone: string, message: string, connectionId?: string): Promise<void> {
   try {
-    const { provider, fields: f } = await getCompanyWhatsAppConfig(companyId);
+    let provider: string;
+    let f: Record<string, string>;
+    if (connectionId) {
+      const botConfig = await getBotConnectionConfig(connectionId);
+      if (botConfig) { provider = botConfig.provider; f = botConfig.fields; }
+      else { const c = await getCompanyWhatsAppConfig(companyId); provider = c.provider; f = c.fields; }
+    } else {
+      const c = await getCompanyWhatsAppConfig(companyId); provider = c.provider; f = c.fields;
+    }
     await sendWhatsAppMessageWithProvider(provider, f, phone, message);
     await saveMessage(companyId, phone, "outgoing", message);
   } catch { /* best-effort */ }
@@ -614,7 +658,7 @@ async function handleBotMessage(
       .single();
     conv = newConv as BotConversation;
 
-    await sendBotMessage(companyId, cleanPhone, msg("welcome", "Ola! Voce quer solicitar uma corrida? Responda SIM para continuar."));
+    await sendBotMessage(companyId, cleanPhone, connectionId, msg("welcome", "Ola! Voce quer solicitar uma corrida? Responda SIM para continuar."));
     return;
   }
 
@@ -633,14 +677,14 @@ async function handleBotMessage(
         await supabase.from("bot_conversas")
           .update({ state: "aguardando_endereco", updated_at: new Date().toISOString() })
           .eq("id", conv.id);
-        await sendBotMessage(companyId, cleanPhone, msg("ask_address", "Perfeito! Qual e o endereco de embarque? Voce pode digitar o endereco, enviar sua localizacao ou mandar um audio."));
+        await sendBotMessage(companyId, cleanPhone, connectionId, msg("ask_address", "Perfeito! Qual e o endereco de embarque? Voce pode digitar o endereco, enviar sua localizacao ou mandar um audio."));
       } else if (["nao", "nao.", "cancelar", "n"].includes(normalizedText)) {
         await supabase.from("bot_conversas")
           .update({ state: "corrida_solicitada", updated_at: new Date().toISOString() })
           .eq("id", conv.id);
-        await sendBotMessage(companyId, cleanPhone, msg("decline", "Tudo bem! Quando precisar de uma corrida, e so nos mandar uma mensagem."));
+        await sendBotMessage(companyId, cleanPhone, connectionId, msg("decline", "Tudo bem! Quando precisar de uma corrida, e so nos mandar uma mensagem."));
       } else {
-        await sendBotMessage(companyId, cleanPhone, msg("welcome_repeat", "Voce quer solicitar uma corrida? Responda SIM para continuar."));
+        await sendBotMessage(companyId, cleanPhone, connectionId, msg("welcome_repeat", "Voce quer solicitar uma corrida? Responda SIM para continuar."));
       }
       break;
     }
@@ -659,9 +703,9 @@ async function handleBotMessage(
         const transcribed = await transcribeAudio(audio.data, audio.mimetype, companyId);
         if (transcribed) {
           addressText = transcribed.trim();
-          await sendBotMessage(companyId, cleanPhone, `Entendi: "${addressText}". Validando o endereco...`);
+          await sendBotMessage(companyId, cleanPhone, connectionId, `Entendi: "${addressText}". Validando o endereco...`);
         } else {
-          await sendBotMessage(companyId, cleanPhone, "Nao consegui transcrever o audio. Por favor, digite o endereco de embarque ou envie sua localizacao.");
+          await sendBotMessage(companyId, cleanPhone, connectionId, "Nao consegui transcrever o audio. Por favor, digite o endereco de embarque ou envie sua localizacao.");
           return;
         }
       } else if (text) {
@@ -669,7 +713,7 @@ async function handleBotMessage(
       }
 
       if (!addressText) {
-        await sendBotMessage(companyId, cleanPhone, msg("address_retry", "Por favor, envie o endereco de embarque. Voce pode digitar, enviar sua localizacao ou mandar um audio."));
+        await sendBotMessage(companyId, cleanPhone, connectionId, msg("address_retry", "Por favor, envie o endereco de embarque. Voce pode digitar, enviar sua localizacao ou mandar um audio."));
         return;
       }
 
@@ -714,7 +758,7 @@ async function handleBotMessage(
             finalLng = companyLoc.lng;
             isFallback = true;
           } else {
-            await sendBotMessage(companyId, cleanPhone, msg("address_not_found", "Nao consegui encontrar esse endereco. Tente enviar um endereco mais completo (ex: Rua, numero, bairro, cidade) ou compartilhe sua localizacao."));
+            await sendBotMessage(companyId, cleanPhone, connectionId, msg("address_not_found", "Nao consegui encontrar esse endereco. Tente enviar um endereco mais completo (ex: Rua, numero, bairro, cidade) ou compartilhe sua localizacao."));
             return;
           }
         }
@@ -740,7 +784,7 @@ async function handleBotMessage(
             finalAddress = addressText;
             isFallback = true;
           } else {
-            await sendBotMessage(companyId, cleanPhone, msg("address_not_found", "Nao consegui encontrar esse endereco. Tente enviar um endereco mais completo (ex: Rua, numero, bairro, cidade) ou compartilhe sua localizacao."));
+            await sendBotMessage(companyId, cleanPhone, connectionId, msg("address_not_found", "Nao consegui encontrar esse endereco. Tente enviar um endereco mais completo (ex: Rua, numero, bairro, cidade) ou compartilhe sua localizacao."));
             return;
           }
         }
@@ -759,7 +803,7 @@ async function handleBotMessage(
         .eq("id", conv.id);
 
       const fallbackNote = isFallback ? " (nao foi possivel localizar no mapa, usando localizacao aproximada da cidade)" : "";
-      await sendBotMessage(companyId, cleanPhone, msg("confirm_address", `Confirma que o embarque e em: ${finalAddress}${fallbackNote}?\n\nResponda SIM para confirmar ou NAO para corrigir.`));
+      await sendBotMessage(companyId, cleanPhone, connectionId, msg("confirm_address", `Confirma que o embarque e em: ${finalAddress}${fallbackNote}?\n\nResponda SIM para confirmar ou NAO para corrigir.`));
       break;
     }
 
@@ -767,7 +811,7 @@ async function handleBotMessage(
       if (["sim", "sim.", "s", "confirmo", "confirmar", "sim!"].includes(normalizedText)) {
         const companyLoc = await getCompanyLocationInfo(companyId);
         if (!companyLoc.slug) {
-          await sendBotMessage(companyId, cleanPhone, "Erro: empresa nao configurada corretamente. Tente novamente mais tarde.");
+          await sendBotMessage(companyId, cleanPhone, connectionId, "Erro: empresa nao configurada corretamente. Tente novamente mais tarde.");
           return;
         }
 
@@ -779,7 +823,7 @@ async function handleBotMessage(
             .update({ state: "aguardando_categoria", updated_at: new Date().toISOString() })
             .eq("id", conv.id);
           const opts = categories.map((c, i) => `${i + 1} - ${c.label}`).join("\n");
-          await sendBotMessage(companyId, cleanPhone, msg("ask_category", `Qual categoria voce deseja?\n\n${opts}\n\nResponda com o numero da opcao.`));
+          await sendBotMessage(companyId, cleanPhone, connectionId, msg("ask_category", `Qual categoria voce deseja?\n\n${opts}\n\nResponda com o numero da opcao.`));
           return;
         }
 
@@ -813,7 +857,7 @@ async function handleBotMessage(
             .eq("id", conv.id);
 
           const successMsg = result.machineMessage || msg("ride_success", "Corrida solicitada com sucesso! Um motorista vai aceitar em breve. Aguarde.");
-          await sendBotMessage(companyId, cleanPhone, successMsg);
+          await sendBotMessage(companyId, cleanPhone, connectionId, successMsg);
 
           await supabase.from("admin_logs").insert({
             company_id: companyId,
@@ -823,7 +867,7 @@ async function handleBotMessage(
             ride_id: result.rideId,
           });
         } else {
-          await sendBotMessage(companyId, cleanPhone, msg("ride_error", `Houve um erro ao solicitar a corrida: ${result.error ?? "erro desconhecido"}. Tente novamente enviando o endereco.`));
+          await sendBotMessage(companyId, cleanPhone, connectionId, msg("ride_error", `Houve um erro ao solicitar a corrida: ${result.error ?? "erro desconhecido"}. Tente novamente enviando o endereco.`));
           await supabase.from("bot_conversas")
             .update({ state: "aguardando_endereco", updated_at: new Date().toISOString() })
             .eq("id", conv.id);
@@ -832,9 +876,9 @@ async function handleBotMessage(
         await supabase.from("bot_conversas")
           .update({ state: "aguardando_endereco", updated_at: new Date().toISOString() })
           .eq("id", conv.id);
-        await sendBotMessage(companyId, cleanPhone, msg("address_correction", "Sem problema! Qual e o endereco correto de embarque? Voce pode digitar, enviar sua localizacao ou mandar um audio."));
+        await sendBotMessage(companyId, cleanPhone, connectionId, msg("address_correction", "Sem problema! Qual e o endereco correto de embarque? Voce pode digitar, enviar sua localizacao ou mandar um audio."));
       } else {
-        await sendBotMessage(companyId, cleanPhone, msg("confirm_retry", "Por favor, responda SIM para confirmar o endereco ou NAO para corrigir."));
+        await sendBotMessage(companyId, cleanPhone, connectionId, msg("confirm_retry", "Por favor, responda SIM para confirmar o endereco ou NAO para corrigir."));
       }
       break;
     }
@@ -842,7 +886,7 @@ async function handleBotMessage(
     case "aguardando_categoria": {
       const categories = await getCategoriesForConnection(companyId, connectionId);
       if (categories.length === 0) {
-        await sendBotMessage(companyId, cleanPhone, msg("ride_error", "Nenhuma categoria disponivel. Tente novamente mais tarde."));
+        await sendBotMessage(companyId, cleanPhone, connectionId, msg("ride_error", "Nenhuma categoria disponivel. Tente novamente mais tarde."));
         await supabase.from("bot_conversas")
           .update({ state: "aguardando_endereco", updated_at: new Date().toISOString() })
           .eq("id", conv.id);
@@ -861,13 +905,13 @@ async function handleBotMessage(
 
       if (!chosenCat) {
         const opts = categories.map((c, i) => `${i + 1} - ${c.label}`).join("\n");
-        await sendBotMessage(companyId, cleanPhone, msg("category_retry", `Opcao invalida. Escolha uma categoria:\n\n${opts}\n\nResponda com o numero da opcao.`));
+        await sendBotMessage(companyId, cleanPhone, connectionId, msg("category_retry", `Opcao invalida. Escolha uma categoria:\n\n${opts}\n\nResponda com o numero da opcao.`));
         return;
       }
 
       const companyLoc = await getCompanyLocationInfo(companyId);
       if (!companyLoc.slug) {
-        await sendBotMessage(companyId, cleanPhone, "Erro: empresa nao configurada corretamente. Tente novamente mais tarde.");
+        await sendBotMessage(companyId, cleanPhone, connectionId, "Erro: empresa nao configurada corretamente. Tente novamente mais tarde.");
         return;
       }
 
@@ -899,7 +943,7 @@ async function handleBotMessage(
           .eq("id", conv.id);
 
         const successMsg = result.machineMessage || msg("ride_success", `Corrida de ${chosenCat.label} solicitada com sucesso! Um motorista vai aceitar em breve. Aguarde.`);
-        await sendBotMessage(companyId, cleanPhone, successMsg);
+        await sendBotMessage(companyId, cleanPhone, connectionId, successMsg);
 
         await supabase.from("admin_logs").insert({
           company_id: companyId,
@@ -909,7 +953,7 @@ async function handleBotMessage(
           ride_id: result.rideId,
         });
       } else {
-        await sendBotMessage(companyId, cleanPhone, msg("ride_error", `Houve um erro ao solicitar a corrida: ${result.error ?? "erro desconhecido"}. Tente novamente enviando o endereco.`));
+        await sendBotMessage(companyId, cleanPhone, connectionId, msg("ride_error", `Houve um erro ao solicitar a corrida: ${result.error ?? "erro desconhecido"}. Tente novamente enviando o endereco.`));
         await supabase.from("bot_conversas")
           .update({ state: "aguardando_endereco", updated_at: new Date().toISOString() })
           .eq("id", conv.id);
@@ -921,7 +965,7 @@ async function handleBotMessage(
       await supabase.from("bot_conversas")
         .update({ state: "inicio", updated_at: new Date().toISOString() })
         .eq("id", conv.id);
-      await sendBotMessage(companyId, cleanPhone, msg("welcome_back", "Ola! Voce quer solicitar uma nova corrida? Responda SIM para continuar."));
+      await sendBotMessage(companyId, cleanPhone, connectionId, msg("welcome_back", "Ola! Voce quer solicitar uma nova corrida? Responda SIM para continuar."));
       break;
     }
   }
@@ -930,6 +974,22 @@ async function handleBotMessage(
 Deno.serve(async (req: Request) => {
   if (req.method === "OPTIONS") {
     return new Response(null, { status: 200, headers: corsHeaders });
+  }
+
+  // Meta Cloud API webhook verification (GET)
+  if (req.method === "GET") {
+    const url = new URL(req.url);
+    const mode = url.searchParams.get("hub.mode");
+    const token = url.searchParams.get("hub.verify_token");
+    const challenge = url.searchParams.get("hub.challenge");
+    if (mode === "subscribe" && challenge) {
+      const metaVerifyToken = Deno.env.get("META_VERIFY_TOKEN") ?? "veloov_meta_verify";
+      if (!token || token === metaVerifyToken) {
+        return new Response(challenge, { status: 200, headers: { "Content-Type": "text/plain" } });
+      }
+      return new Response("Forbidden", { status: 403 });
+    }
+    return new Response("OK", { status: 200, headers: { "Content-Type": "text/plain" } });
   }
 
   // Auth: accept if no token is configured, or if the Evolution API sends the correct one
@@ -946,6 +1006,245 @@ Deno.serve(async (req: Request) => {
 
   try {
     const body = await req.json();
+
+    // Meta Cloud API webhook (POST) — format: { entry: [{ changes: [{ value: { messages: [...] } }] }] }
+    if (body?.entry && Array.isArray(body.entry)) {
+      for (const entry of body.entry) {
+        const changes = (entry as Record<string, unknown>)?.changes;
+        if (!Array.isArray(changes)) continue;
+        for (const change of changes) {
+          const value = (change as Record<string, unknown>)?.value as Record<string, unknown> | undefined;
+          if (!value) continue;
+
+          // Status updates (sent, delivered, read) — acknowledge but skip
+          if (value.statuses && Array.isArray(value.statuses)) continue;
+
+          const messages = value.messages as Record<string, unknown>[] | undefined;
+          if (!messages || !Array.isArray(messages)) continue;
+
+          // Find the bot connection by phone_number_id
+          const phoneNumberId = value.metadata?.phone_number_id as string | undefined;
+          const wabaId = value.metadata?.waba_id as string | undefined;
+
+          let botConn: { id: string; company_id: string } | null = null;
+          if (phoneNumberId) {
+            const { data: conn } = await supabase
+              .from("bot_whatsapp_conexoes")
+              .select("id, company_id")
+              .eq("meta_phone_id", phoneNumberId)
+              .maybeSingle();
+            botConn = conn as { id: string; company_id: string } | null;
+          }
+          if (!botConn && wabaId) {
+            const { data: conn } = await supabase
+              .from("bot_whatsapp_conexoes")
+              .select("id, company_id")
+              .eq("meta_waba_id", wabaId)
+              .maybeSingle();
+            botConn = conn as { id: string; company_id: string } | null;
+          }
+          if (!botConn) continue;
+
+          for (const msg of messages) {
+            const msgType = msg.type as string;
+            const from = msg.from as string;
+            const msgId = msg.id as string;
+
+            let text: string | null = null;
+            let location: { lat: number; lng: number } | null = null;
+            let audio: { data: string; mimetype: string } | null = null;
+
+            if (msgType === "text" && msg.text?.body) {
+              text = String(msg.text.body);
+            } else if (msgType === "audio") {
+              const audioId = msg.audio?.id as string | undefined;
+              const mimeType = msg.audio?.mime_type as string | undefined;
+              if (audioId) {
+                // Download audio from Meta Cloud API using per-connection token
+                const botConnConfig = await getBotConnectionConfig(botConn.id);
+                const metaToken = botConnConfig?.fields["meta_token"] ?? Deno.env.get("META_ACCESS_TOKEN") ?? "";
+                try {
+                  const audioResp = await fetch(`https://graph.facebook.com/v20.0/${audioId}`, {
+                    headers: { Authorization: `Bearer ${metaToken}` },
+                  });
+                  if (audioResp.ok) {
+                    const audioBlob = await audioResp.blob();
+                    const arrayBuf = await audioBlob.arrayBuffer();
+                    const bytes = new Uint8Array(arrayBuf);
+                    let binary = "";
+                    for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
+                    audio = { data: btoa(binary), mimetype: mimeType || "audio/ogg" };
+                  }
+                } catch { /* best-effort */ }
+              }
+            } else if (msgType === "location") {
+              const lat = msg.location?.latitude != null ? Number(msg.location.latitude) : null;
+              const lng = msg.location?.longitude != null ? Number(msg.location.longitude) : null;
+              if (lat != null && lng != null) location = { lat, lng };
+            } else if (msgType === "interactive" && msg.interactive?.button_reply?.id) {
+              text = String(msg.interactive.button_reply.id);
+            } else if (msgType === "interactive" && msg.interactive?.list_reply?.id) {
+              text = String(msg.interactive.list_reply.id);
+            }
+
+            if (!from) continue;
+            if (!text && !location && !audio) continue;
+
+            const cleanPhone = from.replace(/\D/g, "");
+            const pushName = (msg.context?.forwarded ?? false) ? null : (value.contacts?.[0] as Record<string, unknown>)?.name as string | null;
+
+            // Save incoming message
+            if (text) await saveMessage(botConn.company_id, cleanPhone, "incoming", text, body);
+
+            // Build a normalized data object that handleIncomingMessage can process
+            const normalizedData: Record<string, unknown> = {
+              key: { remoteJid: `${from}@s.whatsapp.net` },
+              message: text ? { conversation: text } : {},
+              pushName: pushName ?? undefined,
+            };
+            if (location) {
+              (normalizedData.message as Record<string, unknown>).locationMessage = {
+                degreesLatitude: location.lat,
+                degreesLongitude: location.lng,
+              };
+            }
+            if (audio) {
+              (normalizedData.message as Record<string, unknown>).audioMessage = {
+                base64: audio.data,
+                mimetype: audio.mimetype,
+              };
+            }
+
+            await handleIncomingMessage(botConn.company_id, normalizedData, undefined, botConn.id);
+          }
+        }
+      }
+      return new Response(JSON.stringify({ success: true, meta: true }), {
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
+    }
+
+    // Z-API / Z-Pro webhook — format: { type: "ReceivedCallback", phone, text: { message }, instanceId, ... }
+    if (body?.type === "ReceivedCallback" || body?.type === "DeliveryCallback") {
+      const zapiPhone = body.phone as string | undefined;
+      const zapiInstance = body.instanceId as string | undefined;
+      const zapiFromMe = body.fromMe as boolean | undefined;
+      const zapiSenderName = body.senderName as string | undefined;
+
+      // Skip messages sent by us (delivery callbacks)
+      if (body.type === "DeliveryCallback") {
+        return new Response(JSON.stringify({ success: true, zapi: true, delivery: true }), {
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+
+      if (!zapiPhone || zapiFromMe) {
+        return new Response(JSON.stringify({ success: true, zapi: true, skipped: true }), {
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+
+      // Find the bot connection or whatsapp instance by instanceId
+      let zapiCompanyId: string | null = null;
+      let zapiConnId: string | null = null;
+
+      if (zapiInstance) {
+        // Try bot connections first
+        const { data: botConn } = await supabase
+          .from("bot_whatsapp_conexoes")
+          .select("id, company_id, provider")
+          .or(`instance_name.eq.${zapiInstance},evolution_global_token.eq.${zapiInstance}`)
+          .maybeSingle();
+        if (botConn) {
+          zapiCompanyId = botConn.company_id;
+          zapiConnId = botConn.id;
+        }
+      }
+      if (!zapiCompanyId && zapiInstance) {
+        const { data: waInst } = await supabase
+          .from("whatsapp_instances")
+          .select("id, company_id")
+          .or(`instance_name.eq.${zapiInstance},provider_token.eq.${zapiInstance}`)
+          .maybeSingle();
+        if (waInst) {
+          zapiCompanyId = waInst.company_id;
+        }
+      }
+      if (!zapiCompanyId) {
+        return new Response(JSON.stringify({ error: "Instance not found" }), {
+          status: 404,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+
+      const cleanZapiPhone = String(zapiPhone).replace(/\D/g, "");
+
+      // Extract text
+      let zapiText: string | null = null;
+      const textObj = body.text as Record<string, unknown> | undefined;
+      if (textObj?.message) {
+        zapiText = String(textObj.message);
+      } else if (typeof body.text === "string") {
+        zapiText = body.text;
+      } else if (body.caption) {
+        zapiText = String(body.caption);
+      }
+
+      // Extract location
+      let zapiLocation: { lat: number; lng: number } | null = null;
+      const locObj = body.location as Record<string, unknown> | undefined;
+      if (locObj?.latitude != null && locObj?.longitude != null) {
+        zapiLocation = {
+          lat: Number(locObj.latitude),
+          lng: Number(locObj.longitude),
+        };
+      }
+
+      // Extract audio
+      let zapiAudio: { data: string; mimetype: string } | null = null;
+      const audioObj = body.audio as Record<string, unknown> | undefined;
+      if (audioObj?.audioUrl) {
+        zapiAudio = {
+          data: String(audioObj.audioUrl),
+          mimetype: String(audioObj.mimeType ?? "audio/ogg"),
+        };
+      }
+
+      if (!zapiText && !zapiLocation && !zapiAudio) {
+        return new Response(JSON.stringify({ success: true, zapi: true, no_content: true }), {
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+
+      // Save incoming message
+      if (zapiText) await saveMessage(zapiCompanyId, cleanZapiPhone, "incoming", zapiText, body);
+
+      // Build normalized data for handleIncomingMessage
+      const normalizedZapiData: Record<string, unknown> = {
+        key: { remoteJid: `${cleanZapiPhone}@s.whatsapp.net` },
+        message: zapiText ? { conversation: zapiText } : {},
+        pushName: zapiSenderName ?? undefined,
+      };
+      if (zapiLocation) {
+        (normalizedZapiData.message as Record<string, unknown>).locationMessage = {
+          degreesLatitude: zapiLocation.lat,
+          degreesLongitude: zapiLocation.lng,
+        };
+      }
+      if (zapiAudio) {
+        (normalizedZapiData.message as Record<string, unknown>).audioMessage = {
+          url: zapiAudio.data,
+          mimetype: zapiAudio.mimetype,
+        };
+      }
+
+      await handleIncomingMessage(zapiCompanyId, normalizedZapiData, undefined, zapiConnId ?? undefined);
+
+      return new Response(JSON.stringify({ success: true, zapi: true }), {
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
+    }
+
     const { event, instance, data } = body;
 
     // Find the whatsapp instance by instance_name

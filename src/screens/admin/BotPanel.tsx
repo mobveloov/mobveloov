@@ -412,6 +412,8 @@ function CreateConnectionModal({ companyId, defaultInstanceName, onClose, onCrea
   const [apiUrl, setApiUrl] = useState('');
   const [globalToken, setGlobalToken] = useState('');
   const [instanceName, setInstanceName] = useState(defaultInstanceName);
+  const [metaPhoneId, setMetaPhoneId] = useState('');
+  const [metaWabaId, setMetaWabaId] = useState('');
   const [saving, setSaving] = useState(false);
   const [qrCode, setQrCode] = useState<string | null>(null);
   const [created, setCreated] = useState(false);
@@ -428,7 +430,7 @@ function CreateConnectionModal({ companyId, defaultInstanceName, onClose, onCrea
     { value: 'evolution', label: 'Evolution API', needsUrl: true, needsToken: true, needsInstance: true, qr: true },
     { value: 'zapi', label: 'Z-API', needsUrl: true, needsToken: true, needsInstance: false, qr: false },
     { value: 'zpro', label: 'Z-Pro', needsUrl: true, needsToken: true, needsInstance: false, qr: false },
-    { value: 'meta_cloud', label: 'Meta Cloud API', needsUrl: false, needsToken: true, needsInstance: false, qr: false },
+    { value: 'meta_cloud', label: 'Meta Cloud API', needsUrl: false, needsToken: true, needsInstance: false, qr: false, needsPhoneId: true, needsWabaId: true },
   ] as const;
   const current = PROVIDERS.find((p) => p.value === provider)!;
 
@@ -439,7 +441,7 @@ function CreateConnectionModal({ companyId, defaultInstanceName, onClose, onCrea
     if (current.needsInstance && !instanceName) { onError('Preencha o nome da instância'); return; }
     setSaving(true);
     setQrCode(null);
-    const result = await callBotApi('create', { companyId, apiUrl: apiUrl || undefined, globalToken, instanceName: instanceName || undefined, provider, locationId: selectedLocationId || undefined });
+    const result = await callBotApi('create', { companyId, apiUrl: apiUrl || undefined, globalToken, instanceName: instanceName || undefined, provider, locationId: selectedLocationId || undefined, metaPhoneId: metaPhoneId || undefined, metaWabaId: metaWabaId || undefined });
     setSaving(false);
     if (result.ok && result.data) {
       const conn = (result.data as { connection: BotWhatsappConexao }).connection;
@@ -495,6 +497,13 @@ function CreateConnectionModal({ companyId, defaultInstanceName, onClose, onCrea
             )}
             {current.needsInstance && (
               <Input label="Nome da Instância" value={instanceName} onChange={setInstanceName} placeholder="empresa-bot" />
+            )}
+            {provider === 'meta_cloud' && (
+              <>
+                <Input label="Phone Number ID" value={metaPhoneId} onChange={setMetaPhoneId} placeholder="123456789012" />
+                <Input label="WhatsApp Business Account ID" value={metaWabaId} onChange={setMetaWabaId} placeholder="987654321098" />
+                <p className="text-[10px] text-slate-500">Encontre esses valores no Meta Business Manager em WhatsApp &gt; Configurações da API. O Token acima e o token de acesso permanente do app.</p>
+              </>
             )}
             <div>
               <label className="text-xs text-slate-400 block mb-1">Cidade / Local (opcional)</label>

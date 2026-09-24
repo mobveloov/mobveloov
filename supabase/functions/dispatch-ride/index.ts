@@ -879,16 +879,28 @@ async function getCompanyWhatsAppConfig(companyId: string): Promise<{ provider: 
 
   if (instance && instance.connection_status === "connected" && instance.whatsapp_provider && instance.whatsapp_provider !== "veloov") {
     const fields: Record<string, string> = {};
-    if (instance.evolution_api_url) fields["evo_url"] = instance.evolution_api_url;
-    if (instance.evolution_global_token) fields["evo_token"] = instance.evolution_global_token;
-    if (instance.instance_name) fields["evo_instance"] = instance.instance_name;
-    if (instance.provider_api_url) fields["zapi_url"] = instance.provider_api_url;
-    if (instance.provider_token) fields["zapi_instance_token"] = instance.provider_token;
-    if (instance.provider_waba_id) fields["zapi_client_token"] = instance.provider_waba_id;
-    if (instance.provider_token) fields["meta_token"] = instance.provider_token;
-    if (instance.provider_phone_id) fields["meta_phone_id"] = instance.provider_phone_id;
-    if (instance.provider_waba_id) fields["meta_waba_id"] = instance.provider_waba_id;
-    return { provider: instance.whatsapp_provider, fields };
+    const p = instance.whatsapp_provider;
+    if (p === "evolution") {
+      if (instance.evolution_api_url) fields["evo_url"] = instance.evolution_api_url;
+      if (instance.evolution_global_token) fields["evo_token"] = instance.evolution_global_token;
+      if (instance.instance_name) fields["evo_instance"] = instance.instance_name;
+    } else if (p === "zapi") {
+      if (instance.provider_api_url) fields["zapi_url"] = instance.provider_api_url;
+      if (instance.provider_token) fields["zapi_instance_token"] = instance.provider_token;
+      if (instance.provider_waba_id) fields["zapi_client_token"] = instance.provider_waba_id;
+    } else if (p === "zpro") {
+      if (instance.provider_api_url) fields["zpro_url"] = instance.provider_api_url;
+      if (instance.provider_token) fields["zpro_instance_token"] = instance.provider_token;
+      if (instance.provider_waba_id) fields["zpro_client_token"] = instance.provider_waba_id;
+    } else if (p === "meta_cloud") {
+      if (instance.provider_token) fields["meta_token"] = instance.provider_token;
+      if (instance.provider_phone_id) fields["meta_phone_id"] = instance.provider_phone_id;
+      if (instance.provider_waba_id) fields["meta_waba_id"] = instance.provider_waba_id;
+    } else if (p === "custom_webhook") {
+      if (instance.provider_api_url) fields["custom_url"] = instance.provider_api_url;
+      if (instance.provider_token) fields["custom_token"] = instance.provider_token;
+    }
+    return { provider: p, fields };
   }
 
   return await getWhatsAppConfig();
