@@ -77,7 +77,7 @@ Deno.serve(async (req: Request) => {
     if (action === "list") {
       const { data: rawConnections } = await supabase
         .from("bot_whatsapp_conexoes")
-        .select("*, company_locations(name, slug, city, state)")
+        .select("*, company_locations!bot_whatsapp_conexoes_location_id_fkey(name, slug, city, state)")
         .eq("company_id", companyId)
         .order("created_at", { ascending: true });
 
