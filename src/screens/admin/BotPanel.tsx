@@ -238,7 +238,7 @@ export function BotPanel() {
       {showCreate && (
         <CreateConnectionModal
           companyId={company!.id}
-          defaultInstanceName={slugify(company!.slug) + '-bot'}
+          defaultInstanceName={slugify(company!.slug) + '-bot-' + Math.random().toString(36).slice(2, 6)}
           onClose={() => setShowCreate(false)}
           onCreated={() => { setShowCreate(false); setSuccess('Conexão criada! Escaneie o QR Code para conectar.'); setTimeout(() => setSuccess(null), 3000); load(); }}
           onError={setError}
@@ -309,6 +309,7 @@ function ConnectionCard({ conn, companyId, companySlug, expanded, onToggle, onRe
       {expanded && (
         <div className="border-t border-slate-800 p-4 space-y-4 bg-slate-950/30">
           <CategorySelectorSection conn={conn} companyId={companyId} companySlug={companySlug} onError={onError} onSuccess={onSuccess} onUpdate={onUpdate} />
+          <FlowSettingsSection conn={conn} companyId={companyId} onError={onError} onSuccess={onSuccess} onUpdate={onUpdate} />
           <AddressSuggestionsSection connId={conn.id} companyId={companyId} onError={onError} onSuccess={onSuccess} />
           <CustomMessagesSection conn={conn} companyId={companyId} onError={onError} onSuccess={onSuccess} />
         </div>
@@ -448,6 +449,67 @@ function CustomMessagesSection({ conn, companyId, onError, onSuccess }: { conn: 
                 {messages[key] || 'Texto padrão'}
               </p>
             )}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function FlowSettingsSection({ conn, companyId, onError, onSuccess, onUpdate }: { conn: BotWhatsappConexao; companyId: string; onError: (m: string) => void; onSuccess: (m: string) => void; onUpdate: () => void }) {
+  const defaults = { show_welcome_menu: true, ask_destination: true, ask_payment: true, ask_category: true, confirm_address: true };
+  const [settings, setSettings] = useState(defaults);
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    if (conn.bot_flow_settings) {
+      setSettings({ ...defaults, ...conn.bot_flow_settings });
+    }
+  }, [conn]);
+
+  const toggles: { key: keyof typeof defaults; label: string; description: string }[] = [
+    { key: "show_welcome_menu", label: "Menu de boas-vindas", description: "Mostra o menu inicial (1 - Corrida / 2 - Suporte). Se desativado, vai direto para o endereço." },
+    { key: "ask_destination", label: "Pedir destino", description: "Pergunta o endereco de destino apos o embarque. Se desativado, despacha sem destino." },
+    { key: "confirm_address", label: "Confirmar enderecos", description: "Pede confirmacao SIM/NAO antes de despachar. Se desativado, avanca direto." },
+    { key: "ask_category", label: "Pedir categoria", description: "Pergunta qual categoria o passageiro deseja. Se desativado, usa a primeira disponivel." },
+    { key: "ask_payment", label: "Pedir forma de pagamento", description: "Pergunta Dinheiro/Pix/Cartao. Se desativado, despacha sem informar pagamento." },
+  ];
+
+  const handleSave = async () => {
+    setSaving(true);
+    const result = await callBotApi("update_flow_settings", { companyId, connectionId: conn.id, flowSettings: settings });
+    setSaving(false);
+    if (result.ok) { onSuccess("Configuracoes do fluxo salvas"); setTimeout(() => onSuccess(""), 2000); onUpdate(); }
+    else onError(result.error ?? "Erro ao salvar configuracoes");
+  };
+
+  return (
+    <div>
+      <div className="flex items-center justify-between mb-2">
+        <div className="flex items-center gap-2">
+          <Settings className="h-4 w-4 text-gold-400" />
+          <h4 className="text-xs font-bold text-slate-300 uppercase tracking-wide">Etapas do Fluxo</h4>
+        </div>
+        <button onClick={handleSave} disabled={saving} className="text-xs text-gold-400 hover:text-gold-300 font-bold flex items-center gap-1">
+          {saving ? <Loader2 className="h-3 w-3 animate-spin" /> : <Save className="h-3 w-3" />} Salvar
+        </button>
+      </div>
+      <p className="text-[11px] text-slate-500 mb-3">Controle quais etapas o bot executa. Desativar etapas reduz o numero de mensagens enviadas e economiza custos da Meta.</p>
+
+      <div className="space-y-2">
+        {toggles.map(({ key, label, description }) => (
+          <div key={key} className="flex items-start gap-3 bg-slate-800/40 rounded-lg px-3 py-2.5">
+            <button
+              type="button"
+              onClick={() => setSettings((prev) => ({ ...prev, [key]: !prev[key] }))}
+              className={`mt-0.5 relative h-5 w-9 rounded-full transition-colors shrink-0 ${settings[key] ? "bg-gold-500" : "bg-slate-700"}`}
+            >
+              <span className={`absolute top-0.5 h-4 w-4 rounded-full bg-white transition-transform ${settings[key] ? "translate-x-4" : "translate-x-0.5"}`} />
+            </button>
+            <div className="min-w-0">
+              <p className="text-xs font-bold text-slate-200">{label}</p>
+              <p className="text-[10px] text-slate-500 mt-0.5">{description}</p>
+            </div>
           </div>
         ))}
       </div>
