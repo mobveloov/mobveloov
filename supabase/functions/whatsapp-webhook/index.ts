@@ -1,4 +1,4 @@
-// WhatsApp webhook: Evolution API events + bot ride-request flow — v2 with category + transcription
+// WhatsApp webhook: Evolution API events + bot ride-request flow — v3 with category selection
 import { createClient } from "npm:@supabase/supabase-js@2.57.4";
 
 const corsHeaders = {
@@ -219,7 +219,7 @@ async function sendWhatsAppMessageWithProvider(
 }
 
 // ── Bot: WhatsApp ride-request flow ──
-// State machine: inicio → aguardando_endereco → aguardando_confirmacao → corrida_solicitada
+// State machine: inicio → aguardando_endereco → aguardando_confirmacao → [aguardando_categoria] → corrida_solicitada
 
 interface BotConversation {
   id: string;
@@ -233,6 +233,7 @@ interface BotConversation {
   address_formatted: string | null;
   address_is_fallback: boolean;
   ride_id: string | null;
+  selected_category_id: string | null;
 }
 
 async function sendBotMessage(companyId: string, phone: string, message: string): Promise<void> {
@@ -457,41 +458,41 @@ async function getCompanyLocationInfo(companyId: string): Promise<{ city: string
   };
 }
 
-async function getFirstActiveCategory(companyId: string): Promise<{ id: string; label: string; machine_category_id: string | null } | null> {
-  const { data: cat } = await supabase
-    .from("vehicle_categories")
-    .select("id, label, machine_category_id")
-    .eq("company_id", companyId)
-    .eq("is_active", true)
-    .order("sort_order", { ascending: true })
-    .limit(1)
-    .maybeSingle();
-
-  return cat ? { id: cat.id, label: cat.label, machine_category_id: cat.machine_category_id } : null;
-}
-
-async function getCategoryForConnection(companyId: string, connectionId?: string): Promise<{ id: string; label: string; machine_category_id: string | null } | null> {
+async function getCategoriesForConnection(companyId: string, connectionId?: string): Promise<{ id: string; label: string; machine_category_id: string | null }[]> {
   if (connectionId) {
     const { data: conn } = await supabase
       .from("bot_whatsapp_conexoes")
-      .select("bot_category_ids")
+      .select("bot_category_ids, location_id")
       .eq("id", connectionId)
       .maybeSingle();
     const catIds = conn?.bot_category_ids as string[] | null;
     if (catIds && catIds.length > 0) {
-      const { data: cat } = await supabase
+      const { data: cats } = await supabase
         .from("vehicle_categories")
         .select("id, label, machine_category_id")
         .eq("company_id", companyId)
         .eq("is_active", true)
         .in("id", catIds)
-        .order("sort_order", { ascending: true })
-        .limit(1)
-        .maybeSingle();
-      if (cat) return { id: cat.id, label: cat.label, machine_category_id: cat.machine_category_id };
+        .order("sort_order", { ascending: true });
+      if (cats && cats.length > 0) return cats as { id: string; label: string; machine_category_id: string | null }[];
     }
   }
-  return await getFirstActiveCategory(companyId);
+  // Fallback: first active category (by location if available)
+  let query = supabase
+    .from("vehicle_categories")
+    .select("id, label, machine_category_id")
+    .eq("company_id", companyId)
+    .eq("is_active", true);
+  if (connectionId) {
+    const { data: conn } = await supabase
+      .from("bot_whatsapp_conexoes")
+      .select("location_id")
+      .eq("id", connectionId)
+      .maybeSingle();
+    if (conn?.location_id) query = query.eq("location_id", conn.location_id);
+  }
+  const { data: cats } = await query.order("sort_order", { ascending: true });
+  return (cats ?? []) as { id: string; label: string; machine_category_id: string | null }[];
 }
 
 async function createAndDispatchRide(
@@ -770,7 +771,20 @@ async function handleBotMessage(
           return;
         }
 
-        const category = await getCategoryForConnection(companyId, connectionId);
+        const categories = await getCategoriesForConnection(companyId, connectionId);
+
+        // If multiple categories available, ask the passenger to choose
+        if (categories.length > 1) {
+          await supabase.from("bot_conversas")
+            .update({ state: "aguardando_categoria", updated_at: new Date().toISOString() })
+            .eq("id", conv.id);
+          const opts = categories.map((c, i) => `${i + 1} - ${c.label}`).join("\n");
+          await sendBotMessage(companyId, cleanPhone, msg("ask_category", `Qual categoria voce deseja?\n\n${opts}\n\nResponda com o numero da opcao.`));
+          return;
+        }
+
+        // Single or no category — dispatch directly
+        const category = categories[0] ?? null;
         const passengerName = conv.passenger_name || "Passageiro";
         const origin = {
           lat: conv.address_lat!,
@@ -793,11 +807,11 @@ async function handleBotMessage(
             .update({
               state: "corrida_solicitada",
               ride_id: result.rideId,
+              selected_category_id: category?.id ?? null,
               updated_at: new Date().toISOString(),
             })
             .eq("id", conv.id);
 
-          // Prioritize Machine API response message, then custom, then default
           const successMsg = result.machineMessage || msg("ride_success", "Corrida solicitada com sucesso! Um motorista vai aceitar em breve. Aguarde.");
           await sendBotMessage(companyId, cleanPhone, successMsg);
 
@@ -821,6 +835,84 @@ async function handleBotMessage(
         await sendBotMessage(companyId, cleanPhone, msg("address_correction", "Sem problema! Qual e o endereco correto de embarque? Voce pode digitar, enviar sua localizacao ou mandar um audio."));
       } else {
         await sendBotMessage(companyId, cleanPhone, msg("confirm_retry", "Por favor, responda SIM para confirmar o endereco ou NAO para corrigir."));
+      }
+      break;
+    }
+
+    case "aguardando_categoria": {
+      const categories = await getCategoriesForConnection(companyId, connectionId);
+      if (categories.length === 0) {
+        await sendBotMessage(companyId, cleanPhone, msg("ride_error", "Nenhuma categoria disponivel. Tente novamente mais tarde."));
+        await supabase.from("bot_conversas")
+          .update({ state: "aguardando_endereco", updated_at: new Date().toISOString() })
+          .eq("id", conv.id);
+        return;
+      }
+
+      // Parse the passenger's choice (number or label)
+      const choiceNum = parseInt(normalizedText, 10);
+      let chosenCat: { id: string; label: string; machine_category_id: string | null } | null = null;
+      if (!isNaN(choiceNum) && choiceNum >= 1 && choiceNum <= categories.length) {
+        chosenCat = categories[choiceNum - 1];
+      } else {
+        // Try matching by label
+        chosenCat = categories.find((c) => c.label.toLowerCase() === normalizedText) ?? null;
+      }
+
+      if (!chosenCat) {
+        const opts = categories.map((c, i) => `${i + 1} - ${c.label}`).join("\n");
+        await sendBotMessage(companyId, cleanPhone, msg("category_retry", `Opcao invalida. Escolha uma categoria:\n\n${opts}\n\nResponda com o numero da opcao.`));
+        return;
+      }
+
+      const companyLoc = await getCompanyLocationInfo(companyId);
+      if (!companyLoc.slug) {
+        await sendBotMessage(companyId, cleanPhone, "Erro: empresa nao configurada corretamente. Tente novamente mais tarde.");
+        return;
+      }
+
+      const passengerName = conv.passenger_name || "Passageiro";
+      const origin = {
+        lat: conv.address_lat!,
+        lng: conv.address_lng!,
+        address: conv.address_formatted || conv.address_text || "Endereco nao informado",
+      };
+
+      const result = await createAndDispatchRide(
+        companyId,
+        companyLoc.slug,
+        passengerName,
+        cleanPhone,
+        origin,
+        chosenCat.label,
+        chosenCat.machine_category_id,
+      );
+
+      if (result.success) {
+        await supabase.from("bot_conversas")
+          .update({
+            state: "corrida_solicitada",
+            ride_id: result.rideId,
+            selected_category_id: chosenCat.id,
+            updated_at: new Date().toISOString(),
+          })
+          .eq("id", conv.id);
+
+        const successMsg = result.machineMessage || msg("ride_success", `Corrida de ${chosenCat.label} solicitada com sucesso! Um motorista vai aceitar em breve. Aguarde.`);
+        await sendBotMessage(companyId, cleanPhone, successMsg);
+
+        await supabase.from("admin_logs").insert({
+          company_id: companyId,
+          source: "whatsapp_bot",
+          level: "info",
+          message: `Corrida solicitada via bot por ${passengerName} (${cleanPhone}) — categoria: ${chosenCat.label}, endereco: ${origin.address}`,
+          ride_id: result.rideId,
+        });
+      } else {
+        await sendBotMessage(companyId, cleanPhone, msg("ride_error", `Houve um erro ao solicitar a corrida: ${result.error ?? "erro desconhecido"}. Tente novamente enviando o endereco.`));
+        await supabase.from("bot_conversas")
+          .update({ state: "aguardando_endereco", updated_at: new Date().toISOString() })
+          .eq("id", conv.id);
       }
       break;
     }
