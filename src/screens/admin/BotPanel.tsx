@@ -254,8 +254,7 @@ function ConnectionCard({ conn, companyId, expanded, onToggle, onRefreshQr, onDe
 
       {expanded && (
         <div className="border-t border-slate-800 p-4 space-y-4 bg-slate-950/30">
-          <LocationSelectorSection conn={conn} companyId={companyId} onError={onError} onSuccess={onSuccess} onUpdate={onUpdate} />
-          <CategorySelectorSection connId={conn.id} conn={conn} companyId={companyId} onError={onError} onSuccess={onSuccess} />
+          <CategorySelectorSection conn={conn} companyId={companyId} onError={onError} onSuccess={onSuccess} onUpdate={onUpdate} />
           <AddressSuggestionsSection connId={conn.id} companyId={companyId} onError={onError} onSuccess={onSuccess} />
           <CustomMessagesSection conn={conn} companyId={companyId} onError={onError} onSuccess={onSuccess} />
         </div>
@@ -530,88 +529,53 @@ interface CompanyLocationInfo {
   is_active: boolean;
 }
 
-function LocationSelectorSection({ conn, companyId, onError, onSuccess, onUpdate }: { conn: BotWhatsappConexao; companyId: string; onError: (m: string) => void; onSuccess: (m: string) => void; onUpdate: () => void }) {
-  const [locations, setLocations] = useState<CompanyLocationInfo[]>([]);
-  const [selectedId, setSelectedId] = useState<string | null>(conn.location_id ?? null);
-  const [loading, setLoading] = useState(true);
-  const [saving, setSaving] = useState(false);
-
-  const load = useCallback(async () => {
-    setLoading(true);
-    const result = await callBotApi('list_locations', { companyId });
-    if (result.ok && result.data) {
-      setLocations((result.data as { locations: CompanyLocationInfo[] }).locations ?? []);
-    }
-    setLoading(false);
-  }, [companyId]);
-
-  useEffect(() => { load(); }, [load]);
-
-  const handleSave = async () => {
-    setSaving(true);
-    const result = await callBotApi('update_connection_location', { companyId, connectionId: conn.id, locationId: selectedId });
-    setSaving(false);
-    if (result.ok) { onSuccess('Cidade salva'); setTimeout(() => onSuccess(''), 2000); onUpdate(); }
-    else onError(result.error ?? 'Erro ao salvar cidade');
-  };
-
-  if (loading) return <div className="text-xs text-slate-500 py-2">Carregando cidades...</div>;
-
-  return (
-    <div>
-      <div className="flex items-center justify-between mb-2">
-        <div className="flex items-center gap-2">
-          <Building2 className="h-4 w-4 text-gold-400" />
-          <h4 className="text-xs font-bold text-slate-300 uppercase tracking-wide">Cidade / Local</h4>
-        </div>
-        <button onClick={handleSave} disabled={saving} className="text-xs text-gold-400 hover:text-gold-300 font-bold flex items-center gap-1">
-          {saving ? <Loader2 className="h-3 w-3 animate-spin" /> : <Save className="h-3 w-3" />} Salvar
-        </button>
-      </div>
-      <p className="text-[11px] text-slate-500 mb-2">Selecione a cidade que este número do bot vai atender. As categorias carregadas abaixo serão filtradas pela cidade escolhida.</p>
-      {locations.length === 0 ? (
-        <div className="text-xs text-slate-600 py-2">Nenhuma cidade cadastrada. Cadastre locais na aba Locais.</div>
-      ) : (
-        <select
-          value={selectedId ?? ''}
-          onChange={(e) => setSelectedId(e.target.value || null)}
-          className="w-full px-3 py-2 text-xs rounded-lg bg-slate-800 border border-slate-700 text-slate-200"
-        >
-          <option value="">Todas as cidades (sem filtro)</option>
-          {locations.map((loc) => (
-            <option key={loc.id} value={loc.id}>{loc.name}{loc.city ? ` — ${loc.city}/${loc.state ?? ''}` : ''}</option>
-          ))}
-        </select>
-      )}
-    </div>
-  );
-}
-
 interface VehicleCategoryInfo {
   id: string;
   label: string;
   machine_category_id: string | null;
   is_active: boolean;
   sort_order: number;
+  location_id: string | null;
 }
 
-function CategorySelectorSection({ connId, conn, companyId, onError, onSuccess }: { connId: string; conn: BotWhatsappConexao; companyId: string; onError: (m: string) => void; onSuccess: (m: string) => void }) {
+function CategorySelectorSection({ conn, companyId, onError, onSuccess, onUpdate }: { conn: BotWhatsappConexao; companyId: string; onError: (m: string) => void; onSuccess: (m: string) => void; onUpdate: () => void }) {
+  const [locations, setLocations] = useState<CompanyLocationInfo[]>([]);
+  const [selectedLocationId, setSelectedLocationId] = useState<string>(conn.location_id ?? '');
   const [categories, setCategories] = useState<VehicleCategoryInfo[]>([]);
-  const [selectedIds, setSelectedIds] = useState<string[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [selectedIds, setSelectedIds] = useState<string[]>(conn.bot_category_ids ?? []);
+  const [loadingLocs, setLoadingLocs] = useState(true);
+  const [loadingCats, setLoadingCats] = useState(false);
   const [saving, setSaving] = useState(false);
 
-  const load = useCallback(async () => {
-    setLoading(true);
-    const catRes = await callBotApi('list_categories', { companyId, locationId: conn.location_id ?? undefined });
+  const loadLocations = useCallback(async () => {
+    setLoadingLocs(true);
+    const result = await callBotApi('list_locations', { companyId });
+    if (result.ok && result.data) {
+      setLocations((result.data as { locations: CompanyLocationInfo[] }).locations ?? []);
+    }
+    setLoadingLocs(false);
+  }, [companyId]);
+
+  const loadCategories = useCallback(async (locId: string) => {
+    setLoadingCats(true);
+    const catRes = await callBotApi('list_categories', { companyId, locationId: locId || undefined });
     if (catRes.ok && catRes.data) {
       setCategories((catRes.data as { categories: VehicleCategoryInfo[] }).categories ?? []);
+    } else {
+      setCategories([]);
     }
-    setSelectedIds(conn.bot_category_ids ?? []);
-    setLoading(false);
-  }, [companyId, connId, conn.location_id, conn.bot_category_ids]);
+    setLoadingCats(false);
+  }, [companyId]);
 
-  useEffect(() => { load(); }, [load]);
+  useEffect(() => { loadLocations(); }, [loadLocations]);
+  useEffect(() => {
+    if (!loadingLocs) loadCategories(selectedLocationId);
+  }, [loadingLocs, selectedLocationId, loadCategories]);
+
+  const handleLocationChange = (id: string) => {
+    setSelectedLocationId(id);
+    setSelectedIds([]);
+  };
 
   const toggleCategory = (id: string) => {
     setSelectedIds((prev) => prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]);
@@ -619,46 +583,76 @@ function CategorySelectorSection({ connId, conn, companyId, onError, onSuccess }
 
   const handleSave = async () => {
     setSaving(true);
-    const result = await callBotApi('update_categories', { companyId, connectionId: connId, categoryIds: selectedIds });
+    const result = await callBotApi('update_connection_location', { companyId, connectionId: conn.id, locationId: selectedLocationId || undefined });
+    if (!result.ok) { setSaving(false); onError(result.error ?? 'Erro ao salvar cidade'); return; }
+    const result2 = await callBotApi('update_categories', { companyId, connectionId: conn.id, categoryIds: selectedIds });
     setSaving(false);
-    if (result.ok) { onSuccess('Categorias salvas'); setTimeout(() => onSuccess(''), 2000); }
-    else onError(result.error ?? 'Erro ao salvar categorias');
+    if (result2.ok) { onSuccess('Categorias e cidade salvas'); setTimeout(() => onSuccess(''), 2000); onUpdate(); }
+    else onError(result2.error ?? 'Erro ao salvar categorias');
   };
 
   return (
     <div>
-      <div className="flex items-center justify-between mb-2">
+      <div className="flex items-center justify-between mb-3">
         <div className="flex items-center gap-2">
           <Settings className="h-4 w-4 text-gold-400" />
-          <h4 className="text-xs font-bold text-slate-300 uppercase tracking-wide">Categorias Ativas</h4>
+          <h4 className="text-xs font-bold text-slate-300 uppercase tracking-wide">Categorias do WhatsApp</h4>
         </div>
         <button onClick={handleSave} disabled={saving} className="text-xs text-gold-400 hover:text-gold-300 font-bold flex items-center gap-1">
           {saving ? <Loader2 className="h-3 w-3 animate-spin" /> : <Save className="h-3 w-3" />} Salvar
         </button>
       </div>
-      <p className="text-[11px] text-slate-500 mb-2">Categorias da cidade selecionada. Se nenhuma for selecionada, o bot usa a primeira categoria ativa.</p>
+      <p className="text-[11px] text-slate-500 mb-3">Selecione a cidade e quais categorias ficarao ativas neste numero. O passageiro escolhe entre as categorias marcadas. Independente do totem.</p>
 
-      {loading ? (
-        <div className="text-xs text-slate-500 py-2">Carregando...</div>
-      ) : categories.length === 0 ? (
-        <div className="text-xs text-slate-600 py-2">Nenhuma categoria ativa encontrada. Cadastre categorias na aba de Preços.</div>
-      ) : (
-        <div className="flex flex-wrap gap-2">
-          {categories.map((cat) => {
-            const selected = selectedIds.includes(cat.id);
-            return (
-              <button
-                key={cat.id}
-                onClick={() => toggleCategory(cat.id)}
-                className={`px-3 py-1.5 text-xs rounded-lg border transition-colors ${selected ? 'bg-gold-500/20 border-gold-500/50 text-gold-300' : 'bg-slate-800/50 border-slate-700 text-slate-400 hover:border-slate-600'}`}
-              >
-                {selected && <Check className="h-3 w-3 inline mr-1" />}
-                {cat.label}
-              </button>
-            );
-          })}
-        </div>
-      )}
+      {/* City selector */}
+      <div className="mb-3">
+        <label className="text-[10px] text-slate-500 block mb-1">Cidade</label>
+        {loadingLocs ? (
+          <div className="text-xs text-slate-500">Carregando cidades...</div>
+        ) : locations.length === 0 ? (
+          <div className="text-xs text-slate-600">Nenhuma cidade cadastrada. Cadastre locais na aba Locais.</div>
+        ) : (
+          <select
+            value={selectedLocationId}
+            onChange={(e) => handleLocationChange(e.target.value)}
+            className="w-full px-3 py-2 text-xs rounded-lg bg-slate-800 border border-slate-700 text-slate-200"
+          >
+            <option value="">Todas as cidades (sem filtro)</option>
+            {locations.map((loc) => (
+              <option key={loc.id} value={loc.id}>{loc.name}{loc.city ? ` — ${loc.city}/${loc.state ?? ''}` : ''}</option>
+            ))}
+          </select>
+        )}
+      </div>
+
+      {/* Category chips */}
+      <div>
+        <label className="text-[10px] text-slate-500 block mb-1.5">Categorias ativas neste numero</label>
+        {loadingCats ? (
+          <div className="text-xs text-slate-500 py-2">Carregando categorias...</div>
+        ) : categories.length === 0 ? (
+          <div className="text-xs text-slate-600 py-2">Nenhuma categoria encontrada para esta cidade. Cadastre categorias na aba de Precos.</div>
+        ) : (
+          <div className="flex flex-wrap gap-2">
+            {categories.map((cat) => {
+              const selected = selectedIds.includes(cat.id);
+              return (
+                <button
+                  key={cat.id}
+                  onClick={() => toggleCategory(cat.id)}
+                  className={`px-3 py-1.5 text-xs rounded-lg border transition-colors ${selected ? 'bg-gold-500/20 border-gold-500/50 text-gold-300' : 'bg-slate-800/50 border-slate-700 text-slate-400 hover:border-slate-600'}`}
+                >
+                  {selected && <Check className="h-3 w-3 inline mr-1" />}
+                  {cat.label}
+                </button>
+              );
+            })}
+          </div>
+        )}
+        {!loadingCats && categories.length > 0 && (
+          <p className="text-[10px] text-slate-600 mt-2">{selectedIds.length} categoria(s) selecionada(s). Se nenhuma for marcada, o bot usa a primeira categoria ativa da cidade.</p>
+        )}
+      </div>
     </div>
   );
 }
