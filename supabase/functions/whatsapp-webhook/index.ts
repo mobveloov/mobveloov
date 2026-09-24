@@ -1,4 +1,4 @@
-// WhatsApp webhook: Evolution API events + bot ride-request flow — v3 with category selection
+// WhatsApp webhook: Evolution API events + bot ride-request flow — v4 with per-provider column mapping
 import { createClient } from "npm:@supabase/supabase-js@2.57.4";
 
 const corsHeaders = {
@@ -251,25 +251,33 @@ interface BotConversation {
 async function getBotConnectionConfig(connectionId: string): Promise<{ provider: string; fields: Record<string, string> } | null> {
   const { data: conn } = await supabase
     .from("bot_whatsapp_conexoes")
-    .select("provider, evolution_api_url, evolution_global_token, instance_name, meta_phone_id, meta_waba_id")
+    .select("provider, evolution_api_url, evolution_global_token, instance_name, meta_phone_id, meta_waba_id, provider_token, provider_api_url, provider_waba_id, provider_phone_id")
     .eq("id", connectionId)
     .maybeSingle();
   if (!conn) return null;
   const fields: Record<string, string> = {};
-  if (conn.provider === "evolution" || conn.provider === "veloov") {
+  const p = conn.provider || "evolution";
+  if (p === "evolution" || p === "veloov") {
     if (conn.evolution_api_url) fields["evo_url"] = conn.evolution_api_url;
     if (conn.evolution_global_token) fields["evo_token"] = conn.evolution_global_token;
     if (conn.instance_name) fields["evo_instance"] = conn.instance_name;
-  } else if (conn.provider === "meta_cloud") {
-    if (conn.evolution_global_token) fields["meta_token"] = conn.evolution_global_token;
-    if (conn.meta_phone_id) fields["meta_phone_id"] = conn.meta_phone_id;
-    if (conn.meta_waba_id) fields["meta_waba_id"] = conn.meta_waba_id;
-  } else if (conn.provider === "zapi" || conn.provider === "zpro") {
-    if (conn.evolution_api_url) fields[`${conn.provider}_url`] = conn.evolution_api_url;
-    if (conn.evolution_global_token) fields[`${conn.provider}_instance_token`] = conn.evolution_global_token;
-    if (conn.meta_waba_id) fields[`${conn.provider}_client_token`] = conn.meta_waba_id;
+  } else if (p === "zapi") {
+    if (conn.provider_api_url) fields["zapi_url"] = conn.provider_api_url;
+    if (conn.provider_token) fields["zapi_instance_token"] = conn.provider_token;
+    if (conn.provider_waba_id) fields["zapi_client_token"] = conn.provider_waba_id;
+  } else if (p === "zpro") {
+    if (conn.provider_api_url) fields["zpro_url"] = conn.provider_api_url;
+    if (conn.provider_token) fields["zpro_instance_token"] = conn.provider_token;
+    if (conn.provider_waba_id) fields["zpro_client_token"] = conn.provider_waba_id;
+  } else if (p === "meta_cloud") {
+    if (conn.provider_token) fields["meta_token"] = conn.provider_token;
+    if (conn.provider_phone_id || conn.meta_phone_id) fields["meta_phone_id"] = conn.provider_phone_id ?? conn.meta_phone_id;
+    if (conn.provider_waba_id || conn.meta_waba_id) fields["meta_waba_id"] = conn.provider_waba_id ?? conn.meta_waba_id;
+  } else if (p === "custom_webhook") {
+    if (conn.provider_api_url) fields["custom_url"] = conn.provider_api_url;
+    if (conn.provider_token) fields["custom_token"] = conn.provider_token;
   }
-  return { provider: conn.provider || "evolution", fields };
+  return { provider: p, fields };
 }
 
 async function sendBotMessage(companyId: string, phone: string, message: string, connectionId?: string): Promise<void> {

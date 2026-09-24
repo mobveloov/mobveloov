@@ -111,15 +111,6 @@ export function BotPanel() {
     <div className="animate-slide-up space-y-5">
       <PageHeader icon={Bot} title="Bot de Corridas" subtitle={`Conexões WhatsApp do bot — Plano ${planName} (${connections.length}/${planLimit})`} />
 
-      {usingVeloovShared && (
-        <div className="flex items-start gap-2 text-sm text-amber-400 bg-amber-500/10 rounded-lg px-4 py-3">
-          <AlertCircle className="h-4 w-4 shrink-0 mt-0.5" />
-          <span>
-            A instância compartilhada da Veloov não pode ser usada para o bot — ela atende várias empresas ao mesmo tempo e não dá para separar de quem é cada mensagem. O Totem continua funcionando normalmente com ela. Para o bot, conecte um número de WhatsApp próprio abaixo.
-          </span>
-        </div>
-      )}
-
       {error && (
         <div className="flex items-center gap-2 text-sm text-error-400 bg-error-500/10 rounded-lg px-4 py-3">
           <AlertCircle className="h-4 w-4 shrink-0" /> {error}
@@ -129,14 +120,6 @@ export function BotPanel() {
       {success && (
         <div className="flex items-center gap-2 text-sm text-success-500 bg-success-500/10 rounded-lg px-4 py-3">
           <CheckCircle2 className="h-4 w-4 shrink-0" /> {success}
-        </div>
-      )}
-
-      {/* Machine API status warning */}
-      {!machineConfigured && (
-        <div className="flex items-center gap-2 text-sm text-amber-400 bg-amber-500/10 rounded-lg px-4 py-3">
-          <AlertCircle className="h-4 w-4 shrink-0" />
-          A API Machine ainda não está configurada. O bot reutiliza as credenciais já cadastradas na aba Integração.
         </div>
       )}
 
@@ -417,14 +400,6 @@ function CreateConnectionModal({ companyId, defaultInstanceName, onClose, onCrea
   const [saving, setSaving] = useState(false);
   const [qrCode, setQrCode] = useState<string | null>(null);
   const [created, setCreated] = useState(false);
-  const [locations, setLocations] = useState<CompanyLocationInfo[]>([]);
-  const [selectedLocationId, setSelectedLocationId] = useState<string>('');
-
-  useEffect(() => {
-    callBotApi('list_locations', { companyId }).then((res) => {
-      if (res.ok && res.data) setLocations((res.data as { locations: CompanyLocationInfo[] }).locations ?? []);
-    });
-  }, [companyId]);
 
   const PROVIDERS = [
     { value: 'evolution', label: 'Evolution API', needsUrl: true, needsToken: true, needsInstance: true, qr: true },
@@ -441,7 +416,7 @@ function CreateConnectionModal({ companyId, defaultInstanceName, onClose, onCrea
     if (current.needsInstance && !instanceName) { onError('Preencha o nome da instância'); return; }
     setSaving(true);
     setQrCode(null);
-    const result = await callBotApi('create', { companyId, apiUrl: apiUrl || undefined, globalToken, instanceName: instanceName || undefined, provider, locationId: selectedLocationId || undefined, metaPhoneId: metaPhoneId || undefined, metaWabaId: metaWabaId || undefined });
+    const result = await callBotApi('create', { companyId, apiUrl: apiUrl || undefined, globalToken, instanceName: instanceName || undefined, provider, metaPhoneId: metaPhoneId || undefined, metaWabaId: metaWabaId || undefined });
     setSaving(false);
     if (result.ok && result.data) {
       const conn = (result.data as { connection: BotWhatsappConexao }).connection;
@@ -505,16 +480,6 @@ function CreateConnectionModal({ companyId, defaultInstanceName, onClose, onCrea
                 <p className="text-[10px] text-slate-500">Encontre esses valores no Meta Business Manager em WhatsApp &gt; Configurações da API. O Token acima e o token de acesso permanente do app.</p>
               </>
             )}
-            <div>
-              <label className="text-xs text-slate-400 block mb-1">Cidade / Local (opcional)</label>
-              <select value={selectedLocationId} onChange={(e) => setSelectedLocationId(e.target.value)} className="w-full px-3 py-2 text-sm rounded-lg bg-slate-800 border border-slate-700 text-slate-200">
-                <option value="">Todas as cidades (sem filtro)</option>
-                {locations.map((loc) => (
-                  <option key={loc.id} value={loc.id}>{loc.name}{loc.city ? ` — ${loc.city}/${loc.state ?? ''}` : ''}</option>
-                ))}
-              </select>
-              <p className="text-[10px] text-slate-500 mt-1">Selecione a cidade que este número vai atender. As categorias serão filtradas pela cidade.</p>
-            </div>
             <div className="flex gap-3 justify-end pt-2">
               <button type="button" onClick={onClose} className="px-4 py-2 rounded-lg text-slate-400 hover:bg-slate-800 text-sm font-medium">Cancelar</button>
               <button type="submit" disabled={saving} className="px-4 py-2 rounded-lg bg-gold-500 text-slate-900 font-bold text-sm hover:bg-gold-400 disabled:opacity-50 flex items-center gap-2">

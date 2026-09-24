@@ -1,4 +1,4 @@
-// create-checkout edge function — generates a PIX payment for a subscription plan upgrade
+// create-checkout edge function — generates a PIX payment for a subscription plan upgrade (v2: no plan_id change until payment confirmed)
 import { createClient } from "npm:@supabase/supabase-js@2";
 
 const corsHeaders = {
@@ -239,12 +239,13 @@ Deno.serve(async (req: Request) => {
       due_date: new Date().toISOString(),
     });
 
-    // Update company with payment info
+    // Update company with payment info — but do NOT change plan_id yet.
+    // The plan only changes when the asaas-webhook confirms payment (PAYMENT_RECEIVED/CONFIRMED).
     await supabase
       .from("companies")
       .update({
         asaas_payment_id: paymentId,
-        plan_id: plan_id,
+        status: "pending_pagamento",
       })
       .eq("id", company_id);
 

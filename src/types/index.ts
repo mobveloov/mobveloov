@@ -358,6 +358,12 @@ export interface BotWhatsappConexao {
   bot_custom_messages: Record<string, string> | null;
   bot_category_ids: string[] | null;
   provider: string | null;
+  provider_token: string | null;
+  provider_api_url: string | null;
+  provider_waba_id: string | null;
+  provider_phone_id: string | null;
+  meta_phone_id: string | null;
+  meta_waba_id: string | null;
   location_id: string | null;
   company_locations: { name: string; slug: string; city: string | null; state: string | null } | null;
   created_at: string;

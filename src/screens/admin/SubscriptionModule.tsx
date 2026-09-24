@@ -121,7 +121,8 @@ export function SubscriptionModule() {
         cycle: data.cycle ?? billingCycle,
         paymentId: data.paymentId ?? '',
       });
-      setCompanyData((prev) => prev ? { ...prev, plan_id: plan.id } : prev);
+      // Do NOT update plan_id locally — it only changes after payment is confirmed by the webhook
+      setCompanyData((prev) => prev ? { ...prev, status: 'pending_pagamento' } : prev);
     } catch (err) {
       setCheckoutError(err instanceof Error ? err.message : 'Erro ao iniciar checkout');
     } finally {

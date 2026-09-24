@@ -1,4 +1,4 @@
-// Bot WhatsApp management edge function — v3 with provider + location support
+// Bot WhatsApp management edge function — v4 with per-provider column mapping
 import { createClient } from "npm:@supabase/supabase-js@2.57.4";
 
 const corsHeaders = {
@@ -166,16 +166,29 @@ Deno.serve(async (req: Request) => {
       const insertData: Record<string, unknown> = {
         company_id: companyId,
         instance_name: finalInstanceName || `conn-${Date.now()}`,
-        evolution_api_url: cleanUrl,
-        evolution_global_token: globalToken,
         connection_status: connectionStatus,
         qr_code: qrCode,
         provider: connProvider,
       };
       if (locationId) insertData.location_id = locationId;
-      if (connProvider === "meta_cloud") {
+
+      if (connProvider === "evolution") {
+        insertData.evolution_api_url = cleanUrl;
+        insertData.evolution_global_token = globalToken;
+      } else if (connProvider === "zapi" || connProvider === "zpro") {
+        insertData.provider_api_url = apiUrl || null;
+        insertData.provider_token = globalToken;
+        if (metaWabaId) insertData.provider_waba_id = metaWabaId;
+      } else if (connProvider === "meta_cloud") {
+        insertData.provider_token = globalToken;
+        if (metaPhoneId) insertData.provider_phone_id = metaPhoneId;
+        if (metaWabaId) insertData.provider_waba_id = metaWabaId;
+        // Also set meta_* columns for webhook matching
         if (metaPhoneId) insertData.meta_phone_id = metaPhoneId;
         if (metaWabaId) insertData.meta_waba_id = metaWabaId;
+      } else if (connProvider === "custom_webhook") {
+        insertData.provider_api_url = apiUrl || null;
+        insertData.provider_token = globalToken;
       }
 
       const { data: conn, error: connErr } = await supabase
@@ -212,6 +225,13 @@ Deno.serve(async (req: Request) => {
       if (!conn) {
         return new Response(JSON.stringify({ error: "Conexão não encontrada" }), {
           status: 404, headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+
+      // Only Evolution supports QR refresh; other providers are token-based
+      if (conn.provider !== "evolution") {
+        return new Response(JSON.stringify({ error: "QR Code disponível apenas para Evolution API. Demais provedores usam token." }), {
+          status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" },
         });
       }
 
@@ -397,13 +417,15 @@ Deno.serve(async (req: Request) => {
         .maybeSingle();
 
       if (conn) {
-        // Disconnect from Evolution API
-        try {
-          await fetch(`${conn.evolution_api_url}/instance/logout/${conn.instance_name}`, {
-            method: "DELETE",
-            headers: { apikey: conn.evolution_global_token },
-          });
-        } catch { /* ignore */ }
+        // Only Evolution API needs explicit logout; token-based providers just delete locally
+        if (conn.provider === "evolution" || (!conn.provider && conn.evolution_api_url)) {
+          try {
+            await fetch(`${conn.evolution_api_url}/instance/logout/${conn.instance_name}`, {
+              method: "DELETE",
+              headers: { apikey: conn.evolution_global_token },
+            });
+          } catch { /* ignore */ }
+        }
 
         await supabase.from("bot_whatsapp_conexoes").delete().eq("id", connectionId);
       }
