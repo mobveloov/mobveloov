@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { Plug, Save, Loader2, CheckCircle2, AlertCircle, Hand, Cpu, Webhook, BookOpen, ChevronDown, ExternalLink, Key, MapPin, User, Shield, Zap, Clock, Copy, Check } from 'lucide-react';
+import { Plug, Save, Loader2, CheckCircle2, AlertCircle, Hand, Cpu, Webhook, BookOpen, ChevronDown, ExternalLink, Key, MapPin, User, Shield, Zap, Clock } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 import { useAuth } from '@/context/AuthContext';
 import { CityAutocomplete } from '@/components/CityAutocomplete';
@@ -36,17 +36,6 @@ export function IntegrationPanel() {
   const [simulationMode, setSimulationMode] = useState(false);
   const [requirePrice, setRequirePrice] = useState(false);
   const [showDocs, setShowDocs] = useState(false);
-  const [copiedWebhook, setCopiedWebhook] = useState(false);
-
-  const machineWebhookUrl = 'https://mshxunqqyecwpspnxiph.supabase.co/functions/v1/machine-webhook';
-
-  const handleCopyWebhook = async () => {
-    try {
-      await navigator.clipboard.writeText(machineWebhookUrl);
-      setCopiedWebhook(true);
-      setTimeout(() => setCopiedWebhook(false), 2000);
-    } catch { /* ignore */ }
-  };
 
   useEffect(() => {
     if (!company) return;
@@ -292,26 +281,6 @@ export function IntegrationPanel() {
               <p className="text-xs text-neutral-500 dark:text-neutral-400 mb-2">
                 O Veloov consulta a Machine API a cada 10 segundos para acompanhar o status das corridas. Voce nao precisa configurar nada na sua central Machine — o acompanhamento funciona automaticamente.
               </p>
-            </div>
-
-            <div className="rounded-lg border border-neutral-200 dark:border-neutral-700 bg-neutral-50 dark:bg-neutral-800/50 p-3">
-              <p className="text-xs font-bold text-neutral-600 dark:text-neutral-400 mb-1.5">Webhook de status (opcional)</p>
-              <p className="text-xs text-neutral-500 dark:text-neutral-400 mb-2">
-                Se voce tiver acesso administrativo a sua central Machine, pode cadastrar esta URL em Configuracoes &gt; Webhooks (tipo <span className="font-semibold">status</span> e <span className="font-semibold">posicao</span>) para receber atualizacoes em tempo real, sem depender da consulta automatica. <span className="font-semibold">Nao e obrigatorio</span> — sem o webhook, o sistema continua funcionando normalmente.
-              </p>
-              <div className="flex items-center gap-2">
-                <code className="flex-1 block text-xs text-gold-700 dark:text-gold-400 bg-white dark:bg-neutral-900 rounded px-3 py-2 border border-neutral-200 dark:border-neutral-700 break-all">
-                  {machineWebhookUrl}
-                </code>
-                <button
-                  type="button"
-                  onClick={handleCopyWebhook}
-                  className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-neutral-200 dark:border-neutral-700 bg-white dark:bg-neutral-900 text-neutral-500 hover:text-gold-600 hover:border-gold-500/30 transition-colors"
-                  title="Copiar URL"
-                >
-                  {copiedWebhook ? <Check className="h-4 w-4 text-success-600" /> : <Copy className="h-4 w-4" />}
-                </button>
-              </div>
             </div>
 
             <button

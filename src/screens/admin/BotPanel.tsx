@@ -538,23 +538,37 @@ function CategorySelectorSection({ connId, companyId, onError, onSuccess }: { co
 }
 
 function TranscriptionConfigSection({ companyId, onError, onSuccess }: { companyId: string; onError: (m: string) => void; onSuccess: (m: string) => void }) {
-  const [provider, setProvider] = useState<'groq' | 'openai'>('groq');
+  const [provider, setProvider] = useState<'groq' | 'openai' | 'deepgram' | 'assemblyai' | 'google' | 'azure'>('groq');
   const [apiKey, setApiKey] = useState('');
+  const [additionalConfig, setAdditionalConfig] = useState<Record<string, string>>({});
   const [isValid, setIsValid] = useState(false);
   const [lastResult, setLastResult] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [testing, setTesting] = useState(false);
 
+  const PROVIDERS = [
+    { value: 'groq', label: 'Groq (Whisper)', placeholder: 'gsk_...', needsProject: false, needsRegion: false },
+    { value: 'openai', label: 'OpenAI (Whisper)', placeholder: 'sk-...', needsProject: false, needsRegion: false },
+    { value: 'deepgram', label: 'Deepgram', placeholder: 'API Key...', needsProject: false, needsRegion: false },
+    { value: 'assemblyai', label: 'AssemblyAI', placeholder: 'API Key...', needsProject: false, needsRegion: false },
+    { value: 'google', label: 'Google Cloud Speech-to-Text', placeholder: 'OAuth Access Token...', needsProject: true, needsRegion: false },
+    { value: 'azure', label: 'Azure Speech', placeholder: 'Subscription Key...', needsProject: false, needsRegion: true },
+  ] as const;
+
+  const currentProvider = PROVIDERS.find((p) => p.value === provider)!;
+
   const load = useCallback(async () => {
     setLoading(true);
     const result = await callBotApi('get_transcription_config', { companyId });
     if (result.ok && result.data) {
-      const config = (result.data as { config: { provider: string; api_key: string; is_valid: boolean; last_test_result: string | null } | null }).config;
+      const config = (result.data as { config: { provider: string; api_key: string; is_valid: boolean; last_test_result: string | null; additional_config?: Record<string, string> } | null }).config;
       if (config) {
-        setProvider(config.provider === 'openai' ? 'openai' : 'groq');
+        const validProviders = ['groq', 'openai', 'deepgram', 'assemblyai', 'google', 'azure'] as const;
+        setProvider(validProviders.includes(config.provider as typeof validProviders[number]) ? config.provider as typeof validProviders[number] : 'groq');
         setApiKey(config.api_key);
         setIsValid(config.is_valid);
         setLastResult(config.last_test_result);
+        setAdditionalConfig(config.additional_config ?? {});
       }
     }
     setLoading(false);
@@ -564,21 +578,23 @@ function TranscriptionConfigSection({ companyId, onError, onSuccess }: { company
 
   const handleSave = async () => {
     if (!apiKey.trim()) { onError('Digite a chave de API'); return; }
-    const result = await callBotApi('update_transcription_config', { companyId, provider, apiKey: apiKey.trim() });
-    if (result.ok) { onSuccess('Configuração salva. Clique em Testar para validar.'); setTimeout(() => onSuccess(''), 3000); }
+    if (currentProvider.needsProject && !additionalConfig.projectId?.trim()) { onError('Digite o ID do projeto Google'); return; }
+    if (currentProvider.needsRegion && !additionalConfig.region?.trim()) { onError('Digite a regiao do Azure'); return; }
+    const result = await callBotApi('update_transcription_config', { companyId, provider, apiKey: apiKey.trim(), additionalConfig });
+    if (result.ok) { onSuccess('Configuracao salva. Clique em Testar para validar.'); setTimeout(() => onSuccess(''), 3000); }
     else onError(result.error ?? 'Erro ao salvar');
   };
 
   const handleTest = async () => {
     if (!apiKey.trim()) { onError('Digite a chave de API antes de testar'); return; }
     setTesting(true);
-    const result = await callBotApi('test_transcription', { companyId, provider, apiKey: apiKey.trim() });
+    const result = await callBotApi('test_transcription', { companyId, provider, apiKey: apiKey.trim(), additionalConfig });
     setTesting(false);
     if (result.ok && result.data) {
       const d = result.data as { valid: boolean; message: string };
       setIsValid(d.valid);
       setLastResult(d.message);
-      if (d.valid) { onSuccess('Integração funcionando!'); setTimeout(() => onSuccess(''), 3000); }
+      if (d.valid) { onSuccess('Integracao funcionando!'); setTimeout(() => onSuccess(''), 3000); }
       else onError(d.message);
     } else {
       onError(result.error ?? 'Erro ao testar');
@@ -591,38 +607,64 @@ function TranscriptionConfigSection({ companyId, onError, onSuccess }: { company
     <div>
       <div className="flex items-center gap-2 mb-3">
         <Mic className="h-4 w-4 text-gold-400" />
-        <h3 className="text-sm font-bold text-slate-200">Transcrição de Áudio</h3>
+        <h3 className="text-sm font-bold text-slate-200">Transcricao de Audio</h3>
         {isValid && (
           <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-success-500/15 text-success-400 flex items-center gap-1">
-            <Check className="h-3 w-3" /> Válido
+            <Check className="h-3 w-3" /> Valido
           </span>
         )}
       </div>
-      <p className="text-xs text-slate-500 mb-3">Cadastre sua própria chave de API de transcrição. O bot usa essa chave para transcrever áudios enviados pelos passageiros. Sem chave válida, o bot pede que o passageiro digite o endereço.</p>
+      <p className="text-xs text-slate-500 mb-3">Cadastre sua propria chave de API de transcricao. O bot usa essa chave para transcrever audios enviados pelos passageiros. Sem chave valida, o bot pede que o passageiro digite o endereco.</p>
 
-      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-3">
-        <div>
-          <label className="text-[10px] text-slate-500 block mb-1">Provedor</label>
-          <select
-            value={provider}
-            onChange={(e) => setProvider(e.target.value as 'groq' | 'openai')}
-            className="w-full px-3 py-2 text-sm rounded-lg bg-slate-800 border border-slate-700 text-slate-200"
-          >
-            <option value="groq">Groq</option>
-            <option value="openai">OpenAI</option>
-          </select>
-        </div>
-        <div>
-          <label className="text-[10px] text-slate-500 block mb-1">Chave de API</label>
+      <div className="mb-3">
+        <label className="text-[10px] text-slate-500 block mb-1">Provedor</label>
+        <select
+          value={provider}
+          onChange={(e) => { setProvider(e.target.value as typeof provider); setAdditionalConfig({}); setIsValid(false); setLastResult(null); }}
+          className="w-full px-3 py-2 text-sm rounded-lg bg-slate-800 border border-slate-700 text-slate-200"
+        >
+          {PROVIDERS.map((p) => (
+            <option key={p.value} value={p.value}>{p.label}</option>
+          ))}
+        </select>
+      </div>
+
+      <div className="mb-3">
+        <label className="text-[10px] text-slate-500 block mb-1">Chave de API</label>
+        <input
+          type="password"
+          value={apiKey}
+          onChange={(e) => setApiKey(e.target.value)}
+          placeholder={currentProvider.placeholder}
+          className="w-full px-3 py-2 text-sm rounded-lg bg-slate-800 border border-slate-700 text-slate-200 placeholder-slate-600"
+        />
+      </div>
+
+      {currentProvider.needsProject && (
+        <div className="mb-3">
+          <label className="text-[10px] text-slate-500 block mb-1">ID do projeto Google Cloud</label>
           <input
-            type="password"
-            value={apiKey}
-            onChange={(e) => setApiKey(e.target.value)}
-            placeholder={provider === 'groq' ? 'gsk_...' : 'sk-...'}
+            type="text"
+            value={additionalConfig.projectId ?? ''}
+            onChange={(e) => setAdditionalConfig({ ...additionalConfig, projectId: e.target.value })}
+            placeholder="my-project-123456"
             className="w-full px-3 py-2 text-sm rounded-lg bg-slate-800 border border-slate-700 text-slate-200 placeholder-slate-600"
           />
         </div>
-      </div>
+      )}
+
+      {currentProvider.needsRegion && (
+        <div className="mb-3">
+          <label className="text-[10px] text-slate-500 block mb-1">Regiao do Azure</label>
+          <input
+            type="text"
+            value={additionalConfig.region ?? ''}
+            onChange={(e) => setAdditionalConfig({ ...additionalConfig, region: e.target.value })}
+            placeholder="eastus"
+            className="w-full px-3 py-2 text-sm rounded-lg bg-slate-800 border border-slate-700 text-slate-200 placeholder-slate-600"
+          />
+        </div>
+      )}
 
       {lastResult && (
         <div className={`text-xs mb-3 px-3 py-2 rounded-lg ${isValid ? 'bg-success-500/10 text-success-400' : 'bg-error-500/10 text-error-400'}`}>
@@ -636,7 +678,7 @@ function TranscriptionConfigSection({ companyId, onError, onSuccess }: { company
         </button>
         <button onClick={handleTest} disabled={testing} className="px-4 py-2 text-xs rounded-lg bg-gold-500 text-slate-900 font-bold hover:bg-gold-400 disabled:opacity-50 flex items-center gap-2">
           {testing ? <Loader2 className="h-3 w-3 animate-spin" /> : <Mic className="h-3 w-3" />}
-          Testar Conexão
+          Testar Conexao
         </button>
       </div>
     </div>

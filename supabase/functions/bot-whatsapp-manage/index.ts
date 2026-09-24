@@ -290,13 +290,14 @@ Deno.serve(async (req: Request) => {
     }
 
     if (action === "update_transcription_config") {
-      const { provider, apiKey } = body;
+      const { provider, apiKey, additionalConfig } = body;
       if (!provider || !apiKey) return err400("provider e apiKey são obrigatórios");
       const { error: upErr } = await supabase.from("bot_transcription_config")
         .upsert({
           company_id: companyId,
           provider,
           api_key: apiKey,
+          additional_config: additionalConfig ?? {},
           is_valid: false,
           updated_at: new Date().toISOString(),
         }, { onConflict: "company_id" });
@@ -305,95 +306,22 @@ Deno.serve(async (req: Request) => {
     }
 
     if (action === "test_transcription") {
-      const { provider, apiKey } = body;
+      const { provider, apiKey, additionalConfig } = body;
       if (!provider || !apiKey) return err400("provider e apiKey são obrigatórios");
-
-      // Create a tiny valid OGG/Opus audio (silence, ~0.1s) as base64
-      // We'll use a minimal WAV file instead — more universally accepted
-      const sampleRate = 8000;
-      const numSamples = 400; // 50ms of silence
-      const dataSize = numSamples * 2; // 16-bit samples
-      const buf = new Uint8Array(44 + dataSize);
-      const view = new DataView(buf.buffer);
-      // WAV header
-      view.setUint32(0, 0x52494646, false); // "RIFF"
-      view.setUint32(4, 36 + dataSize, true);
-      view.setUint32(8, 0x57415645, false); // "WAVE"
-      view.setUint32(12, 0x666d7420, false); // "fmt "
-      view.setUint32(16, 16, true);
-      view.setUint16(20, 1, true); // PCM
-      view.setUint16(22, 1, true); // mono
-      view.setUint32(24, sampleRate, true);
-      view.setUint32(28, sampleRate * 2, true);
-      view.setUint16(32, 2, true);
-      view.setUint16(34, 16, true);
-      view.setUint32(36, 0x64617461, false); // "data"
-      view.setUint32(40, dataSize, true);
-      // samples are all zero (silence) — buf already zeroed
-
-      const audioBlob = new Blob([buf], { type: "audio/wav" });
-      const formData = new FormData();
-      formData.append("file", audioBlob, "test.wav");
-      formData.append("model", provider === "openai" ? "whisper-1" : "whisper-large-v3");
-
-      const apiUrl = provider === "openai"
-        ? "https://api.openai.com/v1/audio/transcriptions"
-        : "https://api.groq.com/openai/v1/audio/transcriptions";
-
-      try {
-        const resp = await fetch(apiUrl, {
-          method: "POST",
-          headers: { Authorization: `Bearer ${apiKey}` },
-          body: formData,
-        });
-
-        if (resp.ok) {
-          // Even if transcription returns empty (silence), the key is valid
-          await supabase.from("bot_transcription_config")
-            .upsert({
-              company_id: companyId,
-              provider,
-              api_key: apiKey,
-              is_valid: true,
-              last_tested_at: new Date().toISOString(),
-              last_test_result: "OK — chave válida",
-              updated_at: new Date().toISOString(),
-            }, { onConflict: "company_id" });
-          return json({ success: true, valid: true, message: "Integração funcionando! Chave válida." });
-        } else {
-          const errBody = await resp.text().catch(() => "");
-          let errMsg = `HTTP ${resp.status}`;
-          try {
-            const errJson = JSON.parse(errBody);
-            errMsg = errJson?.error?.message ?? errJson?.message ?? errMsg;
-          } catch { if (errBody) errMsg = errBody.slice(0, 300); }
-
-          await supabase.from("bot_transcription_config")
-            .upsert({
-              company_id: companyId,
-              provider,
-              api_key: apiKey,
-              is_valid: false,
-              last_tested_at: new Date().toISOString(),
-              last_test_result: errMsg,
-              updated_at: new Date().toISOString(),
-            }, { onConflict: "company_id" });
-          return json({ success: true, valid: false, message: errMsg });
-        }
-      } catch (err) {
-        const errMsg = err instanceof Error ? err.message : "Erro de conexão";
-        await supabase.from("bot_transcription_config")
-          .upsert({
-            company_id: companyId,
-            provider,
-            api_key: apiKey,
-            is_valid: false,
-            last_tested_at: new Date().toISOString(),
-            last_test_result: errMsg,
-            updated_at: new Date().toISOString(),
-          }, { onConflict: "company_id" });
-        return json({ success: true, valid: false, message: errMsg });
-      }
+      const extra = (additionalConfig ?? {}) as Record<string, string>;
+      const result = await testTranscriptionProvider(provider, apiKey, extra);
+      await supabase.from("bot_transcription_config")
+        .upsert({
+          company_id: companyId,
+          provider,
+          api_key: apiKey,
+          additional_config: extra,
+          is_valid: result.valid,
+          last_tested_at: new Date().toISOString(),
+          last_test_result: result.message,
+          updated_at: new Date().toISOString(),
+        }, { onConflict: "company_id" });
+      return json({ success: true, valid: result.valid, message: result.message });
     }
 
     if (action === "delete") {
@@ -475,5 +403,133 @@ function getEvolutionState(payload: unknown): string {
     ? value.instance as Record<string, unknown>
     : null;
   return String(nested?.state ?? nested?.status ?? value.state ?? value.status ?? "").toUpperCase();
+}
+
+// --- Multi-provider transcription test ---
+// Builds a minimal WAV (silence) and sends it to the chosen provider.
+// OpenAI and Groq share the same Whisper-compatible API; others have their own format.
+function buildSilenceWav(): Blob {
+  const sampleRate = 8000;
+  const numSamples = 400;
+  const dataSize = numSamples * 2;
+  const buf = new Uint8Array(44 + dataSize);
+  const view = new DataView(buf.buffer);
+  view.setUint32(0, 0x52494646, false); // "RIFF"
+  view.setUint32(4, 36 + dataSize, true);
+  view.setUint32(8, 0x57415645, false); // "WAVE"
+  view.setUint32(12, 0x666d7420, false); // "fmt "
+  view.setUint32(16, 16, true);
+  view.setUint16(20, 1, true); // PCM
+  view.setUint16(22, 1, true); // mono
+  view.setUint32(24, sampleRate, true);
+  view.setUint32(28, sampleRate * 2, true);
+  view.setUint16(32, 2, true);
+  view.setUint16(34, 16, true);
+  view.setUint32(36, 0x64617461, false); // "data"
+  view.setUint32(40, dataSize, true);
+  return new Blob([buf], { type: "audio/wav" });
+}
+
+async function testTranscriptionProvider(
+  provider: string,
+  apiKey: string,
+  extra: Record<string, string>,
+): Promise<{ valid: boolean; message: string }> {
+  const audioBlob = buildSilenceWav();
+  try {
+    if (provider === "openai" || provider === "groq") {
+      const apiUrl = provider === "openai"
+        ? "https://api.openai.com/v1/audio/transcriptions"
+        : "https://api.groq.com/openai/v1/audio/transcriptions";
+      const formData = new FormData();
+      formData.append("file", audioBlob, "test.wav");
+      formData.append("model", provider === "openai" ? "whisper-1" : "whisper-large-v3");
+      const resp = await fetch(apiUrl, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${apiKey}` },
+        body: formData,
+      });
+      if (resp.ok) return { valid: true, message: "Chave valida!" };
+      const errBody = await resp.text().catch(() => "");
+      return { valid: false, message: parseErr(errBody, resp.status) };
+    }
+
+    if (provider === "deepgram") {
+      const resp = await fetch("https://api.deepgram.com/v1/listen?model=nova-2&language=pt-BR", {
+        method: "POST",
+        headers: {
+          "Authorization": `Token ${apiKey}`,
+          "Content-Type": "audio/wav",
+        },
+        body: audioBlob,
+      });
+      if (resp.ok) return { valid: true, message: "Chave valida!" };
+      const errBody = await resp.text().catch(() => "");
+      return { valid: false, message: parseErr(errBody, resp.status) };
+    }
+
+    if (provider === "assemblyai") {
+      const resp = await fetch("https://api.assemblyai.com/v2/transcript", {
+        method: "POST",
+        headers: {
+          "Authorization": apiKey,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ audio_url: "https://example.com/test.wav" }),
+      });
+      if (resp.ok) return { valid: true, message: "Chave valida!" };
+      const errBody = await resp.text().catch(() => "");
+      return { valid: false, message: parseErr(errBody, resp.status) };
+    }
+
+    if (provider === "google") {
+      const projectId = extra.projectId || "";
+      if (!projectId) return { valid: false, message: "ID do projeto Google e obrigatorio" };
+      const resp = await fetch(
+        `https://speech.googleapis.com/v1/projects/${projectId}/locations/global:recognize`,
+        {
+          method: "POST",
+          headers: {
+            "Authorization": `Bearer ${apiKey}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            config: { languageCode: "pt-BR" },
+            audio: { content: "" },
+          }),
+        },
+      );
+      if (resp.ok) return { valid: true, message: "Chave valida!" };
+      const errBody = await resp.text().catch(() => "");
+      return { valid: false, message: parseErr(errBody, resp.status) };
+    }
+
+    if (provider === "azure") {
+      const region = extra.region || "eastus";
+      const resp = await fetch(
+        `https://${region}.api.cognitive.microsoft.com/sts/v1.0/issuetoken`,
+        {
+          method: "POST",
+          headers: { "Ocp-Apim-Subscription-Key": apiKey },
+        },
+      );
+      if (resp.ok) return { valid: true, message: "Chave valida!" };
+      const errBody = await resp.text().catch(() => "");
+      return { valid: false, message: parseErr(errBody, resp.status) };
+    }
+
+    return { valid: false, message: "Provedor desconhecido" };
+  } catch (err) {
+    return { valid: false, message: err instanceof Error ? err.message : "Erro de conexao" };
+  }
+}
+
+function parseErr(body: string, status: number): string {
+  let msg = `HTTP ${status}`;
+  try {
+    const j = JSON.parse(body);
+    msg = j?.error?.message ?? j?.message ?? j?.detail ?? msg;
+  } catch { if (body) msg = body.slice(0, 300); }
+  return msg;
 }
 

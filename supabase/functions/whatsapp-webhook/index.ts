@@ -277,18 +277,20 @@ async function transcribeAudio(audioBase64OrUrl: string, mimetype: string, compa
   // Try per-company transcription config first
   let apiKey: string | undefined;
   let provider = "groq";
+  let extra: Record<string, string> = {};
   if (companyId) {
     const { data: config } = await supabase
       .from("bot_transcription_config")
-      .select("provider, api_key, is_valid")
+      .select("provider, api_key, is_valid, additional_config")
       .eq("company_id", companyId)
       .maybeSingle();
     if (config?.is_valid && config.api_key) {
       apiKey = config.api_key;
       provider = config.provider;
+      extra = (config.additional_config ?? {}) as Record<string, string>;
     }
   }
-  // Fallback to env vars if no per-company config
+  // Fallback to env vars if no per-company config (OpenAI/Groq only)
   if (!apiKey) {
     const groqKey = Deno.env.get("GROQ_API_KEY");
     const openaiKey = Deno.env.get("OPENAI_API_KEY");
@@ -296,10 +298,6 @@ async function transcribeAudio(audioBase64OrUrl: string, mimetype: string, compa
     apiKey = groqKey || openaiKey;
     provider = groqKey ? "groq" : "openai";
   }
-
-  const apiUrl = provider === "openai"
-    ? "https://api.openai.com/v1/audio/transcriptions"
-    : "https://api.groq.com/openai/v1/audio/transcriptions";
 
   try {
     let audioBlob: Blob;
@@ -319,21 +317,122 @@ async function transcribeAudio(audioBase64OrUrl: string, mimetype: string, compa
       audioBlob = new Blob([bytes], { type: mimetype || "audio/ogg" });
     }
 
-    const formData = new FormData();
-    formData.append("file", audioBlob, "audio.ogg");
-    formData.append("model", provider === "openai" ? "whisper-1" : "whisper-large-v3");
-    formData.append("language", "pt");
+    // OpenAI & Groq share the same Whisper-compatible API
+    if (provider === "openai" || provider === "groq") {
+      const apiUrl = provider === "openai"
+        ? "https://api.openai.com/v1/audio/transcriptions"
+        : "https://api.groq.com/openai/v1/audio/transcriptions";
+      const formData = new FormData();
+      formData.append("file", audioBlob, "audio.ogg");
+      formData.append("model", provider === "openai" ? "whisper-1" : "whisper-large-v3");
+      formData.append("language", "pt");
+      const resp = await fetch(apiUrl, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${apiKey}` },
+        body: formData,
+      });
+      if (!resp.ok) return null;
+      const data = await resp.json();
+      return data?.text ?? null;
+    }
 
-    const resp = await fetch(apiUrl, {
-      method: "POST",
-      headers: { Authorization: `Bearer ${apiKey}` },
-      body: formData,
-    });
+    if (provider === "deepgram") {
+      const resp = await fetch("https://api.deepgram.com/v1/listen?model=nova-2&language=pt-BR&smart_format=true", {
+        method: "POST",
+        headers: { "Authorization": `Token ${apiKey}`, "Content-Type": mimetype || "audio/ogg" },
+        body: audioBlob,
+      });
+      if (!resp.ok) return null;
+      const data = await resp.json();
+      return data?.results?.channels?.[0]?.alternatives?.[0]?.transcript ?? null;
+    }
 
-    if (!resp.ok) return null;
-    const data = await resp.json();
-    return data?.text ?? null;
+    if (provider === "assemblyai") {
+      // AssemblyAI requires a public URL — upload to their storage first
+      const uploadResp = await fetch("https://api.assemblyai.com/v2/upload", {
+        method: "POST",
+        headers: { "Authorization": apiKey },
+        body: audioBlob,
+      });
+      if (!uploadResp.ok) return null;
+      const uploadData = await uploadResp.json();
+      const audioUrl = uploadData?.upload_url;
+      if (!audioUrl) return null;
+      const transcriptResp = await fetch("https://api.assemblyai.com/v2/transcript", {
+        method: "POST",
+        headers: { "Authorization": apiKey, "Content-Type": "application/json" },
+        body: JSON.stringify({ audio_url: audioUrl, language_code: "pt" }),
+      });
+      if (!transcriptResp.ok) return null;
+      const transcriptData = await transcriptResp.json();
+      const transcriptId = transcriptData?.id;
+      if (!transcriptId) return null;
+      // Poll for completion (max 5 attempts)
+      for (let i = 0; i < 5; i++) {
+        await new Promise((r) => setTimeout(r, 2000));
+        const pollResp = await fetch(`https://api.assemblyai.com/v2/transcript/${transcriptId}`, {
+          headers: { "Authorization": apiKey },
+        });
+        if (!pollResp.ok) return null;
+        const pollData = await pollResp.json();
+        if (pollData?.status === "completed") return pollData?.text ?? null;
+        if (pollData?.status === "error") return null;
+      }
+      return null;
+    }
+
+    if (provider === "google") {
+      const projectId = extra.projectId || "";
+      if (!projectId) return null;
+      const audioBase64 = await blobToBase64(audioBlob);
+      const resp = await fetch(
+        `https://speech.googleapis.com/v1/projects/${projectId}/locations/global:recognize`,
+        {
+          method: "POST",
+          headers: { "Authorization": `Bearer ${apiKey}`, "Content-Type": "application/json" },
+          body: JSON.stringify({
+            config: { languageCode: "pt-BR" },
+            audio: { content: audioBase64 },
+          }),
+        },
+      );
+      if (!resp.ok) return null;
+      const data = await resp.json();
+      return data?.results?.[0]?.alternatives?.[0]?.transcript ?? null;
+    }
+
+    if (provider === "azure") {
+      const region = extra.region || "eastus";
+      // Azure Speech REST short audio API
+      const audioArray = new Uint8Array(await audioBlob.arrayBuffer());
+      const resp = await fetch(
+        `https://${region}.api.cognitive.microsoft.com/speechrecognition/dictation/cognitiveservices/v1`,
+        {
+          method: "POST",
+          headers: {
+            "Authorization": `Bearer ${apiKey}`,
+            "Content-Type": "audio/wav; codecs=audio/pcm; samplerate=8000",
+            "Accept": "application/json",
+          },
+          body: audioArray,
+        },
+      );
+      if (!resp.ok) return null;
+      const data = await resp.json();
+      return data?.DisplayText ?? data?.text ?? null;
+    }
+
+    return null;
   } catch { return null; }
+}
+
+function blobToBase64(blob: Blob): Promise<string> {
+  return blob.arrayBuffer().then((buf) => {
+    const bytes = new Uint8Array(buf);
+    let binary = "";
+    for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
+    return btoa(binary);
+  });
 }
 
 async function getCompanyLocationInfo(companyId: string): Promise<{ city: string | null; state: string | null; lat: number | null; lng: number | null; slug: string | null }> {
