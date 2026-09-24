@@ -1,4 +1,4 @@
-// WhatsApp webhook: Evolution API events + bot ride-request flow — v6 with Corrida/Suporte menu
+// WhatsApp webhook: Evolution API events + bot ride-request flow — v7 with Corrida/Suporte menu (fixed sendBotMessage signature)
 import { createClient } from "npm:@supabase/supabase-js@2.57.4";
 
 const corsHeaders = {
@@ -281,7 +281,7 @@ async function getBotConnectionConfig(connectionId: string): Promise<{ provider:
   return { provider: p, fields };
 }
 
-async function sendBotMessage(companyId: string, phone: string, message: string, connectionId?: string): Promise<void> {
+async function sendBotMessage(companyId: string, phone: string, connectionId: string | undefined, message: string): Promise<void> {
   try {
     let provider: string;
     let f: Record<string, string>;
@@ -292,9 +292,25 @@ async function sendBotMessage(companyId: string, phone: string, message: string,
     } else {
       const c = await getCompanyWhatsAppConfig(companyId); provider = c.provider; f = c.fields;
     }
-    await sendWhatsAppMessageWithProvider(provider, f, phone, message);
-    await saveMessage(companyId, phone, "outgoing", message);
-  } catch { /* best-effort */ }
+    const sent = await sendWhatsAppMessageWithProvider(provider, f, phone, message);
+    if (sent) {
+      await saveMessage(companyId, phone, "outgoing", message);
+    } else {
+      await supabase.from("admin_logs").insert({
+        company_id: companyId,
+        source: "whatsapp_bot",
+        level: "error",
+        message: `Falha ao enviar mensagem do bot para ${phone} usando ${provider}`,
+      });
+    }
+  } catch (error) {
+    await supabase.from("admin_logs").insert({
+      company_id: companyId,
+      source: "whatsapp_bot",
+      level: "error",
+      message: `Erro ao enviar mensagem do bot para ${phone}: ${error instanceof Error ? error.message : "erro desconhecido"}`,
+    });
+  }
 }
 
 async function geocodeAddress(address: string, city?: string, state?: string): Promise<{ lat: number; lng: number; formatted: string } | null> {
