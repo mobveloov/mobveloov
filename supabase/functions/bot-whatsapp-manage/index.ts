@@ -1,4 +1,4 @@
-// Bot WhatsApp management edge function — v4 with per-provider column mapping
+// Bot WhatsApp management edge function — v7: fix auth verification using anon client for getUser
 import { createClient } from "npm:@supabase/supabase-js@2.57.4";
 
 const corsHeaders = {
@@ -10,6 +10,22 @@ const corsHeaders = {
 const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
 const supabaseServiceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
 const supabase = createClient(supabaseUrl, supabaseServiceKey);
+
+async function verifyCaller(req: Request, companyId: string): Promise<boolean> {
+  const authHeader = req.headers.get("Authorization") ?? "";
+  const token = authHeader.replace(/^Bearer\s+/i, "").trim();
+  if (!token || token === Deno.env.get("SUPABASE_ANON_KEY")) return false;
+  const anonClient = createClient(supabaseUrl, Deno.env.get("SUPABASE_ANON_KEY")!);
+  const { data: { user }, error } = await anonClient.auth.getUser(token);
+  if (error || !user) return false;
+  const { data: admin } = await supabase
+    .from("company_admins")
+    .select("id")
+    .eq("user_id", user.id)
+    .eq("company_id", companyId)
+    .maybeSingle();
+  return !!admin;
+}
 
 Deno.serve(async (req: Request) => {
   if (req.method === "OPTIONS") {
@@ -23,6 +39,13 @@ Deno.serve(async (req: Request) => {
     if (!companyId) {
       return new Response(JSON.stringify({ error: "companyId required" }), {
         status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
+    }
+
+    const isAuthorized = await verifyCaller(req, companyId);
+    if (!isAuthorized) {
+      return new Response(JSON.stringify({ error: "Não autorizado" }), {
+        status: 401, headers: { ...corsHeaders, "Content-Type": "application/json" },
       });
     }
 

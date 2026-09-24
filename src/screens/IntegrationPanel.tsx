@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { Plug, Save, Loader2, CheckCircle2, AlertCircle, Hand, Cpu, Webhook, BookOpen, ChevronDown, ExternalLink, Key, MapPin, User, Shield, Zap, Clock } from 'lucide-react';
+import { Plug, Save, Loader2, CheckCircle2, AlertCircle, Hand, Cpu, Webhook } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 import { useAuth } from '@/context/AuthContext';
 import { CityAutocomplete } from '@/components/CityAutocomplete';
@@ -35,7 +35,6 @@ export function IntegrationPanel() {
   const [error, setError] = useState<string | null>(null);
   const [simulationMode, setSimulationMode] = useState(false);
   const [requirePrice, setRequirePrice] = useState(false);
-  const [showDocs, setShowDocs] = useState(false);
 
   useEffect(() => {
     if (!company) return;
@@ -273,179 +272,6 @@ export function IntegrationPanel() {
               />
             </div>
 
-            <div className="rounded-lg border border-success-500/20 bg-success-500/5 p-3">
-              <p className="text-xs font-bold text-success-700 dark:text-success-400 mb-1.5 flex items-center gap-1.5">
-                <CheckCircle2 className="h-3.5 w-3.5" />
-                Atualizacoes automaticas ativas
-              </p>
-              <p className="text-xs text-neutral-500 dark:text-neutral-400 mb-2">
-                O Veloov consulta a Machine API a cada 10 segundos para acompanhar o status das corridas. Voce nao precisa configurar nada na sua central Machine — o acompanhamento funciona automaticamente.
-              </p>
-            </div>
-
-            <button
-              type="button"
-              onClick={() => setShowDocs(!showDocs)}
-              className="w-full flex items-center justify-between rounded-lg border border-gold-500/30 bg-gold-500/5 px-4 py-3 text-left transition-colors hover:bg-gold-500/10"
-            >
-              <span className="flex items-center gap-2 text-sm font-bold text-gold-700 dark:text-gold-300">
-                <BookOpen className="h-4 w-4" />
-                Guia de integracao Machine API v2
-              </span>
-              <ChevronDown className={`h-4 w-4 text-gold-600 transition-transform ${showDocs ? 'rotate-180' : ''}`} />
-            </button>
-
-            {showDocs && (
-              <div className="rounded-xl border border-neutral-200 dark:border-neutral-700 bg-white dark:bg-neutral-900 overflow-hidden">
-                <div className="border-b border-neutral-200 dark:border-neutral-700 bg-gradient-to-r from-neutral-50 to-neutral-100 dark:from-neutral-800 dark:to-neutral-800/50 px-5 py-3">
-                  <div className="flex items-center justify-between">
-                    <div>
-                      <p className="text-sm font-bold text-neutral-900 dark:text-neutral-100">API de Integracao v2</p>
-                      <p className="text-xs text-neutral-500">Machine by Gaudium — docs.machine.global</p>
-                    </div>
-                    <a
-                      href="https://docs.machine.global/pages/v2/welcome"
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="flex items-center gap-1.5 text-xs font-semibold text-gold-600 dark:text-gold-400 hover:underline"
-                    >
-                      Documentacao oficial
-                      <ExternalLink className="h-3.5 w-3.5" />
-                    </a>
-                  </div>
-                </div>
-
-                <div className="px-5 py-4 space-y-5 text-sm">
-                  <section className="space-y-2.5">
-                    <h4 className="flex items-center gap-2 font-bold text-neutral-800 dark:text-neutral-200 text-sm">
-                      <Shield className="h-4 w-4 text-gold-500 shrink-0" />
-                      Autenticacao
-                    </h4>
-                    <p className="text-xs text-neutral-600 dark:text-neutral-400 leading-relaxed">
-                      Toda requisicao exige dois cabecalhos de autenticacao. O header <code className="px-1 py-0.5 rounded bg-neutral-100 dark:bg-neutral-800 text-gold-600 dark:text-gold-400 font-mono text-[11px]">api-key</code> contem a chave da API da sua central, e o header <code className="px-1 py-0.5 rounded bg-neutral-100 dark:bg-neutral-800 text-gold-600 dark:text-gold-400 font-mono text-[11px]">Authorization</code> usa autenticacao Basic com suas credenciais de Taximetro (usuario:senha em Base64).
-                    </p>
-                    <div className="rounded-lg bg-neutral-900 dark:bg-neutral-950 px-3 py-2.5 overflow-x-auto">
-                      <pre className="text-[11px] text-neutral-300 font-mono leading-relaxed">{`api-key: SUA_CHAVE_API
-Authorization: Basic base64(USUARIO:SENHA)`}</pre>
-                    </div>
-                    <p className="text-xs text-neutral-500 dark:text-neutral-400">
-                      Requisicoes sem chave ou com credenciais invalidas retornam <span className="font-semibold text-error-500">400</span> ou <span className="font-semibold text-error-500">403</span>.
-                    </p>
-                  </section>
-
-                  <section className="space-y-2.5">
-                    <h4 className="flex items-center gap-2 font-bold text-neutral-800 dark:text-neutral-200 text-sm">
-                      <Key className="h-4 w-4 text-gold-500 shrink-0" />
-                      Onde obter suas credenciais
-                    </h4>
-                    <ol className="space-y-1.5 text-xs text-neutral-600 dark:text-neutral-400 leading-relaxed list-decimal list-inside">
-                      <li>Acesse sua central em <span className="font-semibold">taximachine.com.br</span></li>
-                      <li>Va em <span className="font-semibold">Minha equipe &gt; Usuarios &gt; Permissoes</span> e habilite o acesso a Integracao</li>
-                      <li>A API Key esta disponivel na secao de Integracao do painel da central</li>
-                      <li>O usuario e senha sao os mesmos do login do Taximetro</li>
-                    </ol>
-                  </section>
-
-                  <section className="space-y-2.5">
-                    <h4 className="flex items-center gap-2 font-bold text-neutral-800 dark:text-neutral-200 text-sm">
-                      <MapPin className="h-4 w-4 text-gold-500 shrink-0" />
-                      Ambientes
-                    </h4>
-                    <div className="space-y-2">
-                      <div className="rounded-lg border border-neutral-200 dark:border-neutral-700 p-3">
-                        <p className="text-xs font-bold text-neutral-700 dark:text-neutral-300">Homologacao (Testes)</p>
-                        <code className="block text-[11px] text-gold-600 dark:text-gold-400 font-mono mt-1 break-all">https://api-vendas.taximachine.com.br/api/v2/integracao</code>
-                        <p className="text-[11px] text-neutral-500 mt-1">Ambiente de testes — acoes sao simuladas.</p>
-                      </div>
-                      <div className="rounded-lg border border-gold-500/30 bg-gold-500/5 p-3">
-                        <p className="text-xs font-bold text-gold-700 dark:text-gold-300">Producao</p>
-                        <code className="block text-[11px] text-gold-600 dark:text-gold-400 font-mono mt-1 break-all">https://api.taximachine.com.br/api/v2/integracao</code>
-                        <p className="text-[11px] text-neutral-500 mt-1">Operacoes reais e permanentes.</p>
-                      </div>
-                    </div>
-                  </section>
-
-                  <section className="space-y-2.5">
-                    <h4 className="flex items-center gap-2 font-bold text-neutral-800 dark:text-neutral-200 text-sm">
-                      <Zap className="h-4 w-4 text-gold-500 shrink-0" />
-                      Fluxo de integracao Veloov
-                    </h4>
-                    <div className="space-y-2 text-xs text-neutral-600 dark:text-neutral-400 leading-relaxed">
-                      <div className="flex gap-2.5">
-                        <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-gold-500 text-[10px] font-bold text-neutral-900">1</span>
-                        <p>Passageiro solicita corrida no totem. Veloov envia para a Machine API via <code className="px-1 py-0.5 rounded bg-neutral-100 dark:bg-neutral-800 text-gold-600 dark:text-gold-400 font-mono text-[11px]">POST /corridas</code></p>
-                      </div>
-                      <div className="flex gap-2.5">
-                        <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-gold-500 text-[10px] font-bold text-neutral-900">2</span>
-                        <p>Motorista aceita na plataforma Machine. A Machine envia webhook de status para Veloov</p>
-                      </div>
-                      <div className="flex gap-2.5">
-                        <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-gold-500 text-[10px] font-bold text-neutral-900">3</span>
-                        <p>Veloov atualiza o status no totem e notifica o passageiro via WhatsApp com dados do motorista</p>
-                      </div>
-                      <div className="flex gap-2.5">
-                        <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-gold-500 text-[10px] font-bold text-neutral-900">4</span>
-                        <p>Passageiro pode cancelar respondendo "cancelar" no WhatsApp. Veloov cancela na Machine API</p>
-                      </div>
-                    </div>
-                  </section>
-
-                  <section className="space-y-2.5">
-                    <h4 className="flex items-center gap-2 font-bold text-neutral-800 dark:text-neutral-200 text-sm">
-                      <Clock className="h-4 w-4 text-gold-500 shrink-0" />
-                      Status e ciclo de vida
-                    </h4>
-                    <p className="text-xs text-neutral-600 dark:text-neutral-400 leading-relaxed">
-                      A Machine API utiliza codigos de status de uma letra. O Veloov traduz automaticamente para o passageiro:
-                    </p>
-                    <div className="rounded-lg border border-neutral-200 dark:border-neutral-700 overflow-hidden">
-                      <table className="w-full text-xs">
-                        <thead className="bg-neutral-50 dark:bg-neutral-800/50 text-neutral-500 dark:text-neutral-400">
-                          <tr>
-                            <th className="px-3 py-2 text-left font-semibold">Codigo</th>
-                            <th className="px-3 py-2 text-left font-semibold">Significado</th>
-                            <th className="px-3 py-2 text-left font-semibold">Veloov</th>
-                          </tr>
-                        </thead>
-                        <tbody className="divide-y divide-neutral-200 dark:divide-neutral-700">
-                          {[
-                            ['A', 'Aceita', 'Motorista a caminho'],
-                            ['AP', 'A caminho do ponto', 'Motorista chegou'],
-                            ['E', 'Em execucao', 'Viagem em andamento'],
-                            ['F', 'Finalizada', 'Viagem concluida'],
-                            ['C', 'Cancelada', 'Corrida cancelada'],
-                            ['D/G/P/N', 'Aguardando', 'Procurando motorista'],
-                          ].map(([code, meaning, veloov]) => (
-                            <tr key={code} className="text-neutral-600 dark:text-neutral-400">
-                              <td className="px-3 py-2 font-mono font-semibold text-gold-600 dark:text-gold-400">{code}</td>
-                              <td className="px-3 py-2">{meaning}</td>
-                              <td className="px-3 py-2 text-neutral-500">{veloov}</td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                    </div>
-                  </section>
-
-                  <section className="space-y-2.5">
-                    <h4 className="flex items-center gap-2 font-bold text-neutral-800 dark:text-neutral-200 text-sm">
-                      <User className="h-4 w-4 text-gold-500 shrink-0" />
-                      HATEOAS e navegacao
-                    </h4>
-                    <p className="text-xs text-neutral-600 dark:text-neutral-400 leading-relaxed">
-                      A API v2 usa HATEOAS: cada resposta inclui um objeto <code className="px-1 py-0.5 rounded bg-neutral-100 dark:bg-neutral-800 text-gold-600 dark:text-gold-400 font-mono text-[11px]">__links</code> com os endpoints relacionados. O Veloov navega automaticamente por estes links para detalhes da corrida, cancelamento e posicao do motorista.
-                    </p>
-                  </section>
-
-                  <section className="rounded-lg bg-gold-500/10 border border-gold-500/20 p-3">
-                    <p className="text-xs text-gold-700 dark:text-gold-300 font-semibold mb-1">Rate Limit</p>
-                    <p className="text-xs text-neutral-600 dark:text-neutral-400 leading-relaxed">
-                      A API aplica limite de requisicoes por janela de 60 segundos, calculado por grupo de endpoints e multiplicado por um fator da central. Exceder o limite retorna <span className="font-semibold text-error-500">429</span>. O Veloov respeita estes limites automaticamente.
-                    </p>
-                  </section>
-                </div>
-              </div>
-            )}
           </div>
         )}
 

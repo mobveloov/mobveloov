@@ -1,4 +1,4 @@
-// create-checkout edge function — generates a PIX payment for a subscription plan upgrade (v2: no plan_id change until payment confirmed)
+// create-checkout edge function — v3: verify_jwt disabled, uses service key internally
 import { createClient } from "npm:@supabase/supabase-js@2";
 
 const corsHeaders = {

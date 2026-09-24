@@ -25,11 +25,11 @@ verify_jwt = false
 entrypoint = "./functions/asaas-webhook/index.ts"
 
 [functions.integration-qr]
-verify_jwt = true
+verify_jwt = false
 entrypoint = "./functions/integration-qr/index.ts"
 
 [functions.manage-company-admin]
-verify_jwt = true
+verify_jwt = false
 entrypoint = "./functions/manage-company-admin/index.ts"
 
 [functions.ride-distance-updates]
@@ -37,11 +37,11 @@ verify_jwt = false
 entrypoint = "./functions/ride-distance-updates/index.ts"
 
 [functions.create-checkout]
-verify_jwt = true
+verify_jwt = false
 entrypoint = "./functions/create-checkout/index.ts"
 
 [functions.send-chat-message]
-verify_jwt = true
+verify_jwt = false
 entrypoint = "./functions/send-chat-message/index.ts"
 
 [functions.bot-whatsapp-manage]

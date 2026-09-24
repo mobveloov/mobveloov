@@ -17,18 +17,22 @@ function normalizeQrCode(value: unknown): string | null {
 }
 
 async function callBotApi(action: string, payload: Record<string, unknown> = {}): Promise<{ ok: boolean; data?: unknown; error?: string }> {
-  const { data: session } = await supabase.auth.getSession();
-  const resp = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/bot-whatsapp-manage`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${session.session?.access_token ?? import.meta.env.VITE_SUPABASE_ANON_KEY}`,
-    },
-    body: JSON.stringify({ action, ...payload }),
-  });
-  const data = await resp.json().catch(() => ({}));
-  if (!resp.ok) return { ok: false, error: data?.error ?? `HTTP ${resp.status}` };
-  return { ok: true, data };
+  const body = { action, ...payload };
+  let result = await supabase.functions.invoke('bot-whatsapp-manage', { body });
+  const firstResponse = result.error?.context as Response | undefined;
+
+  if (firstResponse?.status === 401) {
+    await supabase.auth.refreshSession();
+    result = await supabase.functions.invoke('bot-whatsapp-manage', { body });
+  }
+
+  if (result.error) {
+    const response = result.error.context as Response | undefined;
+    const details = response ? await response.json().catch(() => ({})) as { error?: string } : {};
+    return { ok: false, error: details.error ?? result.error.message };
+  }
+
+  return { ok: true, data: result.data };
 }
 
 interface AddressSuggestion {

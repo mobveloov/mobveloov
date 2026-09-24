@@ -1,4 +1,4 @@
-// send-chat-message edge function — sends driver chat message to passenger via WhatsApp
+// send-chat-message edge function — v2: verify_jwt disabled, uses service key internally
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
