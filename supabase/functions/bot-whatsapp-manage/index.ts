@@ -94,13 +94,17 @@ Deno.serve(async (req: Request) => {
             let stateData: unknown = null;
             try { stateData = JSON.parse(stateBody); } catch { /* ignore */ }
             const liveState = getEvolutionState(stateData);
-            const liveStatus = (liveState === "OPEN" || liveState === "CONNECTED") ? "connected" : "disconnected";
-            if (liveStatus !== conn.connection_status) {
+            const confirmedStatus = liveState === "OPEN" || liveState === "CONNECTED"
+              ? "connected"
+              : liveState === "CLOSE" || liveState === "CLOSED" || liveState === "DISCONNECTED"
+                ? "disconnected"
+                : null;
+            if (confirmedStatus && confirmedStatus !== conn.connection_status) {
               await supabase
                 .from("bot_whatsapp_conexoes")
-                .update({ connection_status: liveStatus, updated_at: new Date().toISOString() })
+                .update({ connection_status: confirmedStatus, updated_at: new Date().toISOString() })
                 .eq("id", conn.id);
-              conn.connection_status = liveStatus;
+              conn.connection_status = confirmedStatus;
             }
           } catch { /* network error — keep existing status */ }
         }
