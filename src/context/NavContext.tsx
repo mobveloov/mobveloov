@@ -12,6 +12,7 @@ interface NavContextValue {
   adminScreen: AdminScreen;
   selectedCategoryId: string | null;
   selectedCategoryPrice: number | null;
+  selectedPaymentMethod: string | null;
   machineDistance: number | null;
   machineDuration: number | null;
   setTenantSlug: (slug: string, locationSlug?: string) => void;
@@ -19,6 +20,7 @@ interface NavContextValue {
   goPassenger: (screen: PassengerScreen) => void;
   goAdmin: (screen: AdminScreen) => void;
   selectCategory: (id: string, distance?: number | null, duration?: number | null, price?: number | null) => void;
+  selectPaymentMethod: (method: string) => void;
 }
 
 const NavContext = createContext<NavContextValue | undefined>(undefined);
@@ -89,6 +91,7 @@ export function NavProvider({ children }: { children: ReactNode }) {
   const [adminScreen, setAdminScreen] = useState<AdminScreen>(initial.adminScreen);
   const [selectedCategoryId, setSelectedCategoryId] = useState<string | null>(null);
   const [selectedCategoryPrice, setSelectedCategoryPrice] = useState<number | null>(null);
+  const [selectedPaymentMethod, setSelectedPaymentMethod] = useState<string | null>(null);
   const [machineDistance, setMachineDistance] = useState<number | null>(null);
   const [machineDuration, setMachineDuration] = useState<number | null>(null);
 
@@ -142,6 +145,10 @@ export function NavProvider({ children }: { children: ReactNode }) {
     setSelectedCategoryPrice(price ?? null);
   };
 
+  const selectPaymentMethod = (method: string) => {
+    setSelectedPaymentMethod(method);
+  };
+
   return (
     <NavContext.Provider
       value={{
@@ -152,6 +159,7 @@ export function NavProvider({ children }: { children: ReactNode }) {
         adminScreen,
         selectedCategoryId,
         selectedCategoryPrice,
+        selectedPaymentMethod,
         machineDistance,
         machineDuration,
         setTenantSlug,
@@ -159,6 +167,7 @@ export function NavProvider({ children }: { children: ReactNode }) {
         goPassenger,
         goAdmin,
         selectCategory,
+        selectPaymentMethod,
       }}
     >
       {children}

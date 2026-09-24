@@ -1,4 +1,4 @@
-// WhatsApp webhook: Evolution API events + bot ride-request flow — v4 with per-provider column mapping
+// WhatsApp webhook: Evolution API events + bot ride-request flow — v6 with Corrida/Suporte menu
 import { createClient } from "npm:@supabase/supabase-js@2.57.4";
 
 const corsHeaders = {
@@ -246,6 +246,7 @@ interface BotConversation {
   address_is_fallback: boolean;
   ride_id: string | null;
   selected_category_id: string | null;
+  selected_payment_method: string | null;
 }
 
 async function getBotConnectionConfig(connectionId: string): Promise<{ provider: string; fields: Record<string, string> } | null> {
@@ -555,6 +556,7 @@ async function createAndDispatchRide(
   origin: { lat: number; lng: number; address: string },
   categoryLabel: string,
   machineCategoryId: string | null,
+  paymentMethod: string | null = null,
 ): Promise<{ rideId: string; success: boolean; error?: string; machineMessage?: string }> {
   const { data: ride, error: rideErr } = await supabase
     .from("rides")
@@ -566,6 +568,7 @@ async function createAndDispatchRide(
       origin_lat: origin.lat,
       origin_lng: origin.lng,
       category_label: categoryLabel,
+      payment_method: paymentMethod,
       status: "pending",
       created_at: new Date().toISOString(),
       updated_at: new Date().toISOString(),
@@ -660,13 +663,13 @@ async function handleBotMessage(
         company_id: companyId,
         phone: cleanPhone,
         passenger_name: pushName,
-        state: "inicio",
+        state: "menu_inicial",
       })
       .select("*")
       .single();
     conv = newConv as BotConversation;
 
-    await sendBotMessage(companyId, cleanPhone, connectionId, msg("welcome", "Ola! Voce quer solicitar uma corrida? Responda SIM para continuar."));
+    await sendBotMessage(companyId, cleanPhone, connectionId, msg("welcome_menu", "Ola! Como podemos ajudar?\n\n1 - Solicitar corrida\n2 - Suporte\n\nResponda com o numero da opcao."));
     return;
   }
 
@@ -680,19 +683,52 @@ async function handleBotMessage(
   const normalizedText = (text ?? "").trim().toLowerCase();
 
   switch (conv.state) {
+    case "menu_inicial":
     case "inicio": {
-      if (["sim", "sim.", "quero", "1", "corrida", "viagem", "sim!"].includes(normalizedText)) {
+      if (["1", "corrida", "sim", "sim.", "quero", "viagem", "sim!"].includes(normalizedText)) {
         await supabase.from("bot_conversas")
           .update({ state: "aguardando_endereco", updated_at: new Date().toISOString() })
           .eq("id", conv.id);
         await sendBotMessage(companyId, cleanPhone, connectionId, msg("ask_address", "Perfeito! Qual e o endereco de embarque? Voce pode digitar o endereco, enviar sua localizacao ou mandar um audio."));
+      } else if (["2", "suporte", "ajuda", "suport"].includes(normalizedText)) {
+        // Fetch company support WhatsApp
+        const { data: company } = await supabase
+          .from("companies")
+          .select("support_whatsapp, name")
+          .eq("id", companyId)
+          .maybeSingle();
+
+        if (company?.support_whatsapp) {
+          await supabase.from("bot_conversas")
+            .update({ state: "suporte", updated_at: new Date().toISOString() })
+            .eq("id", conv.id);
+          await sendBotMessage(companyId, cleanPhone, connectionId, msg("support_forward", `Você sera direcionado para o suporte da ${company.name}. Envie sua mensagem e nossa equipe ira responder.`));
+
+          // Forward the passenger's phone to the support WhatsApp
+          const supportPhone = toBrazilianWhatsAppNumber(company.support_whatsapp);
+          const supportIntro = `Novo chamado de suporte via bot.
+Passageiro: ${pushName ?? "Sem nome"}
+Telefone: ${cleanPhone}
+
+As mensagens do passageiro serao encaminhadas a partir de agora.`;
+          try {
+            const { provider, fields: f } = await getCompanyWhatsAppConfig(companyId);
+            await sendWhatsAppMessageWithProvider(provider, f, supportPhone, supportIntro);
+            await saveMessage(companyId, supportPhone, "outgoing", supportIntro);
+          } catch { /* best-effort */ }
+        } else {
+          await sendBotMessage(companyId, cleanPhone, connectionId, msg("support_unavailable", "O suporte nao esta disponivel no momento. Tente novamente mais tarde ou solicite uma corrida digitando 1."));
+          await supabase.from("bot_conversas")
+            .update({ state: "menu_inicial", updated_at: new Date().toISOString() })
+            .eq("id", conv.id);
+        }
       } else if (["nao", "nao.", "cancelar", "n"].includes(normalizedText)) {
         await supabase.from("bot_conversas")
           .update({ state: "corrida_solicitada", updated_at: new Date().toISOString() })
           .eq("id", conv.id);
         await sendBotMessage(companyId, cleanPhone, connectionId, msg("decline", "Tudo bem! Quando precisar de uma corrida, e so nos mandar uma mensagem."));
       } else {
-        await sendBotMessage(companyId, cleanPhone, connectionId, msg("welcome_repeat", "Voce quer solicitar uma corrida? Responda SIM para continuar."));
+        await sendBotMessage(companyId, cleanPhone, connectionId, msg("welcome_repeat", "Como podemos ajudar?\n\n1 - Solicitar corrida\n2 - Suporte\n\nResponda com o numero da opcao."));
       }
       break;
     }
@@ -835,51 +871,16 @@ async function handleBotMessage(
           return;
         }
 
-        // Single or no category — dispatch directly
+        // Single or no category — ask payment method
         const category = categories[0] ?? null;
-        const passengerName = conv.passenger_name || "Passageiro";
-        const origin = {
-          lat: conv.address_lat!,
-          lng: conv.address_lng!,
-          address: conv.address_formatted || conv.address_text || "Endereco nao informado",
-        };
-
-        const result = await createAndDispatchRide(
-          companyId,
-          companyLoc.slug,
-          passengerName,
-          cleanPhone,
-          origin,
-          category?.label ?? "Padrao",
-          category?.machine_category_id ?? null,
-        );
-
-        if (result.success) {
-          await supabase.from("bot_conversas")
-            .update({
-              state: "corrida_solicitada",
-              ride_id: result.rideId,
-              selected_category_id: category?.id ?? null,
-              updated_at: new Date().toISOString(),
-            })
-            .eq("id", conv.id);
-
-          const successMsg = result.machineMessage || msg("ride_success", "Corrida solicitada com sucesso! Um motorista vai aceitar em breve. Aguarde.");
-          await sendBotMessage(companyId, cleanPhone, connectionId, successMsg);
-
-          await supabase.from("admin_logs").insert({
-            company_id: companyId,
-            source: "whatsapp_bot",
-            level: "info",
-            message: `Corrida solicitada via bot por ${passengerName} (${cleanPhone}) — endereco: ${origin.address}`,
-            ride_id: result.rideId,
-          });
-        } else {
-          await sendBotMessage(companyId, cleanPhone, connectionId, msg("ride_error", `Houve um erro ao solicitar a corrida: ${result.error ?? "erro desconhecido"}. Tente novamente enviando o endereco.`));
-          await supabase.from("bot_conversas")
-            .update({ state: "aguardando_endereco", updated_at: new Date().toISOString() })
-            .eq("id", conv.id);
-        }
+        await supabase.from("bot_conversas")
+          .update({
+            state: "aguardando_pagamento",
+            selected_category_id: category?.id ?? null,
+            updated_at: new Date().toISOString(),
+          })
+          .eq("id", conv.id);
+        await sendBotMessage(companyId, cleanPhone, connectionId, msg("ask_payment", `Qual a forma de pagamento?\n\n1 - Dinheiro\n2 - Pix\n3 - Cartao\n\nResponda com o numero da opcao.`));
       } else if (["nao", "nao.", "n", "errado", "nao!"].includes(normalizedText)) {
         await supabase.from("bot_conversas")
           .update({ state: "aguardando_endereco", updated_at: new Date().toISOString() })
@@ -917,10 +918,54 @@ async function handleBotMessage(
         return;
       }
 
+      // Category chosen — ask payment method
+      await supabase.from("bot_conversas")
+        .update({
+          state: "aguardando_pagamento",
+          selected_category_id: chosenCat.id,
+          updated_at: new Date().toISOString(),
+        })
+        .eq("id", conv.id);
+      await sendBotMessage(companyId, cleanPhone, connectionId, msg("ask_payment", `Qual a forma de pagamento?\n\n1 - Dinheiro\n2 - Pix\n3 - Cartao\n\nResponda com o numero da opcao.`));
+      break;
+    }
+
+    case "aguardando_pagamento": {
+      const paymentMap: Record<string, string> = {
+        "1": "Dinheiro",
+        "2": "Pix",
+        "3": "Cartao",
+        "dinheiro": "Dinheiro",
+        "pix": "Pix",
+        "cartao": "Cartao",
+        "cartão": "Cartao",
+      };
+      const paymentMethod = paymentMap[normalizedText] ?? null;
+
+      if (!paymentMethod) {
+        await sendBotMessage(companyId, cleanPhone, connectionId, msg("payment_retry", `Opcao invalida. Qual a forma de pagamento?\n\n1 - Dinheiro\n2 - Pix\n3 - Cartao\n\nResponda com o numero da opcao.`));
+        return;
+      }
+
       const companyLoc = await getCompanyLocationInfo(companyId);
       if (!companyLoc.slug) {
         await sendBotMessage(companyId, cleanPhone, connectionId, "Erro: empresa nao configurada corretamente. Tente novamente mais tarde.");
         return;
+      }
+
+      // Get the selected category
+      let categoryLabel = "Padrao";
+      let machineCategoryId: string | null = null;
+      if (conv.selected_category_id) {
+        const { data: cat } = await supabase
+          .from("vehicle_categories")
+          .select("label, machine_category_id")
+          .eq("id", conv.selected_category_id)
+          .maybeSingle();
+        if (cat) {
+          categoryLabel = cat.label;
+          machineCategoryId = cat.machine_category_id;
+        }
       }
 
       const passengerName = conv.passenger_name || "Passageiro";
@@ -936,8 +981,9 @@ async function handleBotMessage(
         passengerName,
         cleanPhone,
         origin,
-        chosenCat.label,
-        chosenCat.machine_category_id,
+        categoryLabel,
+        machineCategoryId,
+        paymentMethod,
       );
 
       if (result.success) {
@@ -945,19 +991,19 @@ async function handleBotMessage(
           .update({
             state: "corrida_solicitada",
             ride_id: result.rideId,
-            selected_category_id: chosenCat.id,
+            selected_payment_method: paymentMethod,
             updated_at: new Date().toISOString(),
           })
           .eq("id", conv.id);
 
-        const successMsg = result.machineMessage || msg("ride_success", `Corrida de ${chosenCat.label} solicitada com sucesso! Um motorista vai aceitar em breve. Aguarde.`);
+        const successMsg = result.machineMessage || msg("ride_success", `Corrida solicitada com sucesso! Pagamento: ${paymentMethod}. Um motorista vai aceitar em breve. Aguarde.`);
         await sendBotMessage(companyId, cleanPhone, connectionId, successMsg);
 
         await supabase.from("admin_logs").insert({
           company_id: companyId,
           source: "whatsapp_bot",
           level: "info",
-          message: `Corrida solicitada via bot por ${passengerName} (${cleanPhone}) — categoria: ${chosenCat.label}, endereco: ${origin.address}`,
+          message: `Corrida solicitada via bot por ${passengerName} (${cleanPhone}) — categoria: ${categoryLabel}, pagamento: ${paymentMethod}, endereco: ${origin.address}`,
           ride_id: result.rideId,
         });
       } else {
@@ -969,11 +1015,45 @@ async function handleBotMessage(
       break;
     }
 
+    case "suporte": {
+      // Forward passenger messages to the company's support WhatsApp
+      const { data: company } = await supabase
+        .from("companies")
+        .select("support_whatsapp")
+        .eq("id", companyId)
+        .maybeSingle();
+
+      if (company?.support_whatsapp && text) {
+        const supportPhone = toBrazilianWhatsAppNumber(company.support_whatsapp);
+        const forwardMsg = `Mensagem do Passageiro: ${text.trim()}`;
+        try {
+          const { provider, fields: f } = await getCompanyWhatsAppConfig(companyId);
+          await sendWhatsAppMessageWithProvider(provider, f, supportPhone, forwardMsg);
+          await saveMessage(companyId, supportPhone, "outgoing", forwardMsg);
+        } catch { /* best-effort */ }
+
+        // Check if passenger wants to exit support mode
+        if (["sair", "voltar", "corrida", "1", "menu", "fim"].includes(normalizedText)) {
+          await supabase.from("bot_conversas")
+            .update({ state: "menu_inicial", updated_at: new Date().toISOString() })
+            .eq("id", conv.id);
+          await sendBotMessage(companyId, cleanPhone, connectionId, msg("support_exit", "Voce saiu do suporte.\n\n1 - Solicitar corrida\n2 - Suporte\n\nResponda com o numero da opcao."));
+          break;
+        }
+      } else if (text && ["sair", "voltar", "corrida", "1", "menu", "fim"].includes(normalizedText)) {
+        await supabase.from("bot_conversas")
+          .update({ state: "menu_inicial", updated_at: new Date().toISOString() })
+          .eq("id", conv.id);
+        await sendBotMessage(companyId, cleanPhone, connectionId, msg("support_exit", "Voce saiu do suporte.\n\n1 - Solicitar corrida\n2 - Suporte\n\nResponda com o numero da opcao."));
+      }
+      break;
+    }
+
     case "corrida_solicitada": {
       await supabase.from("bot_conversas")
-        .update({ state: "inicio", updated_at: new Date().toISOString() })
+        .update({ state: "menu_inicial", updated_at: new Date().toISOString() })
         .eq("id", conv.id);
-      await sendBotMessage(companyId, cleanPhone, connectionId, msg("welcome_back", "Ola! Voce quer solicitar uma nova corrida? Responda SIM para continuar."));
+      await sendBotMessage(companyId, cleanPhone, connectionId, msg("welcome_back", "Ola! Como podemos ajudar?\n\n1 - Solicitar corrida\n2 - Suporte\n\nResponda com o numero da opcao."));
       break;
     }
   }
@@ -1290,6 +1370,12 @@ Deno.serve(async (req: Request) => {
         // Handle incoming messages via bot flow
         if (event === "messages.upsert" || event === "MESSAGES_UPSERT" || event === "message.receive") {
           const key = data?.key as Record<string, unknown> | undefined;
+          // Skip outgoing messages (from the bot itself)
+          if (key?.fromMe === true) {
+            return new Response(JSON.stringify({ success: true, bot: true, skipped: "outgoing" }), {
+              headers: { ...corsHeaders, "Content-Type": "application/json" },
+            });
+          }
           const msg = data?.message as Record<string, unknown> | undefined;
           let rawPhone: string | null = key?.remoteJid ? String(key.remoteJid).replace(/@.*$/, "") : (data?.from ? String(data.from) : null);
           let text: string | null = msg?.conversation ? String(msg.conversation) : (msg?.text ? String(msg.text) : null);
@@ -1386,8 +1472,14 @@ Deno.serve(async (req: Request) => {
 
     // Handle incoming messages from passengers (e.g. "cancelar")
     if (event === "messages.upsert" || event === "MESSAGES_UPSERT" || event === "message.receive") {
-      // Save ALL incoming messages to chat history (not just "cancelar")
+      // Skip outgoing messages (from the instance itself)
       const key = data?.key as Record<string, unknown> | undefined;
+      if (key?.fromMe === true) {
+        return new Response(JSON.stringify({ success: true, skipped: "outgoing" }), {
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+      // Save ALL incoming messages to chat history (not just "cancelar")
       const msg = data?.message as Record<string, unknown> | undefined;
       let rawPhone: string | null = key?.remoteJid ? String(key.remoteJid).replace(/@.*$/, "") : (data?.from ? String(data.from) : null);
       let text: string | null = msg?.conversation ? String(msg.conversation) : (msg?.text ? String(msg.text) : null);
@@ -1483,11 +1575,14 @@ async function handleIncomingMessage(companyId: string, data: Record<string, unk
   // Evolution API v2 sends: { message: { text: "cancelar" }, key: { remoteJid: "..." } }
   // Some versions: { from: "5516999998888", body: { text: "cancelar" } }
 
+  const key = data?.key as Record<string, unknown> | undefined;
+
+  // Skip outgoing messages (from the bot/instance itself) — only process incoming human messages
+  if (key?.fromMe === true) return;
+
   let rawPhone: string | null = null;
   let text: string | null = null;
 
-  // Try Evolution API formats
-  const key = data?.key as Record<string, unknown> | undefined;
   if (key?.remoteJid) {
     rawPhone = String(key.remoteJid).replace(/@.*$/, "");
   } else if (data?.from) {
@@ -1532,12 +1627,41 @@ async function handleIncomingMessage(companyId: string, data: Record<string, unk
   const cleanPhone = rawPhone.replace(/\D/g, "");
   const normalizedText = (text ?? "").trim().toLowerCase();
 
+  // Check if sender is the support number replying to a passenger in suporte mode
+  const { data: companyForSupport } = await supabase
+    .from("companies")
+    .select("support_whatsapp")
+    .eq("id", companyId)
+    .maybeSingle();
+  if (companyForSupport?.support_whatsapp && text) {
+    const supportPhone = toBrazilianWhatsAppNumber(companyForSupport.support_whatsapp);
+    if (cleanPhone === supportPhone) {
+      const { data: supportConv } = await supabase
+        .from("bot_conversas")
+        .select("id, phone, passenger_name")
+        .eq("company_id", companyId)
+        .eq("state", "suporte")
+        .order("updated_at", { ascending: false })
+        .limit(1)
+        .maybeSingle();
+      if (supportConv) {
+        const replyMsg = `Mensagem do Suporte: ${text.trim()}`;
+        try {
+          const { provider, fields: f } = await getCompanyWhatsAppConfig(companyId);
+          await sendWhatsAppMessageWithProvider(provider, f, supportConv.phone, replyMsg);
+          await saveMessage(companyId, supportConv.phone, "outgoing", replyMsg);
+        } catch { /* best-effort */ }
+      }
+      return;
+    }
+  }
+
   // Find the passenger's active ride by phone number, scoped to this company
   const normalizedQueryDigits = cleanPhone.replace(/^55/, "");
 
   const { data: activeRides } = await supabase
     .from("rides")
-    .select("id, machine_order_id, company_id, passenger_name, passenger_phone, status, machine_driver_id")
+    .select("id, machine_order_id, company_id, passenger_name, passenger_phone, driver_phone, status, machine_driver_id")
     .eq("company_id", companyId)
     .in("status", ["pending", "accepted", "en_route", "in_progress"])
     .order("created_at", { ascending: false })
@@ -1551,6 +1675,113 @@ async function handleIncomingMessage(companyId: string, data: Record<string, unk
       storedDigits === normalizedQueryDigits;
   }) ?? null;
 
+  // Check if sender is a driver of an active ride replying via WhatsApp
+  const driverRide = activeRides?.find((r) => {
+    const driverDigits = (r.driver_phone ?? "").replace(/\D/g, "");
+    const driverNo55 = driverDigits.replace(/^55/, "");
+    return driverDigits !== "" && (
+      driverDigits === cleanPhone ||
+      driverNo55 === normalizedQueryDigits ||
+      driverDigits === normalizedQueryDigits
+    );
+  }) ?? null;
+
+  if (driverRide && text) {
+    // Check if driver wants to cancel the ride
+    if (normalizedText.includes("cancel")) {
+      if (driverRide.status === "en_route" || driverRide.status === "in_progress") {
+        try {
+          const { provider, fields: f } = await getCompanyWhatsAppConfig(companyId);
+          const blockMsg = "O passageiro ja foi embarcado. Nao e possivel cancelar neste momento.";
+          await sendWhatsAppMessageWithProvider(provider, f, cleanPhone, blockMsg);
+          await saveMessage(companyId, cleanPhone, "outgoing", blockMsg);
+        } catch { /* best-effort */ }
+        return;
+      }
+
+      // Cancel in Machine API if applicable
+      if (driverRide.machine_order_id) {
+        const { data: credentials } = await supabase
+          .from("company_credentials")
+          .select("machine_api_url, machine_api_key, taximetro_username, taximetro_password")
+          .eq("company_id", companyId)
+          .maybeSingle();
+        const { data: tenantRows } = await supabase
+          .from("tenant_secrets")
+          .select("secret_name, secret_value")
+          .eq("tenant_id", companyId);
+        const tenantMap = new Map(
+          (tenantRows ?? []).map((r: { secret_name: string; secret_value: string }) => [r.secret_name, r.secret_value])
+        );
+        const baseUrl = (credentials?.machine_api_url || "https://api.taximachine.com.br").replace(/\/+$/, "");
+        const apiKey = tenantMap.get("MACHINE_API_KEY") || credentials?.machine_api_key || "";
+        const user = tenantMap.get("TAXIMETRO_USER") || credentials?.taximetro_username || "";
+        const pass = tenantMap.get("TAXIMETRO_PASSWORD") || credentials?.taximetro_password || "";
+        if (apiKey && user && pass) {
+          try {
+            await fetch(`${baseUrl}/api/v2/integracao/corridas/${driverRide.machine_order_id}/cancelar`, {
+              method: "POST",
+              headers: {
+                "Content-Type": "application/json",
+                "api-key": apiKey,
+                "Authorization": `Basic ${btoa(`${user}:${pass}`)}`,
+              },
+              body: JSON.stringify({ motivo_id: 1 }),
+            });
+          } catch { /* best-effort — cancel locally anyway */ }
+        }
+      }
+
+      await supabase.from("rides").update({
+        status: "canceled",
+        updated_at: new Date().toISOString(),
+      }).eq("id", driverRide.id);
+
+      await supabase.from("admin_logs").insert({
+        company_id: companyId,
+        source: "whatsapp_webhook",
+        level: "info",
+        message: `Corrida ${driverRide.id.slice(0, 8)} cancelada via WhatsApp pelo motorista (${cleanPhone})`,
+        ride_id: driverRide.id,
+      });
+
+      // Notify passenger
+      try {
+        const passengerPhone = toBrazilianWhatsAppNumber(driverRide.passenger_phone);
+        const { provider, fields: f } = await getCompanyWhatsAppConfig(companyId);
+        const cancelMsg = "O motorista cancelou a corrida. Por favor, solicite uma nova viagem.";
+        await sendWhatsAppMessageWithProvider(provider, f, passengerPhone, cancelMsg);
+        await saveMessage(companyId, passengerPhone, "outgoing", cancelMsg);
+      } catch { /* best-effort */ }
+
+      // Confirm to driver
+      try {
+        const { provider, fields: f } = await getCompanyWhatsAppConfig(companyId);
+        const driverConfirm = "Corrida cancelada com sucesso.";
+        await sendWhatsAppMessageWithProvider(provider, f, cleanPhone, driverConfirm);
+        await saveMessage(companyId, cleanPhone, "outgoing", driverConfirm);
+      } catch { /* best-effort */ }
+      return;
+    }
+
+    await supabase.from("ride_messages").insert({
+      ride_id: driverRide.id,
+      company_id: companyId,
+      sender: "motorista",
+      sender_type: "human",
+      content: text.trim(),
+      status: "entregue",
+    });
+    const passengerPhone = toBrazilianWhatsAppNumber(driverRide.passenger_phone);
+    const fwdMsg = `Mensagem do Motorista: ${text.trim()}`;
+    try {
+      const { provider, fields: f } = await getCompanyWhatsAppConfig(companyId);
+      await sendWhatsAppMessageWithProvider(provider, f, passengerPhone, fwdMsg);
+      await saveMessage(companyId, passengerPhone, "outgoing", fwdMsg);
+    } catch { /* best-effort */ }
+    return;
+  }
+
   // If there's an active ride, save the message to ride_messages (chat)
   if (ride) {
     if (text) {
@@ -1558,13 +1789,18 @@ async function handleIncomingMessage(companyId: string, data: Record<string, unk
         ride_id: ride.id,
         company_id: companyId,
         sender: "passageiro",
+        sender_type: "human",
         content: text.trim(),
         status: "entregue",
       });
 
-      if (ride.machine_driver_id) {
+      if (ride.driver_phone) {
         try {
-          await forwardMessageToMachineDriver(companyId, ride.machine_driver_id, text.trim(), ride.machine_order_id);
+          const driverPhone = toBrazilianWhatsAppNumber(ride.driver_phone);
+          const fwdMsg = `Mensagem do Passageiro: ${text.trim()}`;
+          const { provider, fields: f } = await getCompanyWhatsAppConfig(companyId);
+          await sendWhatsAppMessageWithProvider(provider, f, driverPhone, fwdMsg);
+          await saveMessage(companyId, driverPhone, "outgoing", fwdMsg);
         } catch { /* best-effort */ }
       }
     }
@@ -1703,108 +1939,6 @@ async function handleIncomingMessage(companyId: string, data: Record<string, unk
     await saveMessage(companyId, cleanPhone, "outgoing", confirmMsg);
   } catch {
     // Best-effort
-  }
-}
-
-async function forwardMessageToMachineDriver(
-  companyId: string,
-  machineDriverId: string,
-  message: string,
-  machineOrderId?: string | null,
-): Promise<void> {
-  const { data: credentials } = await supabase
-    .from("company_credentials")
-    .select("machine_api_url, machine_api_key, taximetro_username, taximetro_password")
-    .eq("company_id", companyId)
-    .maybeSingle();
-
-  const { data: tenantRows } = await supabase
-    .from("tenant_secrets")
-    .select("secret_name, secret_value")
-    .eq("tenant_id", companyId);
-  const tenantMap = new Map(
-    (tenantRows ?? []).map((r: { secret_name: string; secret_value: string }) => [r.secret_name, r.secret_value])
-  );
-
-  const baseUrl = (credentials?.machine_api_url || "https://api.taximachine.com.br").replace(/\/+$/, "");
-  const apiKey = tenantMap.get("MACHINE_API_KEY") || credentials?.machine_api_key || "";
-  const user = tenantMap.get("TAXIMETRO_USER") || credentials?.taximetro_username || "";
-  const pass = tenantMap.get("TAXIMETRO_PASSWORD") || credentials?.taximetro_password || "";
-
-  if (!apiKey || !user || !pass) return;
-
-  const authHeaders = {
-    "Content-Type": "application/json",
-    "api-key": apiKey,
-    "Authorization": `Basic ${btoa(`${user}:${pass}`)}`,
-  };
-
-  const driverIdNum = parseInt(machineDriverId, 10);
-  if (isNaN(driverIdNum)) return;
-
-  const titulo = "Mensagem do passageiro";
-  const body = message.slice(0, 255);
-  const orderIdNum = machineOrderId ? parseInt(machineOrderId, 10) : null;
-
-  // Try in-app messaging first (shows as modal in driver app, linked to the ride)
-  try {
-    const inAppBody: Record<string, unknown> = {
-      condutor_id: driverIdNum,
-      titulo,
-      body,
-    };
-    if (orderIdNum && !isNaN(orderIdNum)) {
-      inAppBody.solicitacao_id = orderIdNum;
-    }
-
-    const inAppResp = await fetch(`${baseUrl}/api/v2/integracao/notificacoes/condutor/in-app-messaging/individual`, {
-      method: "POST",
-      headers: authHeaders,
-      body: JSON.stringify(inAppBody),
-    });
-
-    if (inAppResp.ok) {
-      await supabase.from("admin_logs").insert({
-        company_id: companyId,
-        source: "machine_api",
-        level: "info",
-        message: `Passenger message forwarded to driver ${machineDriverId} via in-app messaging`,
-      });
-      return;
-    }
-  } catch {
-    // fall through to push
-  }
-
-  // Fallback: push notification
-  try {
-    const pushResp = await fetch(`${baseUrl}/api/v2/integracao/notificacoes/condutor/push/individual`, {
-      method: "POST",
-      headers: authHeaders,
-      body: JSON.stringify({
-        condutor_id: driverIdNum,
-        titulo,
-        mensagem: body,
-      }),
-    });
-
-    if (!pushResp.ok) {
-      const errorBody = await pushResp.text().catch(() => "");
-      await supabase.from("admin_logs").insert({
-        company_id: companyId,
-        source: "machine_api",
-        level: "error",
-        message: `Forward message to driver ${machineDriverId} via push failed (${pushResp.status}): ${errorBody.slice(0, 200)}`,
-      });
-    }
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : "unknown error";
-    await supabase.from("admin_logs").insert({
-      company_id: companyId,
-      source: "machine_api",
-      level: "error",
-      message: `Forward message to driver ${machineDriverId} exception: ${msg}`,
-    });
   }
 }
 

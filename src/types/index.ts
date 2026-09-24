@@ -29,6 +29,7 @@ export interface Company {
   responsible_name: string | null;
   responsible_phone: string | null;
   responsible_email: string | null;
+  support_whatsapp: string | null;
   asaas_customer_id: string | null;
   asaas_payment_id: string | null;
   asaas_checkout_url: string | null;
@@ -153,6 +154,7 @@ export interface Ride {
   vehicle_color: string | null;
   machine_order_id: string | null;
   final_price: number | null;
+  payment_method: string | null;
   webhook_events: WebhookEvent[];
   created_at: string;
   updated_at: string;
@@ -216,6 +218,7 @@ export interface SubscriptionPlan {
   sort_order: number;
   bot_incluso: boolean;
   limite_conexoes_bot: number;
+  limite_mensagens_bot: number | null;
   created_at: string;
   updated_at: string;
 }

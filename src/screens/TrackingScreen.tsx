@@ -27,7 +27,7 @@ interface TrackingScreenProps {
 
 export function TrackingScreen({ origin, destination, passengerName, passengerPhone }: TrackingScreenProps) {
   const { company, settings, categories, location } = useTenant();
-  const { goPassenger, selectedCategoryId } = useNav();
+  const { goPassenger, selectedCategoryId, selectedPaymentMethod } = useNav();
 
   const [ride, setRide] = useState<Ride | null>(null);
   const [creating, setCreating] = useState(true);
@@ -65,6 +65,7 @@ export function TrackingScreen({ origin, destination, passengerName, passengerPh
         duration_min: 0,
         category_label: categoryLabel,
         estimated_price: 0,
+        payment_method: selectedPaymentMethod,
         status: 'pending',
       };
 
@@ -114,6 +115,7 @@ export function TrackingScreen({ origin, destination, passengerName, passengerPh
         category: categoryValue,
         price: 0,
         distance: 0,
+        payment_method: selectedPaymentMethod,
         simulation_mode: settings?.simulation_mode ?? false,
       };
 
@@ -141,7 +143,7 @@ export function TrackingScreen({ origin, destination, passengerName, passengerPh
       setCreating(false);
     })();
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [company, settings, origin, destination, passengerName, passengerPhone, categoryLabel]);
+  }, [company, settings, origin, destination, passengerName, passengerPhone, categoryLabel, selectedPaymentMethod]);
 
   // Kiosk release: 5-minute rolling timer to unlock the screen for the next passenger
   useEffect(() => {

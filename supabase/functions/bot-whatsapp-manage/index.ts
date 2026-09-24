@@ -1,4 +1,4 @@
-// Bot WhatsApp management edge function — v7: fix auth verification using anon client for getUser
+// Bot WhatsApp management edge function — v8: ensure verify_jwt=false is applied
 import { createClient } from "npm:@supabase/supabase-js@2.57.4";
 
 const corsHeaders = {
@@ -64,7 +64,7 @@ Deno.serve(async (req: Request) => {
 
     const { data: plan } = await supabase
       .from("subscription_plans")
-      .select("bot_incluso, limite_conexoes_bot, name")
+      .select("bot_incluso, limite_conexoes_bot, limite_mensagens_bot, name")
       .eq("id", company.plan_id)
       .maybeSingle();
 
@@ -75,11 +75,36 @@ Deno.serve(async (req: Request) => {
     }
 
     if (action === "list") {
-      const { data: connections } = await supabase
+      const { data: rawConnections } = await supabase
         .from("bot_whatsapp_conexoes")
         .select("*, company_locations(name, slug, city, state)")
         .eq("company_id", companyId)
         .order("created_at", { ascending: true });
+
+      // Live-check Evolution connections and sync their real status
+      const connections = rawConnections ?? [];
+      for (const conn of connections) {
+        if (conn.provider === "evolution" && conn.evolution_api_url && conn.instance_name) {
+          try {
+            const stateResp = await fetch(
+              `${conn.evolution_api_url}/instance/connect/${encodeURIComponent(conn.instance_name)}`,
+              { method: "GET", headers: { apikey: conn.evolution_global_token } },
+            );
+            const stateBody = await stateResp.text();
+            let stateData: unknown = null;
+            try { stateData = JSON.parse(stateBody); } catch { /* ignore */ }
+            const liveState = getEvolutionState(stateData);
+            const liveStatus = (liveState === "OPEN" || liveState === "CONNECTED") ? "connected" : "disconnected";
+            if (liveStatus !== conn.connection_status) {
+              await supabase
+                .from("bot_whatsapp_conexoes")
+                .update({ connection_status: liveStatus, updated_at: new Date().toISOString() })
+                .eq("id", conn.id);
+              conn.connection_status = liveStatus;
+            }
+          } catch { /* network error — keep existing status */ }
+        }
+      }
 
       // Check if company is using Veloov shared instance (not their own)
       const { data: waInstance } = await supabase
@@ -97,13 +122,24 @@ Deno.serve(async (req: Request) => {
         .maybeSingle();
       const machineConfigured = !!(cred?.machine_api_url && (cred?.machine_api_key || cred?.taximetro_username));
 
+      // Count messages sent this month for usage display
+      const currentMonth = new Date().toISOString().slice(0, 7);
+      const { count: messageCount } = await supabase
+        .from("whatsapp_message_log")
+        .select("*", { count: "exact", head: true })
+        .eq("company_id", companyId)
+        .eq("success", true)
+        .eq("billing_month", currentMonth);
+
       return new Response(JSON.stringify({
         success: true,
         connections,
-        planLimit: plan.limite_conexoes_bot,
+        planLimit: plan.limite_conexoes_bot ?? 0,
         planName: plan.name,
         usingVeloovShared,
         machineConfigured,
+        messageLimit: plan.limite_mensagens_bot,
+        messageCount: messageCount ?? 0,
       }), {
         headers: { ...corsHeaders, "Content-Type": "application/json" },
       });
@@ -288,11 +324,47 @@ Deno.serve(async (req: Request) => {
     if (action === "list_locations") {
       const { data: locations } = await supabase
         .from("company_locations")
-        .select("id, name, slug, city, state, is_active")
+        .select("id, name, slug, city, state, lat, lng, is_active")
         .eq("company_id", companyId)
         .eq("is_active", true)
         .order("name", { ascending: true });
       return json({ success: true, locations: locations ?? [] });
+    }
+
+    if (action === "create_location") {
+      const { name, city, state, lat, lng } = body;
+      if (!name || !city) return err400("Nome e cidade são obrigatórios");
+
+      const slug = String(name)
+        .normalize("NFD")
+        .replace(/[\u0300-\u036f]/g, "")
+        .toLowerCase()
+        .trim()
+        .replace(/[^a-z0-9]+/g, "-")
+        .replace(/^-+|-+$/g, "");
+
+      if (!slug) return err400("Informe um nome válido para a localização");
+
+      const { data: location, error: locationError } = await supabase
+        .from("company_locations")
+        .insert({
+          company_id: companyId,
+          name: String(name).trim(),
+          slug,
+          city: String(city).trim(),
+          state: state ? String(state).trim() : null,
+          lat: lat != null ? Number(lat) : null,
+          lng: lng != null ? Number(lng) : null,
+          is_active: true,
+        })
+        .select("id, name, slug, city, state, lat, lng, is_active")
+        .single();
+
+      if (locationError) {
+        return err500(locationError.code === "23505" ? "Já existe uma localização com este nome" : "Erro ao cadastrar localização");
+      }
+
+      return json({ success: true, location });
     }
 
     if (action === "update_connection_location") {
@@ -301,6 +373,51 @@ Deno.serve(async (req: Request) => {
         .update({ location_id: locationId ?? null, updated_at: new Date().toISOString() })
         .eq("id", connectionId).eq("company_id", companyId);
       if (locErr) return err500("Erro ao salvar cidade: " + locErr.message);
+      return json({ success: true });
+    }
+
+    if (action === "delete_location") {
+      const { locationId: locToDelete } = body;
+      if (!locToDelete) return err400("locationId required");
+
+      // Verify the location belongs to this company
+      const { data: loc } = await supabase
+        .from("company_locations")
+        .select("id, name")
+        .eq("id", locToDelete)
+        .eq("company_id", companyId)
+        .maybeSingle();
+      if (!loc) return err400("Localização não encontrada");
+
+      // Refuse if any OTHER bot connection (not this one) is linked to this location
+      let otherConnQuery = supabase
+        .from("bot_whatsapp_conexoes")
+        .select("id, instance_name")
+        .eq("company_id", companyId)
+        .eq("location_id", locToDelete);
+      if (connectionId) {
+        otherConnQuery = otherConnQuery.neq("id", connectionId);
+      }
+      const { data: otherConns } = await otherConnQuery;
+      if (otherConns && otherConns.length > 0) {
+        const names = otherConns.map((c: { instance_name: string }) => c.instance_name).join(", ");
+        return err400(`Esta localização está em uso por outra instância do bot (${names}). Desvincule antes de excluir.`);
+      }
+
+      // Clear the location_id on this connection if it was the one using it
+      if (connectionId) {
+        await supabase.from("bot_whatsapp_conexoes")
+          .update({ location_id: null, updated_at: new Date().toISOString() })
+          .eq("id", connectionId).eq("company_id", companyId);
+      }
+
+      // Delete the location (vehicle_categories.location_id and rides.location_id are ON DELETE SET NULL)
+      const { error: delErr } = await supabase
+        .from("company_locations")
+        .delete()
+        .eq("id", locToDelete)
+        .eq("company_id", companyId);
+      if (delErr) return err500("Erro ao excluir localização: " + delErr.message);
       return json({ success: true });
     }
 
@@ -360,6 +477,92 @@ Deno.serve(async (req: Request) => {
     }
 
     if (action === "list_categories") {
+      // Check integration mode — same logic as totems
+      const { data: settings } = await supabase
+        .from("company_settings")
+        .select("integration_mode")
+        .eq("company_id", companyId)
+        .maybeSingle();
+      const integrationMode = (settings as { integration_mode?: string } | null)?.integration_mode ?? "manual";
+
+      // If Machine API mode, fetch categories from Machine API using the location's city/lat/lng
+      if (integrationMode === "machine") {
+        let locCity: string | undefined;
+        let locState: string | undefined;
+        let locLat: number | undefined;
+        let locLng: number | undefined;
+
+        if (locationId) {
+          const { data: loc } = await supabase
+            .from("company_locations")
+            .select("city, state, lat, lng")
+            .eq("id", locationId)
+            .maybeSingle();
+          if (loc) {
+            locCity = loc.city ?? undefined;
+            locState = loc.state ?? undefined;
+            locLat = loc.lat ?? undefined;
+            locLng = loc.lng ?? undefined;
+          }
+        }
+
+        // Fallback to company credentials if location has no coords
+        if ((locLat == null || locLng == null) && !locCity) {
+          const { data: cred } = await supabase
+            .from("company_credentials")
+            .select("city, state, lat, lng")
+            .eq("company_id", companyId)
+            .maybeSingle();
+          if (cred) {
+            if (locLat == null) locLat = cred.lat ?? undefined;
+            if (locLng == null) locLng = cred.lng ?? undefined;
+            if (!locCity) locCity = cred.city ?? undefined;
+            if (!locState) locState = cred.state ?? undefined;
+          }
+        }
+
+        const auth = await getMachineAuth(companyId);
+        if (!auth) {
+          return json({ success: true, categories: [], integrationMode: "machine", error: "Credenciais da Machine API nao configuradas. Configure no painel de integracao." });
+        }
+
+        const params = new URLSearchParams();
+        if (locLat != null && locLng != null) {
+          params.set("lat", String(locLat));
+          params.set("lng", String(locLng));
+        } else if (locCity) {
+          params.set("cidade", locCity);
+          if (locState) params.set("estado", locState);
+        }
+
+        if (!params.toString()) {
+          return json({ success: true, categories: [], integrationMode: "machine", error: "Configure a cidade ou coordenadas da localizacao para buscar categorias da Machine." });
+        }
+
+        try {
+          const catUrl = `${auth.baseUrl}/api/v2/integracao/configuracoes/categorias/?${params.toString()}`;
+          const resp = await fetch(catUrl, { method: "GET", headers: auth.headers });
+          if (!resp.ok) {
+            const errBody = await resp.text().catch(() => "");
+            return json({ success: true, categories: [], integrationMode: "machine", error: `Machine API erro ${resp.status}: ${errBody.slice(0, 200)}` });
+          }
+          const data = await resp.json();
+          const rawCats: unknown[] = data?.data ?? (Array.isArray(data) ? data : []);
+          const categories = rawCats.map((c: unknown): Record<string, unknown> => {
+            const cat = (c ?? {}) as Record<string, unknown>;
+            const id = String(cat.id ?? cat.categoria_id ?? cat.codigo ?? cat.uuid ?? "");
+            const nome = String(cat.nome ?? cat.categoria_nome ?? cat.nome_categoria ?? cat.label ?? cat.name ?? "");
+            const descricao = cat.descricao ?? cat.descricao_categoria ?? cat.description ?? null;
+            return { id, label: nome, machine_category_id: id, descricao: descricao != null ? String(descricao) : undefined };
+          }).filter((c) => c.id);
+          return json({ success: true, categories, integrationMode: "machine" });
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : "Erro ao buscar categorias";
+          return json({ success: true, categories: [], integrationMode: "machine", error: msg });
+        }
+      }
+
+      // Manual or webhook mode — return internal vehicle_categories (same as before)
       let catQuery = supabase
         .from("vehicle_categories")
         .select("id, label, machine_category_id, is_active, sort_order, location_id")
@@ -367,7 +570,7 @@ Deno.serve(async (req: Request) => {
         .eq("is_active", true);
       if (locationId) catQuery = catQuery.eq("location_id", locationId);
       const { data: categories } = await catQuery.order("sort_order", { ascending: true });
-      return json({ success: true, categories: categories ?? [] });
+      return json({ success: true, categories: categories ?? [], integrationMode });
     }
 
     if (action === "update_categories") {
@@ -470,6 +673,39 @@ Deno.serve(async (req: Request) => {
 });
 
 // Helper response builders
+async function getMachineAuth(companyId: string): Promise<{ headers: Record<string, string>; baseUrl: string } | null> {
+  const { data: credentials } = await supabase
+    .from("company_credentials")
+    .select("machine_api_url, machine_api_key, taximetro_username, taximetro_password")
+    .eq("company_id", companyId)
+    .maybeSingle();
+
+  const { data: tenantRows } = await supabase
+    .from("tenant_secrets")
+    .select("secret_name, secret_value")
+    .eq("tenant_id", companyId);
+
+  const tenantMap = new Map(
+    (tenantRows ?? []).map((r: { secret_name: string; secret_value: string }) => [r.secret_name, r.secret_value])
+  );
+
+  const apiKey = tenantMap.get("MACHINE_API_KEY") || credentials?.machine_api_key || "";
+  const user = tenantMap.get("TAXIMETRO_USER") || credentials?.taximetro_username || "";
+  const pass = tenantMap.get("TAXIMETRO_PASSWORD") || credentials?.taximetro_password || "";
+
+  if (!apiKey || !user || !pass) return null;
+
+  const baseUrl = (credentials?.machine_api_url || "https://api.taximachine.com.br").replace(/\/+$/, "");
+  return {
+    baseUrl,
+    headers: {
+      "Content-Type": "application/json",
+      "api-key": apiKey,
+      "Authorization": `Basic ${btoa(`${user}:${pass}`)}`,
+    },
+  };
+}
+
 function err400(msg: string): Response {
   return new Response(JSON.stringify({ error: msg }), { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } });
 }
@@ -646,3 +882,5 @@ function parseErr(body: string, status: number): string {
   return msg;
 }
 
+// v9: add create_location action
+// v10: bot_category_ids now text[]

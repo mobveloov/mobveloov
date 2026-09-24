@@ -37,6 +37,7 @@ export function SettingsModule() {
         responsible_name: form.responsible_name,
         responsible_phone: form.responsible_phone,
         responsible_email: form.responsible_email,
+        support_whatsapp: form.support_whatsapp,
         brand_color: form.brand_color,
         updated_at: new Date().toISOString(),
       })
@@ -74,6 +75,12 @@ export function SettingsModule() {
             <Input label="Telefone" value={form.responsible_phone ?? ''} onChange={(v) => setForm({ ...form, responsible_phone: v })} placeholder="(00) 00000-0000" />
           </div>
           <Input label="E-mail" type="email" value={form.responsible_email ?? ''} onChange={(v) => setForm({ ...form, responsible_email: v })} placeholder="contato@empresa.com" />
+        </Card>
+
+        <Card className="p-5 space-y-4">
+          <h3 className="text-sm font-bold text-slate-200">WhatsApp de Suporte</h3>
+          <p className="text-xs text-slate-500">Quando um passageiro pedir suporte pelo bot, as mensagens serao encaminhadas para este numero.</p>
+          <Input label="WhatsApp de Suporte" value={form.support_whatsapp ?? ''} onChange={(v) => setForm({ ...form, support_whatsapp: v })} placeholder="(00) 00000-0000" />
         </Card>
 
         {error && (

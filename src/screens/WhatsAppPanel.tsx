@@ -880,6 +880,17 @@ export function WhatsAppPanel() {
               </button>
             )}
 
+            {provider === 'veloov' && status !== 'connected' && (
+              <button
+                onClick={handleSaveProvider}
+                disabled={actionLoading}
+                className="btn-primary w-full flex items-center justify-center gap-2"
+              >
+                {actionLoading ? <Loader2 className="h-5 w-5 animate-spin" /> : <CheckCircle2 className="h-5 w-5" />}
+                Ativar API Veloov
+              </button>
+            )}
+
             {provider !== 'evolution' && provider !== 'veloov' && (
               <button
                 onClick={handleSaveProvider}

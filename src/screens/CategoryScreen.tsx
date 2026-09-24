@@ -1,8 +1,15 @@
-import { Car, Clock, ArrowRight, Sparkles, MapPin } from 'lucide-react';
+import { Car, Clock, ArrowRight, Sparkles, MapPin, Wallet } from 'lucide-react';
+import { useState } from 'react';
 import { useNav } from '@/context/NavContext';
 import { useTenant } from '@/context/TenantContext';
 import { BackButton } from '@/components/Header';
 import type { GeoPoint } from '@/types';
+
+const PAYMENT_OPTIONS = [
+  { value: 'Dinheiro', label: 'Dinheiro' },
+  { value: 'Pix', label: 'Pix' },
+  { value: 'Cartao', label: 'Cartão' },
+] as const;
 
 interface CategoryScreenProps {
   origin: GeoPoint;
@@ -10,8 +17,9 @@ interface CategoryScreenProps {
 }
 
 export function CategoryScreen({ origin, destination }: CategoryScreenProps) {
-  const { goPassenger, selectCategory, selectedCategoryId } = useNav();
+  const { goPassenger, selectCategory, selectedCategoryId, selectPaymentMethod, selectedPaymentMethod } = useNav();
   const { settings, company, categories, location } = useTenant();
+  const [paymentError, setPaymentError] = useState(false);
 
   if (!settings) {
     return (
@@ -85,6 +93,10 @@ export function CategoryScreen({ origin, destination }: CategoryScreenProps) {
             <button
               key={cat.id}
               onClick={() => {
+                if (!selectedPaymentMethod) {
+                  setPaymentError(true);
+                  return;
+                }
                 selectCategory(cat.id, null, null, 0);
                 goPassenger('tracking');
               }}
@@ -120,6 +132,41 @@ export function CategoryScreen({ origin, destination }: CategoryScreenProps) {
             </button>
           );
         })}
+      </div>
+
+      <div className="mt-5">
+        <p className="mb-3 text-sm font-bold text-neutral-700 dark:text-neutral-300">
+          Forma de pagamento
+        </p>
+        <div className="grid grid-cols-3 gap-3">
+          {PAYMENT_OPTIONS.map((opt) => {
+            const isSelected = selectedPaymentMethod === opt.value;
+            return (
+              <button
+                key={opt.value}
+                onClick={() => {
+                  selectPaymentMethod(opt.value);
+                  setPaymentError(false);
+                }}
+                className={`card p-4 flex flex-col items-center gap-2 transition-all duration-200 hover:shadow-md active:scale-[0.98] ${
+                  isSelected
+                    ? 'border-gold-500 ring-2 ring-gold-500/30'
+                    : 'hover:border-gold-500/50'
+                }`}
+              >
+                <Wallet className={`h-5 w-5 ${isSelected ? 'text-gold-600 dark:text-gold-400' : 'text-neutral-400'}`} />
+                <span className={`text-sm font-semibold ${isSelected ? 'text-gold-600 dark:text-gold-400' : 'text-neutral-600 dark:text-neutral-400'}`}>
+                  {opt.label}
+                </span>
+              </button>
+            );
+          })}
+        </div>
+        {paymentError && (
+          <p className="mt-2 text-xs text-error-500">
+            Selecione a forma de pagamento antes de solicitar.
+          </p>
+        )}
       </div>
 
       {company && (

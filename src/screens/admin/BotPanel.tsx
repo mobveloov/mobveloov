@@ -3,6 +3,8 @@ import { Bot, QrCode, Loader2, CheckCircle2, XCircle, RefreshCw, Trash2, Plus, A
 import { supabase } from '@/lib/supabase';
 import { useAuth } from '@/context/AuthContext';
 import { slugify } from '@/lib/utils';
+import { CityAutocomplete, type CityLocation } from '@/components/CityAutocomplete';
+import { fetchMachineCategories, type MachineCategory } from '@/lib/machineApi';
 import { PageHeader, Card, Input, Button, LoadingState } from '@/components/admin/ui';
 import type { BotWhatsappConexao } from '@/types';
 
@@ -56,6 +58,8 @@ export function BotPanel() {
   const [connections, setConnections] = useState<BotWhatsappConexao[]>([]);
   const [planLimit, setPlanLimit] = useState(0);
   const [planName, setPlanName] = useState('');
+  const [messageLimit, setMessageLimit] = useState<number | null>(null);
+  const [messageCount, setMessageCount] = useState(0);
   const [usingVeloovShared, setUsingVeloovShared] = useState(false);
   const [machineConfigured, setMachineConfigured] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -70,12 +74,14 @@ export function BotPanel() {
     setLoading(true);
     const result = await callBotApi('list', { companyId: company.id });
     if (result.ok && result.data) {
-      const d = result.data as { connections: BotWhatsappConexao[]; planLimit: number; planName: string; usingVeloovShared: boolean; machineConfigured: boolean };
+      const d = result.data as { connections: BotWhatsappConexao[]; planLimit: number; planName: string; usingVeloovShared: boolean; machineConfigured: boolean; messageLimit: number | null; messageCount: number };
       setConnections(d.connections ?? []);
       setPlanLimit(d.planLimit ?? 0);
       setPlanName(d.planName ?? '');
       setUsingVeloovShared(d.usingVeloovShared ?? false);
       setMachineConfigured(d.machineConfigured ?? false);
+      setMessageLimit(d.messageLimit ?? 0);
+      setMessageCount(d.messageCount ?? 0);
     } else {
       setError(result.error ?? 'Erro ao carregar');
     }
@@ -106,7 +112,44 @@ export function BotPanel() {
 
   return (
     <div className="animate-slide-up space-y-5">
-      <PageHeader icon={Bot} title="Bot de Corridas" subtitle={`Conexões WhatsApp do bot — Plano ${planName} (${connections.length}/${planLimit})`} />
+      <PageHeader icon={Bot} title="Bot de Corridas" subtitle={`Conexões WhatsApp do bot — Plano ${planName}`} />
+
+      {/* Plan usage summary */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+        <div className="rounded-xl border border-slate-800 bg-slate-900/40 p-4">
+          <div className="flex items-center gap-2 mb-1">
+            <Phone className="h-4 w-4 text-gold-400" />
+            <h3 className="text-xs font-bold text-slate-300 uppercase tracking-wide">Conexões</h3>
+          </div>
+          <p className="text-2xl font-bold text-slate-100">
+            {connections.length}<span className="text-slate-500 text-base font-normal">/{planLimit}</span>
+          </p>
+          <p className="text-xs text-slate-500 mt-0.5">números de WhatsApp conectados</p>
+        </div>
+        <div className="rounded-xl border border-slate-800 bg-slate-900/40 p-4">
+          <div className="flex items-center gap-2 mb-1">
+            <MessageSquare className="h-4 w-4 text-gold-400" />
+            <h3 className="text-xs font-bold text-slate-300 uppercase tracking-wide">Mensagens (mês)</h3>
+          </div>
+          <p className="text-2xl font-bold text-slate-100">
+            {messageLimit === null
+              ? <span className="text-success-400">Ilimitado</span>
+              : <>{messageCount}<span className="text-slate-500 text-base font-normal">/{messageLimit}</span></>
+            }
+          </p>
+          <p className="text-xs text-slate-500 mt-0.5">
+            {messageLimit === null ? 'plano sem limite de mensagens' : 'mensagens enviadas no mês'}
+          </p>
+          {messageLimit !== null && messageLimit > 0 && (
+            <div className="mt-2 h-1.5 rounded-full bg-slate-800 overflow-hidden">
+              <div
+                className="h-full rounded-full bg-gold-500 transition-all"
+                style={{ width: `${Math.min(100, (messageCount / messageLimit) * 100)}%` }}
+              />
+            </div>
+          )}
+        </div>
+      </div>
 
       {error && (
         <div className="flex items-center gap-2 text-sm text-error-400 bg-error-500/10 rounded-lg px-4 py-3">
@@ -151,6 +194,7 @@ export function BotPanel() {
                 key={conn.id}
                 conn={conn}
                 companyId={company!.id}
+                companySlug={company!.slug}
                 expanded={expandedConn === conn.id}
                 onToggle={() => setExpandedConn(expandedConn === conn.id ? null : conn.id)}
                 onRefreshQr={handleRefreshQr}
@@ -182,9 +226,10 @@ export function BotPanel() {
   );
 }
 
-function ConnectionCard({ conn, companyId, expanded, onToggle, onRefreshQr, onDelete, qrRefreshId, onUpdate, onError, onSuccess }: {
+function ConnectionCard({ conn, companyId, companySlug, expanded, onToggle, onRefreshQr, onDelete, qrRefreshId, onUpdate, onError, onSuccess }: {
   conn: BotWhatsappConexao;
   companyId: string;
+  companySlug: string;
   expanded: boolean;
   onToggle: () => void;
   onRefreshQr: (id: string) => void;
@@ -234,7 +279,7 @@ function ConnectionCard({ conn, companyId, expanded, onToggle, onRefreshQr, onDe
 
       {expanded && (
         <div className="border-t border-slate-800 p-4 space-y-4 bg-slate-950/30">
-          <CategorySelectorSection conn={conn} companyId={companyId} onError={onError} onSuccess={onSuccess} onUpdate={onUpdate} />
+          <CategorySelectorSection conn={conn} companyId={companyId} companySlug={companySlug} onError={onError} onSuccess={onSuccess} onUpdate={onUpdate} />
           <AddressSuggestionsSection connId={conn.id} companyId={companyId} onError={onError} onSuccess={onSuccess} />
           <CustomMessagesSection conn={conn} companyId={companyId} onError={onError} onSuccess={onSuccess} />
         </div>
@@ -497,26 +542,26 @@ interface CompanyLocationInfo {
   slug: string;
   city: string | null;
   state: string | null;
+  lat: number | null;
+  lng: number | null;
   is_active: boolean;
 }
 
-interface VehicleCategoryInfo {
-  id: string;
-  label: string;
-  machine_category_id: string | null;
-  is_active: boolean;
-  sort_order: number;
-  location_id: string | null;
-}
-
-function CategorySelectorSection({ conn, companyId, onError, onSuccess, onUpdate }: { conn: BotWhatsappConexao; companyId: string; onError: (m: string) => void; onSuccess: (m: string) => void; onUpdate: () => void }) {
+function CategorySelectorSection({ conn, companyId, companySlug, onError, onSuccess, onUpdate }: { conn: BotWhatsappConexao; companyId: string; companySlug: string; onError: (m: string) => void; onSuccess: (m: string) => void; onUpdate: () => void }) {
   const [locations, setLocations] = useState<CompanyLocationInfo[]>([]);
   const [selectedLocationId, setSelectedLocationId] = useState<string>(conn.location_id ?? '');
-  const [categories, setCategories] = useState<VehicleCategoryInfo[]>([]);
+  const [machineCats, setMachineCats] = useState<MachineCategory[]>([]);
   const [selectedIds, setSelectedIds] = useState<string[]>(conn.bot_category_ids ?? []);
   const [loadingLocs, setLoadingLocs] = useState(true);
-  const [loadingCats, setLoadingCats] = useState(false);
+  const [loadingMachineCats, setLoadingMachineCats] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [catError, setCatError] = useState<string | null>(null);
+  const [showNewLocation, setShowNewLocation] = useState(false);
+  const [newLocationName, setNewLocationName] = useState('');
+  const [newLocation, setNewLocation] = useState<CityLocation>({ city: '', state: '', lat: '', lng: '' });
+  const [creatingLocation, setCreatingLocation] = useState(false);
+
+  const selectedLocation = locations.find((l) => l.id === selectedLocationId);
 
   const loadLocations = useCallback(async () => {
     setLoadingLocs(true);
@@ -527,25 +572,93 @@ function CategorySelectorSection({ conn, companyId, onError, onSuccess, onUpdate
     setLoadingLocs(false);
   }, [companyId]);
 
-  const loadCategories = useCallback(async (locId: string) => {
-    setLoadingCats(true);
-    const catRes = await callBotApi('list_categories', { companyId, locationId: locId || undefined });
-    if (catRes.ok && catRes.data) {
-      setCategories((catRes.data as { categories: VehicleCategoryInfo[] }).categories ?? []);
-    } else {
-      setCategories([]);
-    }
-    setLoadingCats(false);
-  }, [companyId]);
-
   useEffect(() => { loadLocations(); }, [loadLocations]);
-  useEffect(() => {
-    if (!loadingLocs) loadCategories(selectedLocationId);
-  }, [loadingLocs, selectedLocationId, loadCategories]);
 
   const handleLocationChange = (id: string) => {
     setSelectedLocationId(id);
     setSelectedIds([]);
+    setMachineCats([]);
+    setCatError(null);
+  };
+
+  const handleDeleteLocation = async (locId: string, locName: string) => {
+    if (!confirm(`Excluir a localização "${locName}"? Esta ação não pode ser desfeita.`)) return;
+    const result = await callBotApi('delete_location', { companyId, connectionId: conn.id, locationId: locId });
+    if (!result.ok) {
+      onError(result.error ?? 'Erro ao excluir localização');
+      return;
+    }
+    setLocations((current) => current.filter((l) => l.id !== locId));
+    if (selectedLocationId === locId) {
+      setSelectedLocationId('');
+      setSelectedIds([]);
+      setMachineCats([]);
+    }
+    onSuccess(`Localização "${locName}" excluída`);
+    setTimeout(() => onSuccess(''), 3000);
+    onUpdate();
+  };
+
+  const handleCreateLocation = async () => {
+    if (!newLocation.city) {
+      onError('Selecione a cidade da localização');
+      return;
+    }
+
+    setCreatingLocation(true);
+    const result = await callBotApi('create_location', {
+      companyId,
+      name: newLocationName.trim() || newLocation.city,
+      city: newLocation.city,
+      state: newLocation.state,
+      lat: newLocation.lat ? Number(newLocation.lat) : undefined,
+      lng: newLocation.lng ? Number(newLocation.lng) : undefined,
+    });
+    setCreatingLocation(false);
+
+    if (!result.ok || !result.data) {
+      onError(result.error ?? 'Erro ao cadastrar localização');
+      return;
+    }
+
+    const created = (result.data as { location: CompanyLocationInfo }).location;
+    setLocations((current) => [...current, created]);
+    setSelectedLocationId(created.id);
+    setSelectedIds([]);
+    setMachineCats([]);
+    setNewLocationName('');
+    setNewLocation({ city: '', state: '', lat: '', lng: '' });
+    setShowNewLocation(false);
+    onSuccess(`Localização ${created.city ?? created.name} cadastrada`);
+  };
+
+  const handleLoadMachineCategories = async () => {
+    if (!selectedLocation) {
+      setCatError('Selecione uma localização primeiro');
+      return;
+    }
+
+    setLoadingMachineCats(true);
+    setCatError(null);
+    setMachineCats([]);
+
+    const result = await fetchMachineCategories(companySlug, {
+      city: selectedLocation.city ?? undefined,
+      state: selectedLocation.state ?? undefined,
+      lat: selectedLocation.lat ?? undefined,
+      lng: selectedLocation.lng ?? undefined,
+    });
+
+    if (result.success && result.data) {
+      setMachineCats(result.data);
+      if (result.data.length === 0) {
+        setCatError('Nenhuma categoria encontrada para esta cidade na Machine API.');
+      }
+    } else {
+      setCatError(result.error ?? 'Erro ao buscar categorias da Machine API. Verifique a integração no painel de Integração.');
+    }
+
+    setLoadingMachineCats(false);
   };
 
   const toggleCategory = (id: string) => {
@@ -573,39 +686,122 @@ function CategorySelectorSection({ conn, companyId, onError, onSuccess, onUpdate
           {saving ? <Loader2 className="h-3 w-3 animate-spin" /> : <Save className="h-3 w-3" />} Salvar
         </button>
       </div>
-      <p className="text-[11px] text-slate-500 mb-3">Selecione a cidade e quais categorias ficarao ativas neste numero. O passageiro escolhe entre as categorias marcadas. Independente do totem.</p>
+      <p className="text-[11px] text-slate-500 mb-3">Selecione a localização desta instância, clique em <strong className="text-gold-400">Carregar categorias</strong> para buscar as categorias da Machine API daquela cidade, e marque quais ficarão ativas.</p>
 
-      {/* City selector */}
+      {/* Location selector */}
       <div className="mb-3">
-        <label className="text-[10px] text-slate-500 block mb-1">Cidade</label>
-        {loadingLocs ? (
-          <div className="text-xs text-slate-500">Carregando cidades...</div>
-        ) : locations.length === 0 ? (
-          <div className="text-xs text-slate-600">Nenhuma cidade cadastrada. Cadastre locais na aba Locais.</div>
-        ) : (
-          <select
-            value={selectedLocationId}
-            onChange={(e) => handleLocationChange(e.target.value)}
-            className="w-full px-3 py-2 text-xs rounded-lg bg-slate-800 border border-slate-700 text-slate-200"
+        <div className="flex items-center justify-between mb-1.5">
+          <label className="text-[10px] text-slate-500">Localização desta instância</label>
+          <button
+            type="button"
+            onClick={() => setShowNewLocation((value) => !value)}
+            className="text-[10px] font-bold text-gold-400 hover:text-gold-300 flex items-center gap-1"
           >
-            <option value="">Todas as cidades (sem filtro)</option>
+            <Plus className="h-3 w-3" /> {showNewLocation ? 'Fechar' : 'Cadastrar localização'}
+          </button>
+        </div>
+
+        {showNewLocation && (
+          <div className="mb-3 rounded-lg border border-gold-500/20 bg-gold-500/5 p-3 space-y-3">
+            <p className="text-[11px] text-slate-400">Cadastre aqui a cidade da instância. Exemplo: Leme/SP.</p>
+            <div>
+              <label className="text-[10px] text-slate-500 block mb-1">Nome da localização</label>
+              <input
+                value={newLocationName}
+                onChange={(event) => setNewLocationName(event.target.value)}
+                placeholder="Ex.: Totem Leme ou Base Leme"
+                className="w-full px-3 py-2 text-xs rounded-lg bg-slate-800 border border-slate-700 text-slate-200 placeholder-slate-600"
+              />
+            </div>
+            <CityAutocomplete value={newLocation} onChange={setNewLocation} />
+            <div className="flex justify-end gap-2">
+              <button type="button" onClick={() => setShowNewLocation(false)} className="px-3 py-1.5 text-xs text-slate-400 hover:text-slate-200">Cancelar</button>
+              <button type="button" onClick={handleCreateLocation} disabled={creatingLocation || !newLocation.city} className="px-3 py-1.5 text-xs rounded-lg bg-gold-500 text-slate-900 font-bold disabled:opacity-50 flex items-center gap-1">
+                {creatingLocation ? <Loader2 className="h-3 w-3 animate-spin" /> : <Plus className="h-3 w-3" />} Cadastrar e usar
+              </button>
+            </div>
+          </div>
+        )}
+
+        {loadingLocs ? (
+          <div className="text-xs text-slate-500">Carregando localizações...</div>
+        ) : locations.length === 0 ? (
+          <div className="text-xs text-slate-600">Nenhuma localização cadastrada. Clique em "Cadastrar localização" acima para adicionar Leme ou outra cidade.</div>
+        ) : (
+          <div className="flex flex-wrap gap-1.5">
             {locations.map((loc) => (
-              <option key={loc.id} value={loc.id}>{loc.name}{loc.city ? ` — ${loc.city}/${loc.state ?? ''}` : ''}</option>
+              <div
+                key={loc.id}
+                className={`inline-flex items-center gap-1 rounded-lg transition-all ${
+                  selectedLocationId === loc.id
+                    ? 'bg-gold-500 text-slate-900'
+                    : 'bg-slate-800/50 text-slate-400 hover:bg-slate-800'
+                }`}
+              >
+                <button
+                  type="button"
+                  onClick={() => handleLocationChange(loc.id)}
+                  className="px-3 py-1.5 text-xs font-semibold flex items-center gap-1"
+                >
+                  <MapPin className="h-3 w-3" />
+                  <span>{loc.name}</span>
+                  {loc.city && <span className="text-[10px] opacity-70">{loc.city}{loc.state ? `/${loc.state}` : ''}</span>}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => handleDeleteLocation(loc.id, loc.name)}
+                  className="px-1.5 py-1.5 text-red-400 hover:text-red-300 hover:bg-red-500/10 rounded-r-lg"
+                  title={`Excluir ${loc.name}`}
+                >
+                  <Trash2 className="h-3 w-3" />
+                </button>
+              </div>
             ))}
-          </select>
+          </div>
         )}
       </div>
 
-      {/* Category chips */}
+      {/* Selected location info + Carregar categorias button */}
+      {selectedLocation && (
+        <div className="mb-3 rounded-lg border border-slate-800 bg-slate-900/40 p-3">
+          <div className="flex items-center justify-between gap-3">
+            <div className="min-w-0">
+              <p className="text-xs font-bold text-slate-200 truncate">{selectedLocation.name}</p>
+              <p className="text-[10px] text-slate-500">
+                {selectedLocation.city ? `${selectedLocation.city}${selectedLocation.state ? `/${selectedLocation.state}` : ''}` : 'Sem cidade definida'}
+                {selectedLocation.lat != null && selectedLocation.lng != null ? ` • ${selectedLocation.lat}, ${selectedLocation.lng}` : ''}
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={handleLoadMachineCategories}
+              disabled={loadingMachineCats}
+              className="shrink-0 px-3 py-1.5 text-xs rounded-lg bg-blue-600 hover:bg-blue-500 text-white font-bold disabled:opacity-50 flex items-center gap-1.5"
+            >
+              {loadingMachineCats ? <Loader2 className="h-3 w-3 animate-spin" /> : <RefreshCw className="h-3 w-3" />}
+              {loadingMachineCats ? 'Carregando...' : 'Carregar categorias'}
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Category chips from Machine API */}
       <div>
-        <label className="text-[10px] text-slate-500 block mb-1.5">Categorias ativas neste numero</label>
-        {loadingCats ? (
-          <div className="text-xs text-slate-500 py-2">Carregando categorias...</div>
-        ) : categories.length === 0 ? (
-          <div className="text-xs text-slate-600 py-2">Nenhuma categoria encontrada para esta cidade. Cadastre categorias na aba de Precos.</div>
+        <label className="text-[10px] text-slate-500 block mb-1.5">Categorias da Machine API ativas neste número</label>
+        {catError && (
+          <div className="text-[10px] text-amber-400 mb-2 px-2 py-1 rounded bg-amber-500/10">{catError}</div>
+        )}
+        {loadingMachineCats ? (
+          <div className="text-xs text-slate-500 py-2">Buscando categorias na Machine API...</div>
+        ) : machineCats.length === 0 ? (
+          <div className="text-xs text-slate-600 py-2">
+            {selectedLocation
+              ? 'Clique em "Carregar categorias" acima para buscar as categorias da Machine API para esta cidade.'
+              : 'Selecione uma localização primeiro.'}
+          </div>
         ) : (
           <div className="flex flex-wrap gap-2">
-            {categories.map((cat) => {
+            {machineCats.map((cat) => {
               const selected = selectedIds.includes(cat.id);
               return (
                 <button
@@ -614,13 +810,13 @@ function CategorySelectorSection({ conn, companyId, onError, onSuccess, onUpdate
                   className={`px-3 py-1.5 text-xs rounded-lg border transition-colors ${selected ? 'bg-gold-500/20 border-gold-500/50 text-gold-300' : 'bg-slate-800/50 border-slate-700 text-slate-400 hover:border-slate-600'}`}
                 >
                   {selected && <Check className="h-3 w-3 inline mr-1" />}
-                  {cat.label}
+                  {cat.nome}
                 </button>
               );
             })}
           </div>
         )}
-        {!loadingCats && categories.length > 0 && (
+        {machineCats.length > 0 && (
           <p className="text-[10px] text-slate-600 mt-2">{selectedIds.length} categoria(s) selecionada(s). Se nenhuma for marcada, o bot usa a primeira categoria ativa da cidade.</p>
         )}
       </div>

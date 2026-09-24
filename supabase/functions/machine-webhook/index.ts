@@ -246,7 +246,7 @@ async function processWebhook(body: Record<string, unknown>): Promise<void> {
 
     const { data: ride } = await supabase
       .from("rides")
-      .select("id, company_id, passenger_name, passenger_phone, status")
+      .select("id, company_id, passenger_name, passenger_phone, status, origin_label, destination_label, payment_method")
       .eq("machine_order_id", machineOrderId)
       .maybeSingle();
 
@@ -401,8 +401,95 @@ async function processWebhook(body: Record<string, unknown>): Promise<void> {
       driverChanged,
       vehicleColor,
     );
+
+    // When ride is first accepted (not a driver change), send passenger info to the driver's WhatsApp
+    // so they can access the masked chat and know the pickup address
+    if (internalStatus === "accepted" && ride.status !== "accepted" && driverPhone) {
+      try {
+        await sendPassengerInfoToDriver(
+          ride.company_id,
+          ride.id,
+          driverPhone,
+          ride.passenger_name ?? "Passageiro",
+          ride.origin_label ?? "Endereço não informado",
+          ride.destination_label ?? null,
+          ride.payment_method ?? null,
+        );
+      } catch { /* best-effort */ }
+    }
   } catch {
     // Silent fail in background — webhook already acknowledged
+  }
+}
+
+async function sendPassengerInfoToDriver(
+  companyId: string,
+  rideId: string,
+  driverPhone: string,
+  passengerName: string,
+  pickupAddress: string,
+  destinationAddress: string | null,
+  paymentMethod: string | null,
+): Promise<void> {
+  const cleanDriverPhone = toBrazilianWhatsAppNumber(driverPhone);
+  if (!cleanDriverPhone) return;
+
+  let message = `Passageiro: ${passengerName}\nEmbarque: ${pickupAddress}`;
+  if (destinationAddress) {
+    message += `\nDesembarque: ${destinationAddress}`;
+  }
+  if (paymentMethod) {
+    message += `\nPagamento: ${paymentMethod}`;
+  }
+  message += `\n\nChat com Passageiro esta ativo\n\nPara cancelar, responda "cancelar".`;
+
+  const { provider, fields: f } = await getCompanyWhatsAppConfig(companyId);
+
+  const isConfigured = (provider === "evolution" || provider === "veloov")
+    ? !!(f["evo_url"] && f["evo_token"])
+    : provider === "zapi"
+    ? !!(f["zapi_url"] && f["zapi_instance_token"])
+    : provider === "zpro"
+    ? !!(f["zpro_url"] && f["zpro_instance_token"])
+    : provider === "meta_cloud"
+    ? !!(f["meta_token"] && f["meta_phone_id"])
+    : provider === "custom_webhook"
+    ? !!f["custom_url"]
+    : false;
+
+  if (!isConfigured) {
+    await supabase.from("admin_logs").insert({
+      company_id: companyId,
+      source: "machine_webhook",
+      level: "warning",
+      message: `WhatsApp provider "${provider}" not configured — driver notification skipped for ride ${rideId.slice(0, 8)}`,
+      ride_id: rideId,
+    });
+    return;
+  }
+
+  try {
+    const ok = await sendWhatsAppMessage(provider, f, cleanDriverPhone, message);
+    if (ok) {
+      await saveChatMessage(companyId, cleanDriverPhone, "outgoing", message);
+      await supabase.from("admin_logs").insert({
+        company_id: companyId,
+        source: "machine_webhook",
+        level: "info",
+        message: `Passenger info sent to driver WhatsApp (${cleanDriverPhone}) for ride ${rideId.slice(0, 8)}`,
+        ride_id: rideId,
+      });
+    } else {
+      await supabase.from("admin_logs").insert({
+        company_id: companyId,
+        source: "machine_webhook",
+        level: "error",
+        message: `Failed to send passenger info to driver WhatsApp (${cleanDriverPhone}) for ride ${rideId.slice(0, 8)}`,
+        ride_id: rideId,
+      });
+    }
+  } catch {
+    // best-effort
   }
 }
 
@@ -468,9 +555,10 @@ async function handleMachineDriverMessage(
   // Forward to passenger via WhatsApp
   const { provider, fields: f } = await getCompanyWhatsAppConfig(ride.company_id);
   const cleanPhone = toBrazilianWhatsAppNumber(ride.passenger_phone);
+  const fwdContent = `Mensagem do Motorista: ${content}`;
   let delivered = false;
   try {
-    delivered = await sendWhatsAppMessage(provider, f, cleanPhone, content);
+    delivered = await sendWhatsAppMessage(provider, f, cleanPhone, fwdContent);
   } catch { /* best-effort */ }
 
   if (delivered) {
@@ -484,7 +572,7 @@ async function handleMachineDriverMessage(
   }
 
   // Also save to whatsapp_chats for unified history
-  await saveChatMessage(ride.company_id, cleanPhone, "outgoing", content);
+  await saveChatMessage(ride.company_id, cleanPhone, "outgoing", fwdContent);
 }
 
 async function fetchRideReceipt(companyId: string, machineOrderId: string): Promise<{ valor: number | null; valorOriginal: number | null; distancia: number | null; duracao: number | null }> {
@@ -669,7 +757,7 @@ async function sendWhatsAppNotification(
       message = "Seu motorista foi trocado! Confira os dados do novo motorista:";
     }
     if (driverName) {
-      message += `\n\nMotorista: ${driverName}`;
+      message += `\nMotorista: ${driverName}`;
       if (vehicleModel) message += `\nVeículo: ${vehicleModel}`;
       if (vehicleColor) message += `\nCor: ${vehicleColor}`;
       if (vehiclePlate) message += `\nPlaca: ${vehiclePlate}`;
@@ -687,7 +775,7 @@ async function sendWhatsAppNotification(
       }
     }
 
-    message += `\n\nPara cancelar, responda "cancelar".`;
+    message += `\n\nChat com Motorista esta ativo\n\nPara cancelar, responda "cancelar".`;
   }
 
   const { provider, fields: f } = await getCompanyWhatsAppConfig(companyId);
