@@ -10,6 +10,10 @@ const serviceClient = createClient(
   Deno.env.get("SUPABASE_URL")!,
   Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!,
 );
+const anonClient = createClient(
+  Deno.env.get("SUPABASE_URL")!,
+  Deno.env.get("SUPABASE_ANON_KEY")!,
+);
 
 interface WhatsAppConfig {
   provider?: string;
@@ -175,7 +179,7 @@ Deno.serve(async (req: Request) => {
     if (!authHeader) return response({ error: "Não autorizado" }, 401);
 
     const token = authHeader.replace(/^Bearer\s+/i, "");
-    const { data: userData, error: authError } = await serviceClient.auth.getUser(token);
+    const { data: userData, error: authError } = await anonClient.auth.getUser(token);
     const role = (userData.user?.app_metadata as { role?: string } | undefined)?.role;
     if (authError || !userData.user || role !== "superadmin") return response({ error: "Acesso restrito ao SuperAdmin" }, 403);
 
