@@ -905,10 +905,10 @@ async function getCompanyWhatsAppConfig(companyId: string): Promise<{ provider: 
     .eq("company_id", companyId)
     .maybeSingle();
 
-  if (instance && instance.connection_status === "connected" && instance.whatsapp_provider && instance.whatsapp_provider !== "veloov") {
+  if (instance && instance.connection_status === "connected" && instance.whatsapp_provider) {
     const fields: Record<string, string> = {};
     const p = instance.whatsapp_provider;
-    if (p === "evolution") {
+    if (p === "evolution" || p === "veloov") {
       if (instance.evolution_api_url) fields["evo_url"] = instance.evolution_api_url;
       if (instance.evolution_global_token) fields["evo_token"] = instance.evolution_global_token;
       if (instance.instance_name) fields["evo_instance"] = instance.instance_name;
