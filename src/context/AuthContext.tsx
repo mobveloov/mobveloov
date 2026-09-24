@@ -70,7 +70,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       setSession(s);
       if (s) {
         const role = (s.user.app_metadata as { role?: string })?.role;
-        loadUserData(s.user.id, role);
+        setTimeout(() => loadUserData(s.user.id, role), 0);
       } else {
         setIsSuperadmin(false);
         setCompany(null);

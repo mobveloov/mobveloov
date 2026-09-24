@@ -9,6 +9,7 @@ const corsHeaders = {
 const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
 const supabaseServiceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
 const supabase = createClient(supabaseUrl, supabaseServiceKey);
+const anonClient = createClient(supabaseUrl, Deno.env.get("SUPABASE_ANON_KEY")!);
 
 interface RequestBody {
   action: "create_admin" | "reset_password";
@@ -44,7 +45,7 @@ Deno.serve(async (req: Request) => {
     }
 
     const token = authHeader.replace(/^Bearer\s+/i, "");
-    const { data: userData, error: authErr } = await supabase.auth.getUser(token);
+    const { data: userData, error: authErr } = await anonClient.auth.getUser(token);
     if (authErr || !userData.user) {
       return new Response(JSON.stringify({ error: "Não autorizado" }), {
         status: 401,

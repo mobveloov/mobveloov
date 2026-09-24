@@ -17,22 +17,15 @@ function normalizeQrCode(value: unknown): string | null {
 }
 
 async function callBotApi(action: string, payload: Record<string, unknown> = {}): Promise<{ ok: boolean; data?: unknown; error?: string }> {
-  const body = { action, ...payload };
-  let result = await supabase.functions.invoke('bot-whatsapp-manage', { body });
-  const firstResponse = result.error?.context as Response | undefined;
+  const { data, error } = await supabase.functions.invoke('bot-whatsapp-manage', { body: { action, ...payload } });
 
-  if (firstResponse?.status === 401) {
-    await supabase.auth.refreshSession();
-    result = await supabase.functions.invoke('bot-whatsapp-manage', { body });
-  }
-
-  if (result.error) {
-    const response = result.error.context as Response | undefined;
+  if (error) {
+    const response = error.context as Response | undefined;
     const details = response ? await response.json().catch(() => ({})) as { error?: string } : {};
-    return { ok: false, error: details.error ?? result.error.message };
+    return { ok: false, error: details.error ?? error.message };
   }
 
-  return { ok: true, data: result.data };
+  return { ok: true, data };
 }
 
 interface AddressSuggestion {
