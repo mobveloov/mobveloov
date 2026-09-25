@@ -431,7 +431,7 @@ interface ParsedRideIntent {
 async function interpretMessageWithLLM(
   text: string,
   companyId: string | undefined,
-  context?: { city: string | null; state: string | null; totemReference: string | null },
+  context?: { city: string | null; state: string | null; totemReference: string | null; isTotemFixo: boolean },
 ): Promise<ParsedRideIntent | null> {
   let apiKey: string | undefined;
   let provider = "groq";
@@ -470,40 +470,54 @@ async function interpretMessageWithLLM(
   const cidade = context?.city || "cidade";
   const estado = context?.state || "estado";
   const refTotem = context?.totemReference || "";
+  const isTotemFixo = context?.isTotemFixo ?? false;
+  const tipoInstancia = isTotemFixo ? "TOTEM_FIXO" : "BOT_WHATSAPP";
 
   const systemPrompt = `Voce e a inteligencia artificial do sistema de despacho de corridas. Sua unica missao e extrair locais de origem e destino a partir de mensagens enviadas por passageiros e estrutura-las em um JSON limpo.
 
-### CONTEXTO DA OPERACAO DESTA INSTANCIA (DINAMICO)
+### CONTEXTO DA OPERACAO DESTA INSTANCIA (INJETADO PELO SISTEMA)
+- Tipo de Instancia: ${tipoInstancia} (Valores possiveis: "BOT_WHATSAPP" ou "TOTEM_FIXO")
 - Cidade de Operacao Padrao: ${cidade}
 - Estado: ${estado}
-${refTotem ? `- Localizacao/Referencia Adicional do Totem: ${refTotem}\n` : ""}
+${refTotem ? `- Endereco Fixo do Totem (Usar se Tipo for TOTEM_FIXO): ${refTotem}\n` : ""}
 ### REGRA DE OURO (ANTI-LOOP DE ERRO)
 Mesmo que o passageiro envie um local informal, apelido, nome de estabelecimento ou termo que nao pareca uma rua oficial (Ex: "Amarelinha", "Bar do Ze", "Mercadinho da Esquina", "Entrada da Cidade"), voce NUNCA deve retornar null ou vazio se houver alguma intencao de local.
 Se o local for informal, monte o endereco anexando a Cidade de Operacao Padrao e o Estado ao termo literal enviado pelo usuario.
-Exemplo: Se o cliente disser "To na amarelinha", o endereco_origem DEVE SER "Amarelinha, ${cidade} - ${estado}".
 
-### DIRETRIZES DE SAIDA:
-1. "endereco_origem": String contendo o local de partida. Use o nome da rua/numero ou o apelido literal enviado + ", ${cidade} - ${estado}". ${refTotem ? `Se a mensagem vier de um TOTEM fisico fixo e o usuario nao disser onde esta, use o valor de "${refTotem}" + ", ${cidade} - ${estado}".` : "Se o usuario nao mencionar onde esta, use null."}
-2. "endereco_destino": String contendo o local de chegada. Se o usuario disser que decide no carro ou nao informar, preencha estritamente com "Definir no carro, ${cidade} - ${estado}".
-3. NUNCA adicione textos complementares, saudacoes ou explicacoes. Retorne EXCLUSIVAMENTE o objeto JSON limpo para que o parser do sistema nao quebre.
+### DIRETRIZES DE EXTRACAO POR TIPO DE INSTANCIA:
 
-### FORMATO DE RETORNO OBRIGATORIO (JSON):
+1. SE TIPO DE INSTANCIA FOR "BOT_WHATSAPP":
+   - "endereco_origem": Extraia o local de partida digitado pelo cliente na mensagem e anexe ", ${cidade} - ${estado}".
+   - Se o cliente NAO informar a origem na mensagem, preencha com "Solicitar localizacao, ${cidade} - ${estado}".
+
+2. SE TIPO DE INSTANCIA FOR "TOTEM_FIXO":
+   - "endereco_origem": Ignore qualquer tentativa de extracao de partida do texto. Defina este campo OBRIGATORIAMENTE com o valor contido em: "${refTotem}, ${cidade} - ${estado}".
+
+3. PARA AMBOS OS CASOS (DESTINO):
+   - "endereco_destino": Extraia o local de chegada digitado pelo cliente e anexe ", ${cidade} - ${estado}".
+   - Se o usuario disser que decide no carro ou nao informar o destino, preencha estritamente com "Definir no carro, ${cidade} - ${estado}".
+
+### FORMATO DE RETORNO OBRIGATORIO (JSON)
+NUNCA adicione textos complementares, saudacoes ou explicacoes. Retorne EXCLUSIVAMENTE o objeto JSON limpo:
 {
   "quer_corrida": true/false,
   "tipo_veiculo": "moto" | "carro" | null,
-  "endereco_origem": "string contendo o endereco tratado ou o termo literal + cidade/estado",
-  "endereco_destino": "string contendo o endereco tratado ou o termo literal + cidade/estado"
+  "endereco_origem": "string contendo o endereco de partida tratado + cidade/estado",
+  "endereco_destino": "string contendo o endereco de chegada tratado + cidade/estado"
 }
 
-### EXEMPLOS DE COMPORTAMENTO ESPERADO:
-Input: "Quero uma corrida da rodoviaria pro hospital"
-Output: {"quer_corrida":true,"tipo_veiculo":null,"endereco_origem":"Rodoviaria, ${cidade} - ${estado}","endereco_destino":"Hospital, ${cidade} - ${estado}"}
+### EXEMPLOS DE COMPORTAMENTO:
 
-Input: "Quero um carro na rua Arthur mesquita 57 vou para amarelinha do centro"
-Output: {"quer_corrida":true,"tipo_veiculo":"carro","endereco_origem":"rua Arthur mesquita 57, ${cidade} - ${estado}","endereco_destino":"Amarelinha do centro, ${cidade} - ${estado}"}
+Exemplo 1 (BOT_WHATSAPP - Local Informal):
+Contexto: Tipo="BOT_WHATSAPP", Cidade="Pitangueiras", Estado="SP"
+Input: "Quero uma corrida da Amarelinha pro Bar do Ze"
+Output: {"quer_corrida":true,"tipo_veiculo":null,"endereco_origem":"Amarelinha, Pitangueiras - SP","endereco_destino":"Bar do Ze, Pitangueiras - SP"}
 
-Input: "Nao informar destino"
-Output: {"quer_corrida":false,"tipo_veiculo":null,"endereco_origem":null,"endereco_destino":"Definir no carro, ${cidade} - ${estado}"}`;
+${refTotem ? `Exemplo 2 (TOTEM_FIXO - Cliente so digita o destino):
+Contexto: Tipo="TOTEM_FIXO", Cidade="${cidade}", Estado="${estado}", Endereco_Totem="${refTotem}"
+Input: "Quero ir para o Hospital Sao Paulo"
+Output: {"quer_corrida":true,"tipo_veiculo":null,"endereco_origem":"${refTotem}, ${cidade} - ${estado}","endereco_destino":"Hospital Sao Paulo, ${cidade} - ${estado}"}
+` : ""}`;
 
   try {
     const resp = await fetch(apiUrl, {
@@ -1652,6 +1666,7 @@ As mensagens do passageiro serao encaminhadas a partir de agora.`;
           city: llmCtx.city,
           state: llmCtx.state,
           totemReference: llmCtx.pickupAddress || llmCtx.totemName,
+          isTotemFixo: !!llmCtx.pickupAddress,
         });
         if (llmResult && llmResult.endereco_origem) {
           addressText = llmResult.endereco_origem;
@@ -3921,3 +3936,4 @@ async function handleIncomingMessage(companyId: string, data: Record<string, unk
 // v8.5 support timeout Fri Sep 25 14:10:55 UTC 2026
 // v9.0 NLU + fuzzy POI + Google geocoding + failure loop + machineMessage sanitize Fri Sep 25 17:45:00 UTC 2026
 // v9.1 NLU anti-error-loop prompt with dynamic city/state/totem context Fri Sep 25 18:00:00 UTC 2026
+// v9.2 NLU TOTEM_FIXO vs BOT_WHATSAPP instance type distinction Fri Sep 25 18:15:00 UTC 2026
