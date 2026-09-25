@@ -941,8 +941,27 @@ async function handleBotMessage(
   switch (conv.state) {
     case "menu_inicial":
     case "inicio": {
-      // If passenger sent location or audio without text, treat as ride request
-      if (!text && (location || audio)) {
+      // A location sent from the menu is already the pickup point.
+      if (!text && location) {
+        const pickupAddress = await reverseGeocode(location.lat, location.lng) ??
+          `Localizacao enviada (lat: ${location.lat.toFixed(6)}, lng: ${location.lng.toFixed(6)})`;
+        await supabase.from("bot_conversas")
+          .update({
+            state: "aguardando_destino",
+            address_text: pickupAddress,
+            address_lat: location.lat,
+            address_lng: location.lng,
+            address_formatted: pickupAddress,
+            address_is_fallback: false,
+            updated_at: new Date().toISOString(),
+          })
+          .eq("id", conv.id);
+        await sendBotMessage(companyId, cleanPhone, connectionId, msg("ask_destination", "\u{1F3AF} Para onde voce vai?\n\n1 - Digitar o Endereco de Destino \u{1F4DD}\n2 - Nao informar Endereco \u{1F6AB}\n\nResponda com o numero da opcao."));
+        break;
+      }
+
+      // If passenger sent audio without text, treat it as a ride request.
+      if (!text && audio) {
         await supabase.from("bot_conversas")
           .update({ state: "aguardando_endereco", updated_at: new Date().toISOString() })
           .eq("id", conv.id);
