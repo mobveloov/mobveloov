@@ -1,4 +1,5 @@
 // WhatsApp webhook: Evolution API events + bot ride-request flow — v8 with security hardening (token required)
+// v8.1: bot conversation resets on ride end (cancel/complete) so passengers can request again.
 import { createClient } from "npm:@supabase/supabase-js@2.57.4";
 
 const corsHeaders = {
@@ -1170,9 +1171,9 @@ As mensagens do passageiro serao encaminhadas a partir de agora.`;
           ride_id: result.rideId,
         });
       } else {
-        await sendBotMessage(companyId, cleanPhone, connectionId, msg("ride_error", `Houve um erro ao solicitar a corrida: ${result.error ?? "erro desconhecido"}. Tente novamente enviando o endereco.`));
+        await sendBotMessage(companyId, cleanPhone, connectionId, msg("ride_error", `Houve um erro ao solicitar a corrida: ${result.error ?? "erro desconhecido"}.\n\nPara tentar novamente, envie uma mensagem.`));
         await supabase.from("bot_conversas")
-          .update({ state: "aguardando_endereco", updated_at: new Date().toISOString() })
+          .update({ state: "menu_inicial", ride_id: null, updated_at: new Date().toISOString() })
           .eq("id", conv.id);
       }
       break;
@@ -1214,7 +1215,7 @@ As mensagens do passageiro serao encaminhadas a partir de agora.`;
 
     case "corrida_solicitada": {
       await supabase.from("bot_conversas")
-        .update({ state: "menu_inicial", updated_at: new Date().toISOString() })
+        .update({ state: "menu_inicial", ride_id: null, updated_at: new Date().toISOString() })
         .eq("id", conv.id);
       await sendBotMessage(companyId, cleanPhone, connectionId, msg("welcome_back", "Ola! Como podemos ajudar?\n\n1 - Solicitar corrida\n2 - Suporte\n\nResponda com o numero da opcao."));
       break;
