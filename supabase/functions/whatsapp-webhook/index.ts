@@ -569,18 +569,28 @@ async function decryptWhatsAppAudio(
   } else if (Array.isArray(mediaKeyRaw)) {
     mediaKey = new Uint8Array(mediaKeyRaw as number[]);
   } else {
-    // Object with type/data (Buffer-like) — try to extract
     const obj = mediaKeyRaw as Record<string, unknown>;
     if (obj?.type === "Buffer" && Array.isArray(obj.data)) {
       mediaKey = new Uint8Array(obj.data as number[]);
     } else {
-      await supabase.from("admin_logs").insert({
-        company_id: companyId,
-        source: "whatsapp_webhook",
-        level: "error",
-        message: `mediaKey unknown format: ${typeof mediaKeyRaw}, keys=${obj ? Object.keys(obj).join(",") : "n/a"}`,
-      });
-      return null;
+      // Object with numeric keys (0,1,2,...) — serialized Uint8Array/Buffer
+      const keys = obj ? Object.keys(obj) : [];
+      const allNumeric = keys.length > 0 && keys.every((k) => /^\d+$/.test(k));
+      if (allNumeric) {
+        const maxIdx = Math.max(...keys.map((k) => Number(k)));
+        mediaKey = new Uint8Array(maxIdx + 1);
+        for (const k of keys) {
+          mediaKey[Number(k)] = Number(obj[k]);
+        }
+      } else {
+        await supabase.from("admin_logs").insert({
+          company_id: companyId,
+          source: "whatsapp_webhook",
+          level: "error",
+          message: `mediaKey unknown format: ${typeof mediaKeyRaw}, keys=${keys.join(",")}`,
+        });
+        return null;
+      }
     }
   }
 
