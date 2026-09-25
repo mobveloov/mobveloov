@@ -765,13 +765,14 @@ function normalizePlaceText(value: string | null | undefined): string | null {
 // NLU: Uses LLM (OpenAI/Groq chat completion) to extract structured ride intent from a free-form message.
 // Falls back to null if no LLM key is configured, letting the regex-based parseCombinedAddress handle it.
 interface ParsedRideIntent {
-  quer_corrida: boolean;
-  tipo_veiculo: "moto" | "carro" | null;
-  eh_rua_oficial: boolean;
-  endereco_origem: string | null;
-  texto_embarque_motorista: string | null;
-  endereco_destino: string | null;
+  endereco_valido_identificado: boolean;
+  rua_limpa: string | null;
+  numero_limpo: string | null;
+  texto_exibicao_motorista: string | null;
+  complemento_observacao: string | null;
+  // Destination fields (extracted by the LLM from the same message)
   texto_destino_motorista: string | null;
+  eh_rua_oficial: boolean;
 }
 
 async function interpretMessageWithLLM(
@@ -823,89 +824,65 @@ async function interpretMessageWithLLM(
   const estado = context?.state || "estado";
   const refTotem = context?.totemReference || "";
   const isTotemFixo = context?.isTotemFixo ?? false;
-  const tipoInstancia = isTotemFixo ? "TOTEM_FIXO" : "BOT_WHATSAPP";
-  const fallbackAddr = refTotem ? `${refTotem}, ${cidade} - ${estado}` : `${cidade} - ${estado}`;
 
-  const systemPrompt = `Voce e o modulo unificado de Inteligencia Artificial e Engenharia de Backend de uma plataforma de mobilidade urbana profissional (que atende Bot de Corridas no WhatsApp e Totens Fisicos). Sua funcao e receber a mensagem de texto livre do passageiro, processar as regras de negocio, validar enderecos via OpenStreetMap e estruturar o payload de envio para a API da Machine.
+  const systemPrompt = `Voce e a inteligencia artificial do sistema de despacho de corridas, especializada em engenharia geografica e estruturacao de enderecos (NLU). Sua unica missao e receber o texto do passageiro, limpar o endereco de embarque e o destino, e estruturar para validacao no OpenStreetMap.
 
-### CONTEXTO DA OPERACAO DESTA INSTANCIA (INJETADO DINAMICAMENTE PELO SISTEMA)
-- Canal de Entrada: ${tipoInstancia} (Valores possiveis: "BOT_WHATSAPP" ou "TOTEM_FIXO")
+### CONTEXTO DA LOCALIDADE DA INSTANCIA (INJETADO PELO BANCO DE DADOS)
 - Cidade de Operacao Padrao: ${cidade}
 - Estado: ${estado}
-${refTotem ? `- Endereco de Fallback Obrigatorio (Mapa): "${fallbackAddr}"\n` : ""}
-### REGRA DE OURO 1: VALIDACAO INTELIGENTE (OPENSTREETMAP & FALLBACK)
-1. Se o usuario digitar um endereco com nome de rua/avenida (Ex: "Rua Arthur Mesquita 57"): o sistema deve tentar estruturar adicionando o Bairro (se identificado) junto com a Cidade e Estado Cadastrados para validacao no OpenStreetMap.
-2. Se o OpenStreetMap falhar (nao encontrar o endereco) OU se o cliente digitar um local informal/apelido (Ex: "Amarelinha da Avenida", "Prainha"): defina a geolocalizacao_origem obrigatoriamente como o Endereco de Fallback ("${fallbackAddr}").
-3. O texto digitado pelo cliente NUNCA deve ser perdido. Mesmo usando o fallback no mapa, o texto exato da rua ou apelido deve ir para o motorista ler.
-
-### REGRA DE OURO 2: FLUXO DIRETO E CALCULO POR KM
-1. NAO responda com "Entendi:", "Validando...", etc. O sistema vai gerar DIRETAMENTE o bloco final de confirmacao.
-2. A geolocalizacao_destino deve ser configurada obrigatoriamente como NULL para permitir o calculo livre por KM rodado dependendo da categoria escolhida pelo passageiro.
-
-### DIRETRIZES DE FORMATACAO DOS LOCAIS (OBRIGATORIO: TUDO EM MAIUSCULO)
-1. Limpe termos conectivos de conversacao (Ex: "Estou na rua arthur mesquita 57" -> "RUA ARTHUR MESQUITA, 57").
-2. Formate todo o texto descritivo de embarque e destino em LETRAS MAIUSCULAS.
-3. NUNCA inclua frases introdutorias como "EU ESTOU AQUI NA", "ESTOU NA", "TO NO", "ME PEGA NA", "QUERO IR PARA", "VOU PARA", "LEVA NA" nos campos texto_embarque_motorista ou texto_destino_motorista. Esses campos devem conter APENAS o nome do local ou endereco limpo.
-4. Se o Canal de Entrada for "TOTEM_FIXO", o local de embarque deve ser padronizado como "TOTEM - ${refTotem ? refTotem.toUpperCase() : "RUA PERNAMBUCO, 402"}".
-5. Se o destino nao for informado, use "DEFINIR NO CARRO".
-
-### PARTE 1: DIRETRIZES DE MAPEAMENTO LOGICO DO JSON:
-1. TRATAMENTO DO EMBARQUE (ORIGEM):
-   - "eh_rua_oficial": true se o cliente digitou uma rua/avenida com numero (Ex: "Rua Arthur Mesquita 57"). false se for apelido/local informal (Ex: "Amarelinha da Avenida").
-   - "endereco_origem": Se for rua oficial, estruture como "rua + numero, ${cidade} - ${estado}" para validacao no OpenStreetMap. Se for apelido/local informal OU se for TOTEM_FIXO, preencha obrigatoriamente com "${fallbackAddr}".
-   - "texto_embarque_motorista": Extraia APENAS o nome da rua/apelido do local de partida em MAIUSCULO, SEM frases introdutorias. Ex: "Estou na rua arthur mesquita 57" -> "RUA ARTHUR MESQUITA, 57" (NUNCA "EU ESTOU AQUI NA RUA ARTHUR MESQUITA 57"). Se for Totem fixo, preencha com "TOTEM - ${refTotem ? refTotem.toUpperCase() : "RUA PERNAMBUCO, 402"}".
-2. TRATAMENTO DO DESTINO (ZERA GEOLOCALIZACAO PARA CALCULO POR KM):
-   - "endereco_destino": Defina OBRIGATORIAMENTE como null.
-   - "texto_destino_motorista": Extraia APENAS o nome do local/apelido de destino em MAIUSCULO, SEM frases introdutorias. Ex: "e vou para a prainha" -> "PRAINHA" (NUNCA "VOU PARA A PRAINHA"). Se nao informado, use "DEFINIR NO CARRO".
+${refTotem ? `- Endereco de Fallback (Totem): "${refTotem}, ${cidade} - ${estado}"\n` : ""}
+### DIRETRIZES DE LIMPEZA E AUTOCOMPLETAR:
+1. IDENTIFICACAO DE RUA E NUMERO: Pegue apenas o nome do logradouro (Rua, Avenida, Praca) e o numero digitado. Remova saudacoes ou textos complementares (Ex: "To aqui na rua arthur mesquita num 57" -> "Rua Arthur Mesquita, 57").
+2. CONCATENACAO OBRIGATORIA: Adicione sempre a Cidade de Operacao Padrao e o Estado ao final do endereco estruturado para que a API de mapas faca a busca restrita ao municipio correto.
+3. PADRONIZACAO DE CAIXA ALTA (UPPERCASE): O texto final que o motorista vai ler no aplicativo deve ser formatado estritamente em LETRAS MAIUSCULAS.
+4. COBERTURA DE COMPLEMENTOS: Se o usuario informar um bloco, apartamento ou ponto de referencia ao lado do numero, extraia essa informacao para o campo de observacoes.
+5. SEPARACAO EMBARQUE/DESTINO: Se a mensagem contiver tanto o embarque quanto o destino (ex: "estou na rua X e vou para o hospital"), extraia o destino no campo texto_destino_motorista em MAIUSCULO, limpo, sem frases introdutorias.
+6. Se o destino nao for informado, use "DEFINIR NO CARRO".
+7. Se for apelido/local informal (Ex: "Amarelinha da Avenida", "Prainha"), defina endereco_valido_identificado como false e preencha apenas o texto_exibicao_motorista com o apelido em MAIUSCULO.
 
 ### FORMATO DE SAIDA EXCLUSIVO (JSON)
-Retorne APENAS um objeto JSON valido. Sem textos introdutorios ou explicativos.
+Retorne EXCLUSIVAMENTE o objeto JSON valido abaixo, sem qualquer texto introdutorio ou conclusivo:
 {
-  "quer_corrida": true/false,
-  "tipo_veiculo": "moto" | "carro" | null,
-  "eh_rua_oficial": true/false,
-  "endereco_origem": "string - endereco estruturado para OSM ou fallback",
-  "texto_embarque_motorista": "STRING EM MAIUSCULO PARA O MOTORISTA",
-  "endereco_destino": null,
-  "texto_destino_motorista": "STRING EM MAIUSCULO PARA O MOTORISTA"
+  "endereco_valido_identificado": true/false,
+  "rua_limpa": "Apenas o Nome da Rua tratado em formato correto, ou null se for apelido",
+  "numero_limpo": "Apenas o numero, ou null",
+  "texto_exibicao_motorista": "RUA E NUMERO EM LETRAS MAIUSCULAS, ou APELIDO EM MAIUSCULAS",
+  "complemento_observacao": "Ponto de referencia ou complemento, ou null",
+  "texto_destino_motorista": "NOME DO DESTINO EM MAIUSCULAS, ou DEFINIR NO CARRO",
+  "eh_rua_oficial": true/false
 }
 
 ### EXEMPLOS DE COMPORTAMENTO:
 
-Exemplo 1 (BOT_WHATSAPP - Rua oficial que passa pela checagem do OSM):
-Contexto: Canal="BOT_WHATSAPP", Cidade="Pitangueiras", Estado="SP"
-Input: "Estou na rua arthur mesquita 57 e vou para a prainha"
-Output: {"quer_corrida":true,"tipo_veiculo":null,"eh_rua_oficial":true,"endereco_origem":"Rua Arthur Mesquita, 57, Pitangueiras - SP","texto_embarque_motorista":"RUA ARTHUR MESQUITA, 57","endereco_destino":null,"texto_destino_motorista":"PRAINHA"}
+Exemplo 1:
+Contexto: Cidade="${cidade}", Estado="${estado}"
+Input: "Estou aqui na arthur mesquita numero 57 perto da igreja e vou para o hospital"
+Output: {"endereco_valido_identificado":true,"rua_limpa":"Rua Arthur Mesquita","numero_limpo":"57","texto_exibicao_motorista":"RUA ARTHUR MESQUITA, 57","complemento_observacao":"PERTO DA IGREJA","texto_destino_motorista":"HOSPITAL","eh_rua_oficial":true}
 
-Exemplo 2 (BOT_WHATSAPP - Local informal - cai direto no Fallback do mapa):
-Contexto: Canal="BOT_WHATSAPP", Cidade="Pitangueiras", Estado="SP", Fallback="Rua Pernambuco, 402 - Pitangueiras - SP"
+Exemplo 2:
+Contexto: Cidade="${cidade}", Estado="${estado}"
 Input: "Me pega na amarelinha da avenida e leva na prainha"
-Output: {"quer_corrida":true,"tipo_veiculo":null,"eh_rua_oficial":false,"endereco_origem":"Rua Pernambuco, 402 - Pitangueiras - SP","texto_embarque_motorista":"AMARELINHA DA AVENIDA","endereco_destino":null,"texto_destino_motorista":"PRAINHA"}
+Output: {"endereco_valido_identificado":false,"rua_limpa":null,"numero_limpo":null,"texto_exibicao_motorista":"AMARELINHA DA AVENIDA","complemento_observacao":null,"texto_destino_motorista":"PRAINHA","eh_rua_oficial":false}
 
-Exemplo 3 (BOT_WHATSAPP - Audio transcrito com frase completa - LIMPE A FRASE):
-Contexto: Canal="BOT_WHATSAPP", Cidade="Pitangueiras", Estado="SP"
-Input: "Eu estou aqui na rua arthur mesquita 57 e vou no bar do carlao"
-Output: {"quer_corrida":true,"tipo_veiculo":null,"eh_rua_oficial":true,"endereco_origem":"Rua Arthur Mesquita, 57, Pitangueiras - SP","texto_embarque_motorista":"RUA ARTHUR MESQUITA, 57","endereco_destino":null,"texto_destino_motorista":"BAR DO CARLAO"}
-
-Exemplo 4 (BOT_WHATSAPP - Variacao "to no" - LIMPE A FRASE):
-Contexto: Canal="BOT_WHATSAPP", Cidade="Pitangueiras", Estado="SP"
-Input: "to no bar do carlao e quero ir pro hospital"
-Output: {"quer_corrida":true,"tipo_veiculo":null,"eh_rua_oficial":false,"endereco_origem":"Rua Pernambuco, 402 - Pitangueiras - SP","texto_embarque_motorista":"BAR DO CARLAO","endereco_destino":null,"texto_destino_motorista":"HOSPITAL"}
-
-Exemplo 5 (BOT_WHATSAPP - Variacao "me busca na" - LIMPE A FRASE):
-Contexto: Canal="BOT_WHATSAPP", Cidade="Pitangueiras", Estado="SP"
-Input: "me busca na padaria do joao e leva ate a rodoviaria"
-Output: {"quer_corrida":true,"tipo_veiculo":null,"eh_rua_oficial":false,"endereco_origem":"Rua Pernambuco, 402 - Pitangueiras - SP","texto_embarque_motorista":"PADARIA DO JOAO","endereco_destino":null,"texto_destino_motorista":"RODOVIARIA"}
-
-Exemplo 6 (BOT_WHATSAPP - Variacao "vou la no" - LIMPE A FRASE):
-Contexto: Canal="BOT_WHATSAPP", Cidade="Pitangueiras", Estado="SP"
+Exemplo 3:
+Contexto: Cidade="${cidade}", Estado="${estado}"
 Input: "Eu quero um carro aqui na amarelinha da avenida porque eu vou la no pesqueiro do dio"
-Output: {"quer_corrida":true,"tipo_veiculo":null,"eh_rua_oficial":false,"endereco_origem":"Rua Pernambuco, 402 - Pitangueiras - SP","texto_embarque_motorista":"AMARELINHA DA AVENIDA","endereco_destino":null,"texto_destino_motorista":"PESQUEIRO DO DIO"}
+Output: {"endereco_valido_identificado":false,"rua_limpa":null,"numero_limpo":null,"texto_exibicao_motorista":"AMARELINHA DA AVENIDA","complemento_observacao":null,"texto_destino_motorista":"PESQUEIRO DO DIO","eh_rua_oficial":false}
 
-${refTotem ? `Exemplo 6 (TOTEM_FIXO - Cliente so digita o destino):
-Contexto: Canal="TOTEM_FIXO", Cidade="${cidade}", Estado="${estado}", Fallback="${fallbackAddr}"
+Exemplo 4:
+Contexto: Cidade="${cidade}", Estado="${estado}"
+Input: "to no bar do carlao e quero ir pro hospital"
+Output: {"endereco_valido_identificado":false,"rua_limpa":null,"numero_limpo":null,"texto_exibicao_motorista":"BAR DO CARLAO","complemento_observacao":null,"texto_destino_motorista":"HOSPITAL","eh_rua_oficial":false}
+
+Exemplo 5:
+Contexto: Cidade="${cidade}", Estado="${estado}"
+Input: "rua pernambuco 402 centro"
+Output: {"endereco_valido_identificado":true,"rua_limpa":"Rua Pernambuco","numero_limpo":"402","texto_exibicao_motorista":"RUA PERNAMBUCO, 402","complemento_observacao":"CENTRO","texto_destino_motorista":"DEFINIR NO CARRO","eh_rua_oficial":true}
+
+${refTotem ? `Exemplo 6 (TOTEM_FIXO):
+Contexto: Cidade="${cidade}", Estado="${estado}", Fallback="${refTotem}, ${cidade} - ${estado}"
 Input: "Quero ir para o Hospital Sao Paulo"
-Output: {"quer_corrida":true,"tipo_veiculo":null,"eh_rua_oficial":false,"endereco_origem":"${fallbackAddr}","texto_embarque_motorista":"TOTEM - ${refTotem.toUpperCase()}","endereco_destino":null,"texto_destino_motorista":"HOSPITAL SAO PAULO"}
+Output: {"endereco_valido_identificado":false,"rua_limpa":null,"numero_limpo":null,"texto_exibicao_motorista":"TOTEM - ${refTotem.toUpperCase()}","complemento_observacao":null,"texto_destino_motorista":"HOSPITAL SAO PAULO","eh_rua_oficial":false}
 ` : ""}`;
 
   try {
@@ -952,21 +929,32 @@ Output: {"quer_corrida":true,"tipo_veiculo":null,"eh_rua_oficial":false,"enderec
       });
       return null;
     }
-    if (!parsed.endereco_origem) {
+    if (!parsed.texto_exibicao_motorista) {
       await supabase.from("admin_logs").insert({
         source: "whatsapp_webhook", level: "warn",
-        message: `LLM returned no endereco_origem: ${content.slice(0, 300)}`,
+        message: `LLM returned no texto_exibicao_motorista: ${content.slice(0, 300)}`,
       });
     }
+    // Convert new format to what callers expect
+    const ruaLimpa = parsed.rua_limpa ?? null;
+    const numeroLimpo = parsed.numero_limpo ?? null;
+    const isOfficial = !!parsed.endereco_valido_identificado && !!parsed.eh_rua_oficial;
+    const structuredOrigin = isOfficial && ruaLimpa
+      ? `${ruaLimpa}${numeroLimpo ? `, ${numeroLimpo}` : ""}, ${cidade} - ${estado}`
+      : null;
     return {
-      quer_corrida: !!parsed.quer_corrida,
-      tipo_veiculo: parsed.tipo_veiculo === "moto" ? "moto" : parsed.tipo_veiculo === "carro" ? "carro" : null,
-      eh_rua_oficial: !!parsed.eh_rua_oficial,
-      endereco_origem: parsed.endereco_origem ?? null,
-      texto_embarque_motorista: parsed.texto_embarque_motorista ?? null,
-      endereco_destino: parsed.endereco_destino ?? null,
+      endereco_valido_identificado: !!parsed.endereco_valido_identificado,
+      rua_limpa: ruaLimpa,
+      numero_limpo: numeroLimpo,
+      texto_exibicao_motorista: parsed.texto_exibicao_motorista ?? null,
+      complemento_observacao: parsed.complemento_observacao ?? null,
       texto_destino_motorista: parsed.texto_destino_motorista ?? null,
-    };
+      eh_rua_oficial: isOfficial,
+      // Compatibility fields for callers that still use the old interface
+      endereco_origem: structuredOrigin,
+      texto_embarque_motorista: parsed.texto_exibicao_motorista ?? null,
+      endereco_destino: null,
+    } as ParsedRideIntent;
   } catch (err) {
     const errMsg = err instanceof Error ? err.message : String(err);
     await supabase.from("admin_logs").insert({
@@ -2370,13 +2358,20 @@ As mensagens do passageiro serao encaminhadas a partir de agora.`;
             totemReference: llmCtx.pickupAddress || llmCtx.totemName,
             isTotemFixo: !!llmCtx.pickupAddress,
           });
-          if (llmResult && llmResult.endereco_origem) {
-            addressText = normalizePlaceText(llmResult.endereco_origem);
-            combinedDest = normalizePlaceText(llmResult.endereco_destino);
-            originReference = combined ? normalizePlaceText(combined.pickup) : cleanPickupReference(llmResult.texto_embarque_motorista ?? llmResult.endereco_origem);
-            destinationReference = combined ? normalizePlaceText(combined.destination) : normalizePlaceText(llmResult.texto_destino_motorista) ?? combinedDest;
-            llmIsRuaOficial = !!llmResult.eh_rua_oficial || !!combined && looksLikeOfficialAddress(combined.pickup);
-            if (combined && looksLikeOfficialAddress(combined.pickup)) addressText = normalizePlaceText(combined.pickup);
+          if (llmResult && llmResult.texto_exibicao_motorista) {
+            const driverText = normalizePlaceText(llmResult.texto_exibicao_motorista)!;
+            originReference = driverText;
+            const llmDest = normalizePlaceText(llmResult.texto_destino_motorista);
+            destinationReference = (llmDest && llmDest !== "DEFINIR NO CARRO") ? llmDest : null;
+            combinedDest = destinationReference;
+            llmIsRuaOficial = !!llmResult.eh_rua_oficial || (!!combined && looksLikeOfficialAddress(combined.pickup));
+            if (llmIsRuaOficial && llmResult.endereco_origem) {
+              addressText = normalizePlaceText(llmResult.endereco_origem);
+            } else if (combined && looksLikeOfficialAddress(combined.pickup)) {
+              addressText = normalizePlaceText(combined.pickup);
+            } else {
+              addressText = driverText;
+            }
           } else if (combined) {
             addressText = normalizePlaceText(combined.pickup);
             combinedDest = normalizePlaceText(combined.destination);
@@ -2402,13 +2397,20 @@ As mensagens do passageiro serao encaminhadas a partir de agora.`;
           totemReference: llmCtx.pickupAddress || llmCtx.totemName,
           isTotemFixo: !!llmCtx.pickupAddress,
         });
-        if (llmResult && llmResult.endereco_origem) {
-          addressText = normalizePlaceText(llmResult.endereco_origem);
-          combinedDest = normalizePlaceText(llmResult.endereco_destino);
-          originReference = combined ? normalizePlaceText(combined.pickup) : cleanPickupReference(llmResult.texto_embarque_motorista ?? llmResult.endereco_origem);
-          destinationReference = combined ? normalizePlaceText(combined.destination) : normalizePlaceText(llmResult.texto_destino_motorista) ?? combinedDest;
-          llmIsRuaOficial = !!llmResult.eh_rua_oficial || !!combined && looksLikeOfficialAddress(combined.pickup);
-          if (combined && looksLikeOfficialAddress(combined.pickup)) addressText = normalizePlaceText(combined.pickup);
+        if (llmResult && llmResult.texto_exibicao_motorista) {
+          const driverText = normalizePlaceText(llmResult.texto_exibicao_motorista)!;
+          originReference = driverText;
+          const llmDest = normalizePlaceText(llmResult.texto_destino_motorista);
+          destinationReference = (llmDest && llmDest !== "DEFINIR NO CARRO") ? llmDest : null;
+          combinedDest = destinationReference;
+          llmIsRuaOficial = !!llmResult.eh_rua_oficial || (!!combined && looksLikeOfficialAddress(combined.pickup));
+          if (llmIsRuaOficial && llmResult.endereco_origem) {
+            addressText = normalizePlaceText(llmResult.endereco_origem);
+          } else if (combined && looksLikeOfficialAddress(combined.pickup)) {
+            addressText = normalizePlaceText(combined.pickup);
+          } else {
+            addressText = driverText;
+          }
         } else if (combined) {
           addressText = normalizePlaceText(combined.pickup);
           combinedDest = normalizePlaceText(combined.destination);
