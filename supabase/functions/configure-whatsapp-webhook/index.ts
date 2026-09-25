@@ -40,8 +40,9 @@ async function configureEvolutionWebhook(
           enabled: true,
           url: webhookUrl,
           events: WEBHOOK_EVENTS,
-          webhook_by_event: true,
-          webhook_base64: true,
+          webhookByEvents: true,
+          webhookBase64: true,
+          base64: true,
           headers: {
             apikey: webhookToken,
           },
