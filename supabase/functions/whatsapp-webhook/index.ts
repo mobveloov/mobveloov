@@ -328,6 +328,217 @@ async function sendWhatsAppMessageWithProvider(
   return false;
 }
 
+// ── Bot: Interactive buttons (WhatsApp native) ──
+
+interface InteractiveButton {
+  id: string;
+  label: string;
+}
+
+async function sendInteractiveButtons(
+  companyId: string,
+  phone: string,
+  connectionId: string | undefined,
+  bodyText: string,
+  buttons: InteractiveButton[],
+  footerText?: string,
+): Promise<void> {
+  try {
+    let provider: string;
+    let f: Record<string, string>;
+    if (connectionId) {
+      const botConfig = await getBotConnectionConfig(connectionId);
+      if (botConfig) { provider = botConfig.provider; f = botConfig.fields; }
+      else { const c = await getCompanyWhatsAppConfig(companyId); provider = c.provider; f = c.fields; }
+    } else {
+      const c = await getCompanyWhatsAppConfig(companyId); provider = c.provider; f = c.fields;
+    }
+
+    // WhatsApp limits buttons to 3 per message. If more, use a list instead.
+    const sent = await sendInteractiveWithProvider(provider, f, phone, bodyText, buttons, footerText);
+    if (sent) {
+      // Save a text representation of the message for chat history
+      const buttonText = buttons.map((b) => `▶ ${b.label}`).join("\n");
+      await saveMessage(companyId, phone, "outgoing", `${bodyText}${footerText ? `\n${footerText}` : ""}\n${buttonText}`);
+    } else {
+      // Fallback to plain text if interactive buttons fail
+      const fallbackMsg = `${bodyText}${footerText ? `\n${footerText}` : ""}\n\n${buttons.map((b, i) => `${i + 1} - ${b.label}`).join("\n")}\n\nResponda com o numero da opcao.`;
+      await sendBotMessage(companyId, phone, connectionId, fallbackMsg);
+    }
+  } catch {
+    // Last-resort fallback to text
+    const fallbackMsg = `${bodyText}\n\n${buttons.map((b, i) => `${i + 1} - ${b.label}`).join("\n")}\n\nResponda com o numero da opcao.`;
+    await sendBotMessage(companyId, phone, connectionId, fallbackMsg);
+  }
+}
+
+async function sendInteractiveWithProvider(
+  provider: string,
+  f: Record<string, string>,
+  cleanPhone: string,
+  bodyText: string,
+  buttons: InteractiveButton[],
+  footerText?: string,
+): Promise<boolean> {
+  if (provider === "evolution" || provider === "veloov") {
+    const url = f["evo_url"] ?? "";
+    const token = f["evo_token"] ?? "";
+    if (!url || !token) return false;
+    const instance = f["evo_instance"] || "veloov";
+    // Evolution API sendButtons endpoint
+    const resp = await fetch(`${url}/message/sendButtons/${instance}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", apikey: token },
+      body: JSON.stringify({
+        number: cleanPhone,
+        title: "",
+        description: bodyText,
+        footer: footerText ?? "",
+        type: "buttons",
+        buttons: buttons.map((b) => ({ buttonId: b.id, buttonText: { displayText: b.label }, type: 1 })),
+        delay: 1200,
+        presence: "available",
+      }),
+    });
+    return resp.ok;
+  }
+
+  if (provider === "meta_cloud") {
+    const token = f["meta_token"] ?? "";
+    const phoneId = f["meta_phone_id"] ?? "";
+    if (!token || !phoneId) return false;
+    // Meta Cloud API: up to 3 buttons via interactive type
+    const sections = [{
+      rows: buttons.slice(0, 3).map((b) => ({ id: b.id, title: b.label.slice(0, 24) })),
+    }];
+    const resp = await fetch(`https://graph.facebook.com/v20.0/${phoneId}/messages`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+      body: JSON.stringify({
+        messaging_product: "whatsapp",
+        to: cleanPhone,
+        type: "interactive",
+        interactive: {
+          type: "button",
+          body: { text: bodyText },
+          action: {
+            buttons: buttons.slice(0, 3).map((b) => ({
+              type: "reply",
+              reply: { id: b.id, title: b.label.slice(0, 20) },
+            })),
+          },
+        },
+      }),
+    });
+    return resp.ok;
+  }
+
+  return false;
+}
+
+async function sendInteractiveList(
+  companyId: string,
+  phone: string,
+  connectionId: string | undefined,
+  bodyText: string,
+  buttonText: string,
+  sections: { title: string; rows: InteractiveButton[] }[],
+  footerText?: string,
+): Promise<void> {
+  try {
+    let provider: string;
+    let f: Record<string, string>;
+    if (connectionId) {
+      const botConfig = await getBotConnectionConfig(connectionId);
+      if (botConfig) { provider = botConfig.provider; f = botConfig.fields; }
+      else { const c = await getCompanyWhatsAppConfig(companyId); provider = c.provider; f = c.fields; }
+    } else {
+      const c = await getCompanyWhatsAppConfig(companyId); provider = c.provider; f = c.fields;
+    }
+
+    const sent = await sendInteractiveListWithProvider(provider, f, phone, bodyText, buttonText, sections, footerText);
+    if (sent) {
+      const allRows = sections.flatMap((s) => s.rows);
+      const rowText = allRows.map((r) => `▶ ${r.label}`).join("\n");
+      await saveMessage(companyId, phone, "outgoing", `${bodyText}${footerText ? `\n${footerText}` : ""}\n${rowText}`);
+    } else {
+      // Fallback to text
+      const allRows = sections.flatMap((s) => s.rows);
+      const fallbackMsg = `${bodyText}\n\n${allRows.map((r, i) => `${i + 1} - ${r.label}`).join("\n")}\n\nResponda com o numero da opcao.`;
+      await sendBotMessage(companyId, phone, connectionId, fallbackMsg);
+    }
+  } catch {
+    const allRows = sections.flatMap((s) => s.rows);
+    const fallbackMsg = `${bodyText}\n\n${allRows.map((r, i) => `${i + 1} - ${r.label}`).join("\n")}\n\nResponda com o numero da opcao.`;
+    await sendBotMessage(companyId, phone, connectionId, fallbackMsg);
+  }
+}
+
+async function sendInteractiveListWithProvider(
+  provider: string,
+  f: Record<string, string>,
+  cleanPhone: string,
+  bodyText: string,
+  buttonText: string,
+  sections: { title: string; rows: InteractiveButton[] }[],
+  footerText?: string,
+): Promise<boolean> {
+  if (provider === "evolution" || provider === "veloov") {
+    const url = f["evo_url"] ?? "";
+    const token = f["evo_token"] ?? "";
+    if (!url || !token) return false;
+    const instance = f["evo_instance"] || "veloov";
+    const resp = await fetch(`${url}/message/sendList/${instance}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", apikey: token },
+      body: JSON.stringify({
+        number: cleanPhone,
+        title: "",
+        description: bodyText,
+        footer: footerText ?? "",
+        buttonText: buttonText,
+        menuId: "menu_list",
+        sections: sections.map((s) => ({
+          title: s.title,
+          rows: s.rows.map((r) => ({ rowId: r.id, title: r.label, description: "" })),
+        })),
+        delay: 1200,
+        presence: "available",
+      }),
+    });
+    return resp.ok;
+  }
+
+  if (provider === "meta_cloud") {
+    const token = f["meta_token"] ?? "";
+    const phoneId = f["meta_phone_id"] ?? "";
+    if (!token || !phoneId) return false;
+    const resp = await fetch(`https://graph.facebook.com/v20.0/${phoneId}/messages`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+      body: JSON.stringify({
+        messaging_product: "whatsapp",
+        to: cleanPhone,
+        type: "interactive",
+        interactive: {
+          type: "list",
+          body: { text: bodyText },
+          action: {
+            button: buttonText,
+            sections: sections.map((s) => ({
+              title: s.title,
+              rows: s.rows.map((r) => ({ id: r.id, title: r.label.slice(0, 24) })),
+            })),
+          },
+        },
+      }),
+    });
+    return resp.ok;
+  }
+
+  return false;
+}
+
 // ── Bot: WhatsApp ride-request flow ──
 // State machine: inicio -> aguardando_endereco -> aguardando_destino -> [aguardando_endereco_destino] -> aguardando_confirmacao -> [aguardando_categoria] -> aguardando_pagamento -> corrida_solicitada
 
@@ -421,6 +632,25 @@ async function sendBotMessage(companyId: string, phone: string, connectionId: st
 
 function deaccent(s: string): string {
   return s.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().trim();
+}
+
+// Detect whether a transcribed text contains address-like content.
+// Returns true if it looks like a street, place, or landmark reference.
+function looksLikeAddress(text: string): boolean {
+  const lower = text.toLowerCase().trim();
+  if (lower.length < 3) return false;
+  const addressMarkers = [
+    "rua", "avenida", "av ", "av.", "praca", "travessa", "alameda", "estrada",
+    "rodovia", "viela", "beco", "numero", "casa", "predio", "bloco", "apt",
+    "bairro", "condominio", "shopping", "hospital", "posto", "farmacia",
+    "padaria", "mercado", "supermercado", "escola", "colegio", "universidade",
+    "praca", "parque", "prainha", "praia", "aeroporto", "rodoviaria",
+    "estacao", "metro", "ponto", "bar", "restaurante", "loja", "academia",
+    "igreja", "templo", "banco", "caixa", "loterica", "farmacia",
+  ];
+  const hasMarker = addressMarkers.some((m) => lower.includes(m));
+  const hasNumber = /\b\d{1,6}\b/.test(lower);
+  return hasMarker || (hasNumber && lower.length > 5);
 }
 
 function normalizePlaceText(value: string | null | undefined): string | null {
@@ -661,6 +891,11 @@ async function findAddressSuggestionFuzzy(
 }
 
 async function geocodeAddress(address: string, city?: string, state?: string, biasLat?: number, biasLng?: number): Promise<{ lat: number; lng: number; formatted: string } | null> {
+  // Extract house number from the original address text so we can preserve it
+  // in the formatted result even if the geocoder drops it.
+  const houseNumberMatch = address.match(/\b(\d{1,6}(?:[A-Za-z]?)|s\/n)\b/i);
+  const passengerHouseNumber = houseNumberMatch ? houseNumberMatch[1] : null;
+
   // 1. Try Google Geocoding API if a key is configured (per-company or env)
   let googleKey: string | undefined;
   if (companyIdForGeocoding) {
@@ -686,10 +921,15 @@ async function geocodeAddress(address: string, city?: string, state?: string, bi
         const gData = await gResp.json();
         if (gData?.results?.length > 0) {
           const r = gData.results[0];
+          let formatted = r.formatted_address ?? address;
+          // Preserve passenger's house number if not in the formatted result
+          if (passengerHouseNumber && !formatted.toLowerCase().includes(passengerHouseNumber.toLowerCase())) {
+            formatted = preserveHouseNumberInFormatted(formatted, passengerHouseNumber);
+          }
           return {
             lat: r.geometry.location.lat,
             lng: r.geometry.location.lng,
-            formatted: r.formatted_address ?? address,
+            formatted,
           };
         }
       }
@@ -714,10 +954,15 @@ async function geocodeAddress(address: string, city?: string, state?: string, bi
         const results = await resp.json();
         if (Array.isArray(results) && results.length > 0) {
           const r = results[0];
+          let formatted = r.display_name ?? address;
+          // Preserve passenger's house number if not in the formatted result
+          if (passengerHouseNumber && !formatted.toLowerCase().includes(passengerHouseNumber.toLowerCase())) {
+            formatted = preserveHouseNumberInFormatted(formatted, passengerHouseNumber);
+          }
           return {
             lat: parseFloat(r.lat),
             lng: parseFloat(r.lon),
-            formatted: r.display_name ?? address,
+            formatted,
           };
         }
         return null;
@@ -730,6 +975,24 @@ async function geocodeAddress(address: string, city?: string, state?: string, bi
     } catch { /* retry on next attempt */ }
   }
   return null;
+}
+
+// Insert the passenger's house number into the formatted address right after the street name.
+// Handles "Street Name - Neighborhood - City - State" format (common in Brazil).
+function preserveHouseNumberInFormatted(formatted: string, houseNumber: string): string {
+  const parts = formatted.split(" - ");
+  if (parts.length >= 2) {
+    // Insert number after the first part (street name)
+    parts[0] = `${parts[0]}, ${houseNumber}`;
+    return parts.join(" - ");
+  }
+  // If format is comma-separated, insert after street
+  const commaParts = formatted.split(", ");
+  if (commaParts.length >= 2) {
+    commaParts[0] = `${commaParts[0]}, ${houseNumber}`;
+    return commaParts.join(", ");
+  }
+  return `${formatted} ${houseNumber}`;
 }
 
 // Module-level variable set during handleBotMessage so geocodeAddress can access
@@ -1506,8 +1769,18 @@ async function proceedAfterDestination(
     await supabase.from("bot_conversas")
       .update({ state: "aguardando_categoria", updated_at: new Date().toISOString() })
       .eq("id", convId);
-    const opts = categories.map((c, i) => `${i + 1} - ${c.label}`).join("\n");
-    await sendBotMessage(companyId, cleanPhone, connectionId, msg("ask_category", `\u{1F3C6} Qual categoria voce deseja?\n\n${opts}\n\nResponda com o numero da opcao.`));
+    if (categories.length <= 3) {
+      await sendInteractiveButtons(companyId, cleanPhone, connectionId,
+        msg("ask_category", "\u{1F3C6} Qual categoria voce deseja?"),
+        categories.map((c) => ({ id: `cat_${c.id}`, label: c.label })),
+      );
+    } else {
+      await sendInteractiveList(companyId, cleanPhone, connectionId,
+        msg("ask_category", "\u{1F3C6} Qual categoria voce deseja?"),
+        "Ver categorias",
+        [{ title: "Categorias", rows: categories.map((c) => ({ id: `cat_${c.id}`, label: c.label })) }],
+      );
+    }
     return;
   }
 
@@ -1519,7 +1792,14 @@ async function proceedAfterDestination(
       updated_at: new Date().toISOString(),
     })
     .eq("id", convId);
-  await sendBotMessage(companyId, cleanPhone, connectionId, msg("ask_payment", `\u{1F4B0} Qual a forma de pagamento?\n\n1 - Dinheiro \u{1F4B5}\n2 - Pix \u{1F9EC}\n3 - Cartao \u{1F4B3}\n\nResponda com o numero da opcao.`));
+  await sendInteractiveButtons(companyId, cleanPhone, connectionId,
+    msg("ask_payment", "\u{1F4B0} Qual a forma de pagamento?"),
+    [
+      { id: "pay_dinheiro", label: "Dinheiro \u{1F4B5}" },
+      { id: "pay_pix", label: "Pix \u{1F9EC}" },
+      { id: "pay_cartao", label: "Cartao \u{1F4B3}" },
+    ],
+  );
 }
 
 async function handleBotMessage(
@@ -1568,7 +1848,7 @@ async function handleBotMessage(
     conv = newConv as BotConversation;
 
     if (!text && !location && !audio && !image) {
-      await sendBotMessage(companyId, cleanPhone, connectionId, msg("welcome_menu", "\u{1F44B} Ola! Como podemos ajudar?\n\n1 - Solicitar corrida \u{1F695}\n2 - Suporte \u{1F4AC}\n\nResponda com o numero da opcao."));
+      await sendInteractiveButtons(companyId, cleanPhone, connectionId, msg("welcome_menu", "\u{1F44B} Ola! Como podemos ajudar?"), [{ id: "menu_corrida", label: "Solicitar corrida \u{1F695}" }, { id: "menu_suporte", label: "Suporte \u{1F4AC}" }]);
       return;
     }
   }
@@ -1676,7 +1956,7 @@ async function handleBotMessage(
             updated_at: new Date().toISOString(),
           })
           .eq("id", conv.id);
-        await sendBotMessage(companyId, cleanPhone, connectionId, msg("ask_destination", "\u{1F3AF} Para onde voce vai?\n\n1 - Digitar o Endereco de Destino \u{1F4DD}\n2 - Nao informar Endereco \u{1F6AB}\n\nResponda com o numero da opcao."));
+        await sendInteractiveButtons(companyId, cleanPhone, connectionId, msg("ask_destination", "\u{1F3AF} Para onde voce vai?"), [{ id: "dest_digitar", label: "Digitar Endereco \u{1F4DD}" }, { id: "dest_nao_informar", label: "Nao informar \u{1F6AB}" }]);
         break;
       }
 
@@ -1703,7 +1983,7 @@ async function handleBotMessage(
               updated_at: new Date().toISOString(),
             })
             .eq("id", conv.id);
-          await sendBotMessage(companyId, cleanPhone, connectionId, `\u{1F4F7} Identifiquei: ${establishmentName}\n\n\u{1F3AF} Para onde voce vai?\n\n1 - Digitar o Endereco de Destino \u{1F4DD}\n2 - Nao informar Endereco \u{1F6AB}\n\nResponda com o numero da opcao.`);
+          await sendInteractiveButtons(companyId, cleanPhone, connectionId, `\u{1F4F7} Identifiquei: ${establishmentName}\n\n\u{1F3AF} Para onde voce vai?`, [{ id: "dest_digitar", label: "Digitar Endereco \u{1F4DD}" }, { id: "dest_nao_informar", label: "Nao informar \u{1F6AB}" }]);
         } else {
           await supabase.from("bot_conversas")
             .update({ state: "aguardando_endereco", updated_at: new Date().toISOString() })
@@ -1723,7 +2003,7 @@ async function handleBotMessage(
       }
       const looksLikeRideDetails = normalizedText.length > 3 &&
         ["estou", "to ", "tô ", "vou ", "para ", "pra ", "em ", "na ", "no ", "leva", "leva ", "me pega", "me busca", "quero ir", "ir pro", "ir pra", "indo", "origem", "destino", "embarque", "rua ", "avenida ", "praca ", "travessa "].some((marker) => normalizedText.includes(marker));
-      const requestedRide = ["1", "corrida", "sim", "sim.", "quero", "viagem", "sim!"].includes(normalizedText)
+      const requestedRide = ["1", "corrida", "sim", "sim.", "quero", "viagem", "sim!", "menu_corrida"].includes(normalizedText)
         || normalizedText.includes("corrida")
         || normalizedText.includes("viagem")
         || looksLikeRideDetails;
@@ -1731,12 +2011,38 @@ async function handleBotMessage(
         await supabase.from("bot_conversas")
           .update({ state: "aguardando_endereco", updated_at: new Date().toISOString() })
           .eq("id", conv.id);
+
+        // Check for frequent addresses (used 2+ times)
+        if (!looksLikeRideDetails && !location && !audio && !image) {
+          const { data: freqAddresses } = await supabase
+            .from("passenger_frequent_addresses")
+            .select("id, address_text, address_formatted, address_lat, address_lng, origin_reference, use_count")
+            .eq("company_id", companyId)
+            .eq("phone", cleanPhone)
+            .gte("use_count", 2)
+            .order("use_count", { ascending: false })
+            .limit(3);
+
+          if (freqAddresses && freqAddresses.length > 0) {
+            const buttons: InteractiveButton[] = freqAddresses.map((a) => ({
+              id: `freq_${a.id}`,
+              label: (a.origin_reference || a.address_formatted || a.address_text).slice(0, 20),
+            }));
+            buttons.push({ id: "freq_new", label: "Outro endereco \u{1F4DD}" });
+            await sendInteractiveButtons(companyId, cleanPhone, connectionId,
+              "\u{1F4CD} Encontrei seus enderecos salvos. Qual e o endereco de embarque?",
+              buttons,
+            );
+            break;
+          }
+        }
+
         if (looksLikeRideDetails) {
           await handleBotMessage(companyId, cleanPhone, text, pushName, location, audio, connectionId, image);
         } else {
           await sendBotMessage(companyId, cleanPhone, connectionId, msg("ask_address", "\u{1F4CD} Perfeito! Qual e o endereco de embarque? Voce pode digitar o endereco, enviar sua localizacao ou mandar um audio."));
         }
-      } else if (["2", "suporte", "ajuda", "suport"].includes(normalizedText)) {
+      } else if (["2", "suporte", "ajuda", "suport", "menu_suporte"].includes(normalizedText)) {
         // Fetch company support WhatsApp
         const { data: company } = await supabase
           .from("companies")
@@ -1774,12 +2080,48 @@ As mensagens do passageiro serao encaminhadas a partir de agora.`;
           .eq("id", conv.id);
         await sendBotMessage(companyId, cleanPhone, connectionId, msg("decline", "\u{1F44D} Tudo bem! Quando precisar de uma corrida, e so nos mandar uma mensagem."));
       } else {
-        await sendBotMessage(companyId, cleanPhone, connectionId, msg("welcome_repeat", "\u{1F44B} Como podemos ajudar?\n\n1 - Solicitar corrida \u{1F695}\n2 - Suporte \u{1F4AC}\n\nResponda com o numero da opcao."));
+        await sendInteractiveButtons(companyId, cleanPhone, connectionId, msg("welcome_repeat", "\u{1F44B} Como podemos ajudar?"), [{ id: "menu_corrida", label: "Solicitar corrida \u{1F695}" }, { id: "menu_suporte", label: "Suporte \u{1F4AC}" }]);
       }
       break;
     }
 
     case "aguardando_endereco": {
+      // Handle frequent address button selection
+      if (normalizedText.startsWith("freq_")) {
+        if (normalizedText === "freq_new") {
+          await sendBotMessage(companyId, cleanPhone, connectionId, msg("ask_address", "\u{1F4CD} Qual e o endereco de embarque? Voce pode digitar o endereco, enviar sua localizacao ou mandar um audio."));
+          break;
+        }
+        const addrId = normalizedText.slice(5);
+        const { data: freqAddr } = await supabase
+          .from("passenger_frequent_addresses")
+          .select("address_text, address_formatted, address_lat, address_lng, origin_reference, use_count")
+          .eq("id", addrId)
+          .eq("company_id", companyId)
+          .maybeSingle();
+        if (freqAddr) {
+          // Update use count
+          await supabase.from("passenger_frequent_addresses")
+            .update({ use_count: (freqAddr.use_count || 0) + 1, last_used_at: new Date().toISOString() })
+            .eq("id", addrId);
+          // Set as pickup and go to destination
+          await supabase.from("bot_conversas")
+            .update({
+              state: "aguardando_destino",
+              address_text: freqAddr.address_text,
+              address_lat: freqAddr.address_lat,
+              address_lng: freqAddr.address_lng,
+              address_formatted: freqAddr.address_formatted,
+              origin_reference: freqAddr.origin_reference,
+              address_is_fallback: false,
+              updated_at: new Date().toISOString(),
+            })
+            .eq("id", conv.id);
+          await sendInteractiveButtons(companyId, cleanPhone, connectionId, msg("ask_destination", "\u{1F3AF} Para onde voce vai?"), [{ id: "dest_digitar", label: "Digitar Endereco \u{1F4DD}" }, { id: "dest_nao_informar", label: "Nao informar \u{1F6AB}" }]);
+          break;
+        }
+      }
+
       let addressText: string | null = null;
       let lat: number | null = null;
       let lng: number | null = null;
@@ -1820,6 +2162,11 @@ As mensagens do passageiro serao encaminhadas a partir de agora.`;
         const transcribed = await transcribeAudio(audio.data, audio.mimetype, companyId);
         if (transcribed) {
           const audioText = transcribed.trim();
+          // Check if the transcription contains address-like content
+          if (!looksLikeAddress(audioText)) {
+            await sendBotMessage(companyId, cleanPhone, connectionId, `\u{1F3A4} Transcrevi: "${audioText}"\n\n\u{1F4CD} Nao consegui identificar um endereco. Por favor, digite o endereco de embarque ou envie sua localizacao.`);
+            return;
+          }
           const llmCtx = await getCompanyLocationInfo(companyId, connectionId);
           const llmResult = await interpretMessageWithLLM(audioText, companyId, {
             city: llmCtx.city,
@@ -2001,16 +2348,16 @@ As mensagens do passageiro serao encaminhadas a partir de agora.`;
             updated_at: new Date().toISOString(),
           })
           .eq("id", conv.id);
-        await sendBotMessage(companyId, cleanPhone, connectionId, msg("confirm_address", `\u2705 Confirma os dados da corrida?\n\n\u{1F4CD} Embarque: ${originReference ?? finalAddress}\n\u{1F3AF} Destino: ${extractedDest}\n\nResponda SIM para confirmar ou NAO para corrigir.`));
+        await sendInteractiveButtons(companyId, cleanPhone, connectionId, msg("confirm_address", `\u2705 Confirma os dados da corrida?\n\n\u{1F4CD} Embarque: ${originReference ?? finalAddress}\n\u{1F3AF} Destino: ${extractedDest}`), [{ id: "conf_sim", label: "SIM \u2705" }, { id: "conf_nao", label: "NAO \u{1F504}" }]);
         break;
       }
 
-      await sendBotMessage(companyId, cleanPhone, connectionId, msg("ask_destination", "\u{1F3AF} Para onde voce vai?\n\n1 - Digitar o Endereco de Destino \u{1F4DD}\n2 - Nao informar Endereco \u{1F6AB}\n\nResponda com o numero da opcao."));
+      await sendInteractiveButtons(companyId, cleanPhone, connectionId, msg("ask_destination", "\u{1F3AF} Para onde voce vai?"), [{ id: "dest_digitar", label: "Digitar Endereco \u{1F4DD}" }, { id: "dest_nao_informar", label: "Nao informar \u{1F6AB}" }]);
       break;
     }
 
     case "aguardando_destino": {
-      const noDestPhrases = ["2", "nao", "nao informar", "nao informar destino", "nao quero informar", "sem destino"];
+      const noDestPhrases = ["2", "nao", "nao informar", "nao informar destino", "nao quero informar", "sem destino", "dest_nao_informar"];
       const deaccented = normalizedText.normalize("NFD").replace(/[\u0300-\u036f]/g, "");
       if (noDestPhrases.includes(deaccented) || noDestPhrases.includes(normalizedText)) {
         await supabase.from("bot_conversas")
@@ -2024,10 +2371,10 @@ As mensagens do passageiro serao encaminhadas a partir de agora.`;
           })
           .eq("id", conv.id);
         const pickupAddr = normalizePlaceText(conv.origin_reference || conv.address_formatted || conv.address_text || "Endereco nao informado");
-        await sendBotMessage(companyId, cleanPhone, connectionId, msg("confirm_address", `\u2705 Confirma os dados da corrida?\n\n\u{1F4CD} Embarque: ${pickupAddr}\n\u{1F3AF} Destino: DEFINIR NO CARRO\n\nResponda SIM para confirmar ou NAO para corrigir.`));
-      } else if (normalizedText === "1" || location || audio || (text && !["1","2"].includes(normalizedText))) {
-        // Accept "1" (menu choice), location, audio, or any typed text as a destination address
-        if (normalizedText === "1" && !location && !audio) {
+        await sendInteractiveButtons(companyId, cleanPhone, connectionId, msg("confirm_address", `\u2705 Confirma os dados da corrida?\n\n\u{1F4CD} Embarque: ${pickupAddr}\n\u{1F3AF} Destino: DEFINIR NO CARRO`), [{ id: "conf_sim", label: "SIM \u2705" }, { id: "conf_nao", label: "NAO \u{1F504}" }]);
+      } else if (normalizedText === "1" || normalizedText === "dest_digitar" || location || audio || (text && !["1","2","dest_digitar","dest_nao_informar"].includes(normalizedText))) {
+        // Accept "1" / "dest_digitar" (menu choice), location, audio, or any typed text as a destination address
+        if ((normalizedText === "1" || normalizedText === "dest_digitar") && !location && !audio) {
           await supabase.from("bot_conversas")
             .update({ state: "aguardando_endereco_destino", updated_at: new Date().toISOString() })
             .eq("id", conv.id);
@@ -2047,6 +2394,10 @@ As mensagens do passageiro serao encaminhadas a partir de agora.`;
           } else if (audio) {
             const transcribed = await transcribeAudio(audio.data, audio.mimetype, companyId);
             if (transcribed) {
+              if (!looksLikeAddress(transcribed)) {
+                await sendBotMessage(companyId, cleanPhone, connectionId, `\u{1F3A4} Transcrevi: "${transcribed.trim()}"\n\n\u{1F4CD} Nao consegui identificar um endereco de destino. Por favor, digite o endereco ou envie sua localizacao.`);
+                return;
+              }
               destText = normalizePlaceText(transcribed);
             } else {
               await sendBotMessage(companyId, cleanPhone, connectionId, "Nao consegui transcrever o audio. Por favor, digite o endereco de destino.");
@@ -2084,10 +2435,10 @@ As mensagens do passageiro serao encaminhadas a partir de agora.`;
               updated_at: new Date().toISOString(),
             })
             .eq("id", conv.id);
-          await sendBotMessage(companyId, cleanPhone, connectionId, msg("confirm_address", `\u2705 Confirma os dados da corrida?\n\n\u{1F4CD} Embarque: ${pickupAddr}\n\u{1F3AF} Destino: ${finalDestAddress}\n\nResponda SIM para confirmar ou NAO para corrigir.`));
+          await sendInteractiveButtons(companyId, cleanPhone, connectionId, msg("confirm_address", `\u2705 Confirma os dados da corrida?\n\n\u{1F4CD} Embarque: ${pickupAddr}\n\u{1F3AF} Destino: ${finalDestAddress}`), [{ id: "conf_sim", label: "SIM \u2705" }, { id: "conf_nao", label: "NAO \u{1F504}" }]);
         }
       } else {
-        await sendBotMessage(companyId, cleanPhone, connectionId, msg("destination_menu_retry", `\u26A0\uFE0F Opcao invalida.\n\n1 - Digitar o Endereco de Destino \u{1F4DD}\n2 - Nao informar Endereco \u{1F6AB}\n\nResponda com o numero da opcao.`));
+        await sendInteractiveButtons(companyId, cleanPhone, connectionId, msg("destination_menu_retry", "\u26A0\uFE0F Opcao invalida. Para onde voce vai?"), [{ id: "dest_digitar", label: "Digitar Endereco \u{1F4DD}" }, { id: "dest_nao_informar", label: "Nao informar \u{1F6AB}" }]);
       }
       break;
     }
@@ -2106,6 +2457,10 @@ As mensagens do passageiro serao encaminhadas a partir de agora.`;
       } else if (audio) {
         const transcribed = await transcribeAudio(audio.data, audio.mimetype, companyId);
         if (transcribed) {
+          if (!looksLikeAddress(transcribed)) {
+            await sendBotMessage(companyId, cleanPhone, connectionId, `\u{1F3A4} Transcrevi: "${transcribed.trim()}"\n\n\u{1F4CD} Nao consegui identificar um endereco de destino. Por favor, digite o endereco ou envie sua localizacao.`);
+            return;
+          }
           destText = normalizePlaceText(transcribed);
         } else {
           await sendBotMessage(companyId, cleanPhone, connectionId, "Nao consegui transcrever o audio. Por favor, digite o endereco de destino.");
@@ -2143,12 +2498,12 @@ As mensagens do passageiro serao encaminhadas a partir de agora.`;
           updated_at: new Date().toISOString(),
         })
         .eq("id", conv.id);
-      await sendBotMessage(companyId, cleanPhone, connectionId, msg("confirm_address", `\u2705 Confirma os dados da corrida?\n\n\u{1F4CD} Embarque: ${pickupAddr}\n\u{1F3AF} Destino: ${finalDestAddress}\n\nResponda SIM para confirmar ou NAO para corrigir.`));
+      await sendInteractiveButtons(companyId, cleanPhone, connectionId, msg("confirm_address", `\u2705 Confirma os dados da corrida?\n\n\u{1F4CD} Embarque: ${pickupAddr}\n\u{1F3AF} Destino: ${finalDestAddress}`), [{ id: "conf_sim", label: "SIM \u2705" }, { id: "conf_nao", label: "NAO \u{1F504}" }]);
       break;
     }
 
     case "aguardando_confirmacao": {
-      if (["sim", "sim.", "s", "confirmo", "confirmar", "sim!"].includes(normalizedText)) {
+      if (["sim", "sim.", "s", "confirmo", "confirmar", "sim!", "conf_sim"].includes(normalizedText)) {
         const companyLoc = await getCompanyLocationInfo(companyId, connectionId);
         if (!companyLoc.slug) {
           await sendBotMessage(companyId, cleanPhone, connectionId, "Erro: empresa nao configurada corretamente. Tente novamente mais tarde.");
@@ -2156,7 +2511,7 @@ As mensagens do passageiro serao encaminhadas a partir de agora.`;
         }
 
         await proceedAfterDestination(companyId, cleanPhone, connectionId, conv.id, msg);
-      } else if (["nao", "nao.", "n", "errado", "nao!"].includes(normalizedText)) {
+      } else if (["nao", "nao.", "n", "errado", "nao!", "conf_nao"].includes(normalizedText)) {
         await supabase.from("bot_conversas")
           .update({ state: "aguardando_endereco", updated_at: new Date().toISOString() })
           .eq("id", conv.id);
@@ -2177,19 +2532,33 @@ As mensagens do passageiro serao encaminhadas a partir de agora.`;
         return;
       }
 
-      // Parse the passenger's choice (number or label)
-      const choiceNum = parseInt(normalizedText, 10);
+      // Parse the passenger's choice (button id, number, or label)
       let chosenCat: { id: string; label: string; machine_category_id: string | null } | null = null;
-      if (!isNaN(choiceNum) && choiceNum >= 1 && choiceNum <= categories.length) {
-        chosenCat = categories[choiceNum - 1];
+      if (normalizedText.startsWith("cat_")) {
+        const catId = normalizedText.slice(4);
+        chosenCat = categories.find((c) => c.id === catId) ?? null;
       } else {
-        // Try matching by label
-        chosenCat = categories.find((c) => c.label.toLowerCase() === normalizedText) ?? null;
+        const choiceNum = parseInt(normalizedText, 10);
+        if (!isNaN(choiceNum) && choiceNum >= 1 && choiceNum <= categories.length) {
+          chosenCat = categories[choiceNum - 1];
+        } else {
+          chosenCat = categories.find((c) => c.label.toLowerCase() === normalizedText) ?? null;
+        }
       }
 
       if (!chosenCat) {
-        const opts = categories.map((c, i) => `${i + 1} - ${c.label}`).join("\n");
-        await sendBotMessage(companyId, cleanPhone, connectionId, msg("category_retry", `\u26A0\uFE0F Opcao invalida. Escolha uma categoria:\n\n${opts}\n\nResponda com o numero da opcao.`));
+        if (categories.length <= 3) {
+          await sendInteractiveButtons(companyId, cleanPhone, connectionId,
+            msg("category_retry", "\u26A0\uFE0F Opcao invalida. Escolha uma categoria:"),
+            categories.map((c) => ({ id: `cat_${c.id}`, label: c.label })),
+          );
+        } else {
+          await sendInteractiveList(companyId, cleanPhone, connectionId,
+            msg("category_retry", "\u26A0\uFE0F Opcao invalida. Escolha uma categoria:"),
+            "Ver categorias",
+            [{ title: "Categorias", rows: categories.map((c) => ({ id: `cat_${c.id}`, label: c.label })) }],
+          );
+        }
         return;
       }
 
@@ -2201,7 +2570,14 @@ As mensagens do passageiro serao encaminhadas a partir de agora.`;
           updated_at: new Date().toISOString(),
         })
         .eq("id", conv.id);
-      await sendBotMessage(companyId, cleanPhone, connectionId, msg("ask_payment", `\u{1F4B0} Qual a forma de pagamento?\n\n1 - Dinheiro \u{1F4B5}\n2 - Pix \u{1F9EC}\n3 - Cartao \u{1F4B3}\n\nResponda com o numero da opcao.`));
+      await sendInteractiveButtons(companyId, cleanPhone, connectionId,
+        msg("ask_payment", "\u{1F4B0} Qual a forma de pagamento?"),
+        [
+          { id: "pay_dinheiro", label: "Dinheiro \u{1F4B5}" },
+          { id: "pay_pix", label: "Pix \u{1F9EC}" },
+          { id: "pay_cartao", label: "Cartao \u{1F4B3}" },
+        ],
+      );
       break;
     }
 
@@ -2214,11 +2590,21 @@ As mensagens do passageiro serao encaminhadas a partir de agora.`;
         "pix": "Pix",
         "cartao": "Cartao",
         "cartão": "Cartao",
+        "pay_dinheiro": "Dinheiro",
+        "pay_pix": "Pix",
+        "pay_cartao": "Cartao",
       };
       const paymentMethod = paymentMap[normalizedText] ?? null;
 
       if (!paymentMethod) {
-        await sendBotMessage(companyId, cleanPhone, connectionId, msg("payment_retry", `\u26A0\uFE0F Opcao invalida. Qual a forma de pagamento?\n\n1 - Dinheiro \u{1F4B5}\n2 - Pix \u{1F9EC}\n3 - Cartao \u{1F4B3}\n\nResponda com o numero da opcao.`));
+        await sendInteractiveButtons(companyId, cleanPhone, connectionId,
+          msg("payment_retry", "\u26A0\uFE0F Opcao invalida. Qual a forma de pagamento?"),
+          [
+            { id: "pay_dinheiro", label: "Dinheiro \u{1F4B5}" },
+            { id: "pay_pix", label: "Pix \u{1F9EC}" },
+            { id: "pay_cartao", label: "Cartao \u{1F4B3}" },
+          ],
+        );
         return;
       }
 
@@ -2280,6 +2666,45 @@ As mensagens do passageiro serao encaminhadas a partir de agora.`;
           })
           .eq("id", conv.id);
 
+        // Record/update frequent address for this passenger
+        try {
+          const addrText = conv.address_text || "";
+          if (addrText) {
+            const { data: existing } = await supabase
+              .from("passenger_frequent_addresses")
+              .select("id, use_count")
+              .eq("company_id", companyId)
+              .eq("phone", cleanPhone)
+              .ilike("address_text", addrText)
+              .maybeSingle();
+            if (existing) {
+              await supabase.from("passenger_frequent_addresses")
+                .update({
+                  use_count: (existing.use_count || 0) + 1,
+                  last_used_at: new Date().toISOString(),
+                  address_formatted: conv.address_formatted ?? null,
+                  address_lat: conv.address_lat ?? null,
+                  address_lng: conv.address_lng ?? null,
+                  origin_reference: conv.origin_reference ?? null,
+                })
+                .eq("id", existing.id);
+            } else {
+              await supabase.from("passenger_frequent_addresses")
+                .insert({
+                  company_id: companyId,
+                  phone: cleanPhone,
+                  address_text: addrText,
+                  address_formatted: conv.address_formatted ?? null,
+                  address_lat: conv.address_lat ?? null,
+                  address_lng: conv.address_lng ?? null,
+                  origin_reference: conv.origin_reference ?? null,
+                  use_count: 1,
+                  last_used_at: new Date().toISOString(),
+                });
+            }
+          }
+        } catch { /* best-effort */ }
+
         // Sanitize machineMessage: strip raw passenger data (name/phone) that the Machine API
         // might include in its response, preventing data leak to the passenger's chat.
         let successMsg = result.machineMessage;
@@ -2327,7 +2752,7 @@ As mensagens do passageiro serao encaminhadas a partir de agora.`;
           await supabase.from("bot_conversas")
             .update({ state: "menu_inicial", updated_at: new Date().toISOString() })
             .eq("id", conv.id);
-          await sendBotMessage(companyId, cleanPhone, connectionId, msg("support_timeout", "\u23F1\uFE0F O atendimento de suporte foi encerrado por inatividade.\n\n1 - Solicitar corrida \u{1F695}\n2 - Suporte \u{1F4AC}\n\nResponda com o numero da opcao."));
+          await sendInteractiveButtons(companyId, cleanPhone, connectionId, msg("support_timeout", "\u23F1\uFE0F O atendimento de suporte foi encerrado por inatividade."), [{ id: "menu_corrida", label: "Solicitar corrida \u{1F695}" }, { id: "menu_suporte", label: "Suporte \u{1F4AC}" }]);
           break;
         }
       }
@@ -2337,7 +2762,7 @@ As mensagens do passageiro serao encaminhadas a partir de agora.`;
         await supabase.from("bot_conversas")
           .update({ state: "menu_inicial", updated_at: new Date().toISOString() })
           .eq("id", conv.id);
-        await sendBotMessage(companyId, cleanPhone, connectionId, msg("support_exit", "\u{1F44B} Suporte encerrado.\n\n1 - Solicitar corrida \u{1F695}\n2 - Suporte \u{1F4AC}\n\nResponda com o numero da opcao."));
+        await sendInteractiveButtons(companyId, cleanPhone, connectionId, msg("support_exit", "\u{1F44B} Suporte encerrado."), [{ id: "menu_corrida", label: "Solicitar corrida \u{1F695}" }, { id: "menu_suporte", label: "Suporte \u{1F4AC}" }]);
         break;
       }
 
@@ -2396,7 +2821,7 @@ As mensagens do passageiro serao encaminhadas a partir de agora.`;
       if (hasNewRequest) {
         await handleBotMessage(companyId, cleanPhone, text, pushName, location, audio, connectionId, image);
       } else {
-        await sendBotMessage(companyId, cleanPhone, connectionId, msg("welcome_back", "\u{1F44B} Ola! Como podemos ajudar?\n\n1 - Solicitar corrida \u{1F695}\n2 - Suporte \u{1F4AC}\n\nResponda com o numero da opcao."));
+        await sendInteractiveButtons(companyId, cleanPhone, connectionId, msg("welcome_back", "\u{1F44B} Ola! Como podemos ajudar?"), [{ id: "menu_corrida", label: "Solicitar corrida \u{1F695}" }, { id: "menu_suporte", label: "Suporte \u{1F4AC}" }]);
       }
       break;
     }
@@ -2760,6 +3185,20 @@ Deno.serve(async (req: Request) => {
           if (typeof data?.body === "string") text = data.body;
           else if (data?.body && typeof data.body === "object") text = String((data.body as Record<string, unknown>).text ?? "");
 
+          // Extract interactive button/list replies (Evolution API format)
+          if (!text) {
+            const buttonsResp = msg?.buttonsResponseMessage as Record<string, unknown> | undefined;
+            if (buttonsResp?.selectedButtonId) {
+              text = String(buttonsResp.selectedButtonId);
+            } else {
+              const listResp = msg?.listResponseMessage as Record<string, unknown> | undefined;
+              const singleSelect = listResp?.singleSelectReply as Record<string, unknown> | undefined;
+              if (singleSelect?.selectedRowId) {
+                text = String(singleSelect.selectedRowId);
+              }
+            }
+          }
+
           if (!text && msg?.locationMessage) {
             const loc = msg.locationMessage as Record<string, unknown>;
             text = `[Localizacao: ${loc.degreesLatitude}, ${loc.degreesLongitude}]`;
@@ -3041,6 +3480,20 @@ async function handleIncomingMessage(companyId: string, data: Record<string, unk
     text = String((data.body as Record<string, unknown>).text ?? "");
   } else if (typeof data?.body === "string") {
     text = data.body;
+  }
+
+  // Extract interactive button/list replies (Evolution API v1/v2 format)
+  if (!text && message) {
+    const buttonsResp = message.buttonsResponseMessage as Record<string, unknown> | undefined;
+    if (buttonsResp?.selectedButtonId) {
+      text = String(buttonsResp.selectedButtonId);
+    } else {
+      const listResp = message.listResponseMessage as Record<string, unknown> | undefined;
+      const singleSelect = listResp?.singleSelectReply as Record<string, unknown> | undefined;
+      if (singleSelect?.selectedRowId) {
+        text = String(singleSelect.selectedRowId);
+      }
+    }
   }
 
   // Extract pushName (passenger profile name from WhatsApp)
