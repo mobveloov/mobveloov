@@ -2787,7 +2787,7 @@ async function handleIncomingMessage(companyId: string, data: Record<string, unk
           try {
             const botConfig = await getBotConnectionConfig(connectionId);
             if (botConfig) {
-              await sendWhatsAppMessageWithProvider(botConfig.provider, botConfig.fields, cleanPhone, "Formato invalido. Use: Nome, Telefone, Endereco de embarque vai para Destino");
+              await sendWhatsAppMessageWithProvider(botConfig.provider, botConfig.fields, cleanPhone, "Formato invalido. Use: /Nome, Telefone, Endereco de embarque vai para Destino");
             }
           } catch { /* best-effort */ }
           return;
@@ -3201,8 +3201,17 @@ async function handleIncomingMessage(companyId: string, data: Record<string, unk
         return;
       }
 
-      // If manual dispatch is enabled but the message doesn't match the dispatch format,
-      // check if there's a conversation in suporte mode — handle as support chat
+      // "/" message didn't match dispatch format — send error and return
+      try {
+        const { provider, fields: f } = await getCompanyWhatsAppConfig(companyId);
+        const errMsg = "Formato invalido. Use: /Nome, Telefone, Endereco de embarque vai para Destino";
+        await sendWhatsAppMessageWithProvider(provider, f, supportPhone, errMsg);
+        await saveMessage(companyId, supportPhone, "outgoing", errMsg);
+      } catch { /* best-effort */ }
+      return;
+    } // end if (text.trim().startsWith("/") && manualDispatchEnabled)
+
+      // Non-"/" messages from support number — handle as support chat
       const { data: supportConv } = await supabase
         .from("bot_conversas")
         .select("id, phone, passenger_name, updated_at")
@@ -3257,7 +3266,6 @@ async function handleIncomingMessage(companyId: string, data: Record<string, unk
       }
       return;
     }
-    } // end else (message starts with "/")
   }
 
   // Find the passenger's active ride by phone number, scoped to this company
