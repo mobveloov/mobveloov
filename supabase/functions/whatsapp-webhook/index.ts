@@ -1938,12 +1938,13 @@ Deno.serve(async (req: Request) => {
             const loc = msg.locationMessage as Record<string, unknown>;
             text = `[Localizacao: ${loc.degreesLatitude}, ${loc.degreesLongitude}]`;
           }
-          if (!text && msg?.audioMessage) {
-            text = `[Audio recebido]`;
-          }
+          // Do NOT set text for audio messages — let handleIncomingMessage extract
+          // and transcribe the audio. Setting text here would skip transcription.
 
           if (rawPhone && text) {
             await saveMessage(botConn.company_id, rawPhone, "incoming", text, body);
+          } else if (!text && msg?.audioMessage) {
+            await saveMessage(botConn.company_id, rawPhone, "incoming", "[Audio recebido]", body);
           }
           await handleIncomingMessage(botConn.company_id, data, instance, botConn.id);
         }
@@ -2080,9 +2081,8 @@ Deno.serve(async (req: Request) => {
         const loc = msg.locationMessage as Record<string, unknown>;
         text = `[Localizacao: ${loc.degreesLatitude}, ${loc.degreesLongitude}]`;
       }
-      if (!text && msg?.audioMessage) {
-        text = `[Audio recebido]`;
-      }
+      // Do NOT set text for audio messages — let handleIncomingMessage extract
+      // and transcribe the audio. Setting text here would skip transcription.
 
       if (rawPhone && text) {
         await saveMessage(waInstance.company_id, rawPhone, "incoming", text, body);
