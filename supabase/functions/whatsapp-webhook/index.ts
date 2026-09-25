@@ -27,6 +27,68 @@ function toBrazilianWhatsAppNumber(raw: string): string {
 // Also routes passenger messages to ride_messages table for driver chat.
 // Bot: when no active ride exists, intercepts messages to run a ride-request flow.
 
+function stripMediaFromPayload(payload: Record<string, unknown> | undefined): Record<string, unknown> | null {
+  if (!payload) return null;
+  try {
+    const clone = JSON.parse(JSON.stringify(payload)) as Record<string, unknown>;
+    // Strip base64 audio/image data from Evolution API format
+    const data = clone.data as Record<string, unknown> | undefined;
+    if (data?.message && typeof data.message === "object") {
+      const msg = data.message as Record<string, unknown>;
+      if (msg.audioMessage && typeof msg.audioMessage === "object") {
+        const aud = msg.audioMessage as Record<string, unknown>;
+        if (aud.base64) aud.base64 = "[stripped]";
+        if (aud.buffer) aud.buffer = "[stripped]";
+        if (aud.stream) aud.stream = "[stripped]";
+      }
+      if (msg.imageMessage && typeof msg.imageMessage === "object") {
+        const img = msg.imageMessage as Record<string, unknown>;
+        if (img.base64) img.base64 = "[stripped]";
+        if (img.buffer) img.buffer = "[stripped]";
+        if (img.jpegThumbnail) img.jpegThumbnail = "[stripped]";
+      }
+      if (msg.videoMessage && typeof msg.videoMessage === "object") {
+        const vid = msg.videoMessage as Record<string, unknown>;
+        if (vid.base64) vid.base64 = "[stripped]";
+        if (vid.buffer) vid.buffer = "[stripped]";
+      }
+    }
+    // Strip from Meta Cloud API format
+    if (Array.isArray(clone.entry)) {
+      for (const entry of clone.entry) {
+        const e = entry as Record<string, unknown>;
+        if (Array.isArray(e.changes)) {
+          for (const change of e.changes) {
+            const c = change as Record<string, unknown>;
+            const v = c.value as Record<string, unknown> | undefined;
+            if (v?.messages && Array.isArray(v.messages)) {
+              for (const m of v.messages) {
+                const msg = m as Record<string, unknown>;
+                if (msg.audio && typeof msg.audio === "object") {
+                  const aud = msg.audio as Record<string, unknown>;
+                  if (aud.data) aud.data = "[stripped]";
+                }
+                if (msg.image && typeof msg.image === "object") {
+                  const img = msg.image as Record<string, unknown>;
+                  if (img.data) img.data = "[stripped]";
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+    // Strip from Z-API format
+    if (clone.audio && typeof clone.audio === "object") {
+      const aud = clone.audio as Record<string, unknown>;
+      if (aud.audioUrl) aud.audioUrl = "[stripped]";
+    }
+    return clone;
+  } catch {
+    return null;
+  }
+}
+
 async function saveMessage(
   companyId: string,
   phone: string,
@@ -91,7 +153,7 @@ async function saveMessage(
     phone: cleanPhone,
     body,
     message_type: "text",
-    raw_payload: rawPayload ?? null,
+    raw_payload: stripMediaFromPayload(rawPayload) ?? null,
     sent_at: new Date().toISOString(),
   });
 }
@@ -677,6 +739,7 @@ async function createAndDispatchRide(
       },
       body: JSON.stringify({
         companySlug,
+        companyId,
         integrationMode: "machine",
         rideId: ride.id,
         passenger_name: passengerName,

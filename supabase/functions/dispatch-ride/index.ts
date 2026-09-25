@@ -69,7 +69,8 @@ function toBrazilianWhatsAppNumber(raw: string): string {
 }
 
 interface DispatchBody {
-  companySlug: string;
+  companySlug?: string;
+  companyId?: string;
   integrationMode: string;
   rideId: string;
   action?: string;
@@ -130,6 +131,7 @@ Deno.serve(async (req: Request) => {
     const body = await req.json() as DispatchBody;
     const {
       companySlug,
+      companyId,
       integrationMode,
       rideId,
       action,
@@ -144,20 +146,31 @@ Deno.serve(async (req: Request) => {
       driverName,
     } = body;
 
-    if (!companySlug || !rideId) {
+    if ((!companySlug && !companyId) || !rideId) {
       return new Response(JSON.stringify({ error: "Missing required fields" }), {
         status: 400,
         headers: { ...corsHeaders, "Content-Type": "application/json" },
       });
     }
 
-    // Look up company
-    const { data: company } = await supabase
-      .from("companies")
-      .select("id, slug, status")
-      .eq("slug", companySlug)
-      .eq("status", "active")
-      .single();
+    // Look up company — prefer companyId directly, fall back to slug lookup
+    let company: { id: string; slug: string; status: string } | null = null;
+    if (companyId) {
+      const { data } = await supabase
+        .from("companies")
+        .select("id, slug, status")
+        .eq("id", companyId)
+        .maybeSingle();
+      company = data as { id: string; slug: string; status: string } | null;
+    } else if (companySlug) {
+      const { data } = await supabase
+        .from("companies")
+        .select("id, slug, status")
+        .eq("slug", companySlug)
+        .eq("status", "active")
+        .single();
+      company = data as { id: string; slug: string; status: string } | null;
+    }
 
     if (!company) {
       return new Response(JSON.stringify({ error: "Company not found or inactive" }), {
