@@ -2767,12 +2767,14 @@ async function handleIncomingMessage(companyId: string, data: Record<string, unk
     const manualDispatchEnabled = mdConn?.manual_dispatch_enabled ?? false;
 
     if (manualDispatchEnabled) {
-      const normalizedOutText = text.trim().toLowerCase();
+      // Only treat messages starting with "/" as dispatch commands
+      if (!text.trim().startsWith("/")) return;
 
-      // Try to parse a manual dispatch command:
-      // Format: "Nome, Telefone, Endereco vai para Destino" or "Nome, Telefone, Endereco" (no destination)
+      // Strip the leading "/" and parse the dispatch command:
+      // Format: "/Nome, Telefone, Endereco vai para Destino" or "/Nome, Telefone, Endereco" (no destination)
+      const dispatchBody = text.trim().slice(1).trim();
       const dispatchRegex = /^([^,]+),\s*([0-9\s()+\-]+),\s*(.+?)(?:\s+vai\s+para\s+(.+))?$/i;
-      const dispatchMatch = text.trim().match(dispatchRegex);
+      const dispatchMatch = dispatchBody.match(dispatchRegex);
 
       if (dispatchMatch) {
         const [, name, phoneStr, addressPart, destinationPart] = dispatchMatch;
@@ -2955,36 +2957,7 @@ async function handleIncomingMessage(companyId: string, data: Record<string, unk
         return;
       }
 
-      // Outgoing message doesn't match dispatch format — check if there's a suporte conversation
-      // to forward the message to the passenger (support agent using bot's number to chat with passenger)
-      const supportExitWords = ["sair", "voltar", "corrida", "1", "menu", "fim", "encerrar", "encerra", "finalizar", "finaliza", "terminar", "termina", "encerrar suporte", "finalizar suporte"];
-      const { data: supportConv } = await supabase
-        .from("bot_conversas")
-        .select("id, phone, passenger_name, updated_at")
-        .eq("company_id", companyId)
-        .eq("state", "suporte")
-        .order("updated_at", { ascending: false })
-        .limit(1)
-        .maybeSingle();
-      if (supportConv) {
-        if (supportExitWords.includes(normalizedOutText)) {
-          await supabase.from("bot_conversas")
-            .update({ state: "menu_inicial", updated_at: new Date().toISOString() })
-            .eq("id", supportConv.id);
-          return;
-        }
-        // Forward message to passenger
-        const replyMsg = `Mensagem do Suporte: ${text.trim()}`;
-        try {
-          const botConfig = await getBotConnectionConfig(connectionId);
-          if (botConfig) {
-            await sendWhatsAppMessageWithProvider(botConfig.provider, botConfig.fields, supportConv.phone, replyMsg);
-          }
-        } catch { /* best-effort */ }
-        await supabase.from("bot_conversas")
-          .update({ updated_at: new Date().toISOString() })
-          .eq("id", supportConv.id);
-      }
+      // Not a dispatch command — ignore (do NOT forward to passenger)
       return;
     }
 
@@ -3047,12 +3020,15 @@ async function handleIncomingMessage(companyId: string, data: Record<string, unk
         manualDispatchEnabled = mdConn?.manual_dispatch_enabled ?? false;
       }
 
-      // Try to parse a manual dispatch command:
-      // Format: "Nome, Telefone, Endereco vai para Destino" or "Nome, Telefone, Endereco" (no destination)
-      const dispatchRegex = /^([^,]+),\s*([0-9\s()+\-]+),\s*(.+?)(?:\s+vai\s+para\s+(.+))?$/i;
-      const dispatchMatch = text.trim().match(dispatchRegex);
+      // Only treat messages starting with "/" as dispatch commands
+      if (text.trim().startsWith("/") && manualDispatchEnabled) {
+        // Strip the leading "/" and parse the dispatch command:
+        // Format: "/Nome, Telefone, Endereco vai para Destino" or "/Nome, Telefone, Endereco" (no destination)
+        const dispatchBody = text.trim().slice(1).trim();
+        const dispatchRegex = /^([^,]+),\s*([0-9\s()+\-]+),\s*(.+?)(?:\s+vai\s+para\s+(.+))?$/i;
+        const dispatchMatch = dispatchBody.match(dispatchRegex);
 
-      if (manualDispatchEnabled && dispatchMatch) {
+      if (dispatchMatch) {
         const [, name, phone, addressPart, destinationPart] = dispatchMatch;
         const passengerName = name.trim();
         const passengerPhone = toBrazilianWhatsAppNumber(phone.trim());
@@ -3281,6 +3257,7 @@ async function handleIncomingMessage(companyId: string, data: Record<string, unk
       }
       return;
     }
+    } // end else (message starts with "/")
   }
 
   // Find the passenger's active ride by phone number, scoped to this company
