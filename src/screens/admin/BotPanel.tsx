@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
-import { Bot, QrCode, Loader2, CheckCircle2, XCircle, RefreshCw, Trash2, Plus, AlertCircle, Phone, Wifi, WifiOff, MapPin, MessageSquare, Settings, ChevronDown, ChevronRight, Edit3, Save, Mic, Check, Building2, RefreshCcwDot } from 'lucide-react';
+import { Bot, QrCode, Loader2, CheckCircle2, XCircle, RefreshCw, Trash2, Plus, AlertCircle, Phone, Wifi, WifiOff, MapPin, MessageSquare, Settings, ChevronDown, ChevronRight, Edit3, Save, Mic, Check, Building2, RefreshCcwDot, Headphones, Radio } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 import { useAuth } from '@/context/AuthContext';
 import { slugify } from '@/lib/utils';
@@ -291,6 +291,7 @@ function ConnectionCard({ conn, companyId, companySlug, expanded, onToggle, onRe
         <div className="border-t border-slate-800 p-4 space-y-4 bg-slate-950/30">
           <CategorySelectorSection conn={conn} companyId={companyId} companySlug={companySlug} onError={onError} onSuccess={onSuccess} onUpdate={onUpdate} />
           <FlowSettingsSection conn={conn} companyId={companyId} onError={onError} onSuccess={onSuccess} onUpdate={onUpdate} />
+          <ManualDispatchSection conn={conn} companyId={companyId} onError={onError} onSuccess={onSuccess} onUpdate={onUpdate} />
           <AddressSuggestionsSection connId={conn.id} companyId={companyId} onError={onError} onSuccess={onSuccess} />
           <CustomMessagesSection conn={conn} companyId={companyId} onError={onError} onSuccess={onSuccess} />
         </div>
@@ -433,6 +434,71 @@ function CustomMessagesSection({ conn, companyId, onError, onSuccess }: { conn: 
           </div>
         ))}
       </div>
+    </div>
+  );
+}
+
+function ManualDispatchSection({ conn, companyId, onError, onSuccess, onUpdate }: { conn: BotWhatsappConexao; companyId: string; onError: (m: string) => void; onSuccess: (m: string) => void; onUpdate: () => void }) {
+  const [enabled, setEnabled] = useState(false);
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    setEnabled(conn.manual_dispatch_enabled ?? false);
+  }, [conn]);
+
+  const handleToggle = async () => {
+    const newValue = !enabled;
+    setEnabled(newValue);
+    setSaving(true);
+    const result = await callBotApi('update_manual_dispatch', { companyId, connectionId: conn.id, enabled: newValue });
+    setSaving(false);
+    if (result.ok) {
+      onSuccess(newValue ? 'Despacho manual ativado' : 'Despacho manual desativado');
+      setTimeout(() => onSuccess(''), 2000);
+      onUpdate();
+    } else {
+      setEnabled(!newValue);
+      onError(result.error ?? 'Erro ao salvar');
+    }
+  };
+
+  return (
+    <div>
+      <div className="flex items-center justify-between mb-2">
+        <div className="flex items-center gap-2">
+          <Headphones className="h-4 w-4 text-gold-400" />
+          <h4 className="text-xs font-bold text-slate-300 uppercase tracking-wide">Despacho Manual via Suporte</h4>
+        </div>
+        <button onClick={handleToggle} disabled={saving} className="flex items-center gap-2">
+          {saving && <Loader2 className="h-3 w-3 animate-spin text-slate-400" />}
+          <span className={`relative h-5 w-9 rounded-full transition-colors shrink-0 ${enabled ? 'bg-gold-500' : 'bg-slate-700'}`}>
+            <span className={`absolute top-0.5 h-4 w-4 rounded-full bg-white transition-transform ${enabled ? 'translate-x-4' : 'translate-x-0.5'}`} />
+          </span>
+        </button>
+      </div>
+      <p className="text-[11px] text-slate-500 mb-2">Quando ativado, o numero de suporte da empresa pode enviar mensagens formatadas para o bot para criar e despachar corridas em nome do passageiro.</p>
+
+      {enabled && (
+        <div className="bg-slate-800/40 rounded-lg px-3 py-3 space-y-2">
+          <div className="flex items-start gap-2">
+            <Radio className="h-3.5 w-3.5 text-gold-400 mt-0.5 shrink-0" />
+            <div className="min-w-0">
+              <p className="text-[11px] font-bold text-slate-300">Como usar</p>
+              <p className="text-[10px] text-slate-500 mt-0.5">O WhatsApp de suporte envia uma mensagem para o numero do bot no formato:</p>
+            </div>
+          </div>
+          <div className="bg-slate-950/60 rounded-lg px-3 py-2 text-[10px] text-slate-400 font-mono leading-relaxed">
+            <p className="text-slate-300">Nome, Telefone, Endereco de embarque vai para Destino</p>
+            <p className="text-slate-600 mt-1">Ex: Rafael, 16991344127, Arthur Mesquita 57 vai para Amarelinha do Centro</p>
+          </div>
+          <ul className="text-[10px] text-slate-500 space-y-1 pl-5 list-disc">
+            <li>Se houver uma corrida pendente para o passageiro, ela sera cancelada automaticamente (sem mensagem para o cliente)</li>
+            <li>A conversa do bot com o passageiro e resetada para a nova corrida</li>
+            <li>O destino e opcional — sem "vai para", despacha sem destino</li>
+            <li>A confirmacao e enviada apenas para o numero de suporte, nao para o passageiro</li>
+          </ul>
+        </div>
+      )}
     </div>
   );
 }

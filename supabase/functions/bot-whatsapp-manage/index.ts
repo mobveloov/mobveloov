@@ -586,6 +586,16 @@ Deno.serve(async (req: Request) => {
       return json({ success: true });
     }
 
+    if (action === "update_manual_dispatch") {
+      if (!connectionId) return err400("connectionId required");
+      const { enabled } = body;
+      const { error: mdErr } = await supabase.from("bot_whatsapp_conexoes")
+        .update({ manual_dispatch_enabled: !!enabled, updated_at: new Date().toISOString() })
+        .eq("id", connectionId).eq("company_id", companyId);
+      if (mdErr) return err500("Erro ao salvar configuracao de despacho manual: " + mdErr.message);
+      return json({ success: true });
+    }
+
     if (action === "list_categories") {
       // Check integration mode — same logic as totems
       const { data: settings } = await supabase

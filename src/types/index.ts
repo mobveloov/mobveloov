@@ -368,6 +368,8 @@ export interface BotWhatsappConexao {
   meta_phone_id: string | null;
   meta_waba_id: string | null;
   location_id: string | null;
+  manual_dispatch_enabled: boolean | null;
+  bot_flow_settings: Record<string, boolean> | null;
   company_locations: { name: string; slug: string; city: string | null; state: string | null } | null;
   created_at: string;
   updated_at: string;
