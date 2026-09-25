@@ -2228,7 +2228,31 @@ async function handleIncomingMessage(companyId: string, data: Record<string, unk
     ?? null;
   const mimetype = audioSource?.mimetype ?? audioSource?.mimeType ?? data?.mimetype ?? "audio/ogg";
   if (audioData && (typeof audioData === "string" || audioData instanceof String)) {
-    audio = { data: String(audioData), mimetype: String(mimetype) };
+    let audioDataStr = String(audioData);
+    // If it's a URL (not base64 and not a data: URI), download it with Evolution API auth
+    if (audioDataStr.startsWith("http") && !audioDataStr.startsWith("data:")) {
+      try {
+        const { provider, fields: f } = await getCompanyWhatsAppConfig(companyId);
+        const headers: Record<string, string> = {};
+        if ((provider === "evolution" || provider === "veloov") && f["evo_token"]) {
+          headers["apikey"] = f["evo_token"];
+        }
+        const audioResp = await fetch(audioDataStr, { headers });
+        if (audioResp.ok) {
+          const audioBlob = await audioResp.blob();
+          const arrayBuf = await audioBlob.arrayBuffer();
+          const bytes = new Uint8Array(arrayBuf);
+          let binary = "";
+          for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
+          audioDataStr = btoa(binary);
+        } else {
+          console.error(`[handleIncomingMessage] Failed to download audio URL: HTTP ${audioResp.status}`);
+        }
+      } catch (err) {
+        console.error(`[handleIncomingMessage] Audio download exception: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
+    audio = { data: audioDataStr, mimetype: String(mimetype) };
   }
 
   if (!rawPhone) return;
