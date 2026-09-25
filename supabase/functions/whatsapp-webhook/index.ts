@@ -1609,6 +1609,8 @@ function parseCombinedAddress(rawText: string): { pickup: string; destination: s
   const deaccented = rawText.normalize("NFD").replace(/[\u0300-\u036f]/g, "");
   // Common separators passengers use to split pickup from destination
   const separators = [
+    /\be vou la no\b/i,
+    /\be vou la na\b/i,
     /\be vou para\b/i,
     /\be vou pra\b/i,
     /\be vou no\b/i,
@@ -1645,16 +1647,29 @@ function parseCombinedAddress(rawText: string): { pickup: string; destination: s
       const sepEnd = match.index + match[0].length;
       let pickup = deaccented.slice(0, match.index).trim();
       let destination = deaccented.slice(sepEnd).trim();
-      // Remove leading "quero um carro", "quero uma corrida", "preciso de carro" etc. from pickup
-      pickup = pickup.replace(/^(quero (um carro|uma corrida)|preciso (de|de um) carro|gostaria de (um|uma) (corrida|carro))\b/i, "").trim();
-      // Remove leading "estou na", "estou no", "estou em", "to na", "to no", "na", "no", "em" from pickup
-      pickup = pickup.replace(/^(estou (na|no|em)|to (na|no|em)|(na|no|em))\s+/i, "").trim();
+      pickup = pickup.replace(/^(?:eu\s+)?(?:quero|preciso|gostaria)[\s\S]*?\b(?:aqui\s+)?(?:na|no|em)\s+/i, "").trim();
+      pickup = pickup.replace(/^(?:estou|to|estou aqui)\s+(?:na|no|em)\s+/i, "").trim();
+      pickup = pickup.replace(/^(?:aqui\s+)?(?:na|no|em)\s+/i, "").trim();
+      destination = destination.replace(/^(?:la\s+|lá\s+)?(?:na|no|em|para|pra|pro)\s+/i, "").trim();
       if (pickup && destination) {
         return { pickup, destination };
       }
     }
   }
   return null;
+}
+
+function looksLikeOfficialAddress(text: string): boolean {
+  return /\b(?:rua|avenida|av\.?|travessa|alameda|estrada|rodovia|viela|beco)\b[\s\S]*\b\d{1,6}\b/i.test(text);
+}
+
+function cleanPickupReference(text: string): string {
+  const combined = parseCombinedAddress(text);
+  if (combined) return normalizePlaceText(combined.pickup) ?? text.trim();
+  return normalizePlaceText(text)
+    ?.replace(/^(?:eu\s+)?(?:quero|preciso|gostaria)[\s\S]*?\b(?:aqui\s+)?(?:na|no|em)\s+/i, "")
+    .replace(/^(?:estou|to)\s+(?:na|no|em)\s+/i, "")
+    .trim() ?? text.trim();
 }
 
 async function getCompanyLocationInfo(companyId: string, connectionId?: string): Promise<{ city: string | null; state: string | null; lat: number | null; lng: number | null; slug: string | null; totemName: string | null; pickupAddress: string | null }> {
@@ -2347,6 +2362,7 @@ As mensagens do passageiro serao encaminhadas a partir de agora.`;
             await sendBotMessage(companyId, cleanPhone, connectionId, `\u{1F3A4} Transcrevi: "${audioText}"\n\n\u{1F4CD} Nao consegui identificar um endereco. Por favor, digite o endereco de embarque ou envie sua localizacao.`);
             return;
           }
+          const combined = parseCombinedAddress(audioText);
           const llmCtx = await getCompanyLocationInfo(companyId, connectionId);
           const llmResult = await interpretMessageWithLLM(audioText, companyId, {
             city: llmCtx.city,
@@ -2357,19 +2373,19 @@ As mensagens do passageiro serao encaminhadas a partir de agora.`;
           if (llmResult && llmResult.endereco_origem) {
             addressText = normalizePlaceText(llmResult.endereco_origem);
             combinedDest = normalizePlaceText(llmResult.endereco_destino);
-            originReference = normalizePlaceText(llmResult.texto_embarque_motorista ?? llmResult.endereco_origem) ?? addressText;
-            destinationReference = normalizePlaceText(llmResult.texto_destino_motorista) ?? combinedDest;
-            llmIsRuaOficial = !!llmResult.eh_rua_oficial;
+            originReference = combined ? normalizePlaceText(combined.pickup) : cleanPickupReference(llmResult.texto_embarque_motorista ?? llmResult.endereco_origem);
+            destinationReference = combined ? normalizePlaceText(combined.destination) : normalizePlaceText(llmResult.texto_destino_motorista) ?? combinedDest;
+            llmIsRuaOficial = !!llmResult.eh_rua_oficial || !!combined && looksLikeOfficialAddress(combined.pickup);
+            if (combined && looksLikeOfficialAddress(combined.pickup)) addressText = normalizePlaceText(combined.pickup);
+          } else if (combined) {
+            addressText = normalizePlaceText(combined.pickup);
+            combinedDest = normalizePlaceText(combined.destination);
+            originReference = normalizePlaceText(combined.pickup);
+            destinationReference = normalizePlaceText(combined.destination);
+            llmIsRuaOficial = looksLikeOfficialAddress(combined.pickup);
           } else {
-            const combined = parseCombinedAddress(audioText);
-            if (combined) {
-              addressText = normalizePlaceText(combined.pickup);
-              combinedDest = normalizePlaceText(combined.destination);
-              originReference = normalizePlaceText(combined.pickup);
-              destinationReference = normalizePlaceText(combined.destination);
-            } else {
-              addressText = normalizePlaceText(audioText);
-            }
+            addressText = normalizePlaceText(audioText);
+            originReference = cleanPickupReference(audioText);
           }
         } else {
           await sendBotMessage(companyId, cleanPhone, connectionId, "Nao consegui transcrever o audio. Por favor, digite o endereco de embarque ou envie sua localizacao.");
@@ -2377,8 +2393,10 @@ As mensagens do passageiro serao encaminhadas a partir de agora.`;
         }
       } else if (text) {
         // Try LLM-based NLU first for richest parsing, fall back to regex
+        const inputText = text.trim();
+        const combined = parseCombinedAddress(inputText);
         const llmCtx = await getCompanyLocationInfo(companyId, connectionId);
-        const llmResult = await interpretMessageWithLLM(text.trim(), companyId, {
+        const llmResult = await interpretMessageWithLLM(inputText, companyId, {
           city: llmCtx.city,
           state: llmCtx.state,
           totemReference: llmCtx.pickupAddress || llmCtx.totemName,
@@ -2387,19 +2405,19 @@ As mensagens do passageiro serao encaminhadas a partir de agora.`;
         if (llmResult && llmResult.endereco_origem) {
           addressText = normalizePlaceText(llmResult.endereco_origem);
           combinedDest = normalizePlaceText(llmResult.endereco_destino);
-          originReference = normalizePlaceText(llmResult.texto_embarque_motorista ?? llmResult.endereco_origem) ?? addressText;
-          destinationReference = normalizePlaceText(llmResult.texto_destino_motorista) ?? combinedDest;
-          llmIsRuaOficial = !!llmResult.eh_rua_oficial;
+          originReference = combined ? normalizePlaceText(combined.pickup) : cleanPickupReference(llmResult.texto_embarque_motorista ?? llmResult.endereco_origem);
+          destinationReference = combined ? normalizePlaceText(combined.destination) : normalizePlaceText(llmResult.texto_destino_motorista) ?? combinedDest;
+          llmIsRuaOficial = !!llmResult.eh_rua_oficial || !!combined && looksLikeOfficialAddress(combined.pickup);
+          if (combined && looksLikeOfficialAddress(combined.pickup)) addressText = normalizePlaceText(combined.pickup);
+        } else if (combined) {
+          addressText = normalizePlaceText(combined.pickup);
+          combinedDest = normalizePlaceText(combined.destination);
+          originReference = normalizePlaceText(combined.pickup);
+          destinationReference = normalizePlaceText(combined.destination);
+          llmIsRuaOficial = looksLikeOfficialAddress(combined.pickup);
         } else {
-          const combined = parseCombinedAddress(text.trim());
-          if (combined) {
-            addressText = normalizePlaceText(combined.pickup);
-            combinedDest = normalizePlaceText(combined.destination);
-            originReference = normalizePlaceText(combined.pickup);
-            destinationReference = normalizePlaceText(combined.destination);
-          } else {
-            addressText = normalizePlaceText(text);
-          }
+          addressText = normalizePlaceText(inputText);
+          originReference = cleanPickupReference(inputText);
         }
       }
 
