@@ -415,12 +415,186 @@ async function sendBotMessage(companyId: string, phone: string, connectionId: st
   }
 }
 
+function deaccent(s: string): string {
+  return s.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().trim();
+}
+
+// NLU: Uses LLM (OpenAI/Groq chat completion) to extract structured ride intent from a free-form message.
+// Falls back to null if no LLM key is configured, letting the regex-based parseCombinedAddress handle it.
+interface ParsedRideIntent {
+  quer_corrida: boolean;
+  tipo_veiculo: "moto" | "carro" | null;
+  endereco_origem: string | null;
+  endereco_destino: string | null;
+}
+
+async function interpretMessageWithLLM(text: string, companyId?: string): Promise<ParsedRideIntent | null> {
+  let apiKey: string | undefined;
+  let provider = "groq";
+  let model = "llama-3.3-70b-versatile";
+
+  if (companyId) {
+    const { data: config } = await supabase
+      .from("bot_transcription_config")
+      .select("provider, api_key, is_valid, additional_config")
+      .eq("company_id", companyId)
+      .maybeSingle();
+    if (config?.is_valid && config.api_key) {
+      apiKey = config.api_key;
+      provider = config.provider;
+      const extra = (config.additional_config ?? {}) as Record<string, string>;
+      if (extra.nlu_model) model = extra.nlu_model;
+    }
+  }
+  if (!apiKey) {
+    const groqKey = Deno.env.get("GROQ_API_KEY");
+    const openaiKey = Deno.env.get("OPENAI_API_KEY");
+    if (!groqKey && !openaiKey) return null;
+    apiKey = groqKey || openaiKey;
+    provider = groqKey ? "groq" : "openai";
+  }
+
+  // Use chat-compatible models per provider
+  if (provider === "openai") model = "gpt-4o-mini";
+  else if (provider === "groq") model = "llama-3.3-70b-versatile";
+  else return null; // deepgram/assemblyai/google/azure are transcription-only
+
+  const apiUrl = provider === "openai"
+    ? "https://api.openai.com/v1/chat/completions"
+    : "https://api.groq.com/openai/v1/chat/completions";
+
+  const systemPrompt = `Voce e um extrator de intenção de corrida de mobilidade. Dada a mensagem de um passageiro no WhatsApp, extraia os campos estruturados. Responda APENAS com JSON valido, sem markdown.
+
+Regras:
+- "quer_corrida": true se o passageiro quer solicitar uma corrida/taxi/uber, false caso contrario
+- "tipo_veiculo": "moto" se pediu moto/mototaxi, "carro" se pediu carro/taxi/uber, null se nao especificado
+- "endereco_origem": o endereco de embarque mencionado (texto bruto, sem formatacao), ou null se nao mencionado
+- "endereco_destino": o endereco de destino mencionado (texto bruto, sem formatacao), ou null se nao mencionado
+- Se o passageiro disser "nao informar destino" ou equivalente, defina endereco_destino como null
+- Frases como "na rua X vou para Y" significam origem=X, destino=Y
+- Remova prefixos como "quero um carro na", "preciso de taxi na", etc. do endereco_origem
+
+Exemplos:
+Input: "Quero um carro na rua Arthur mesquita 57 vou para amarelinha do centro"
+Output: {"quer_corrida":true,"tipo_veiculo":"carro","endereco_origem":"rua Arthur mesquita 57","endereco_destino":"amarelinha do centro"}
+
+Input: "Amarelinha do Centro Pitangueiras"
+Output: {"quer_corrida":false,"tipo_veiculo":null,"endereco_origem":null,"endereco_destino":"Amarelinha do Centro Pitangueiras"}
+
+Input: "Nao informar destino"
+Output: {"quer_corrida":false,"tipo_veiculo":null,"endereco_origem":null,"endereco_destino":null}`;
+
+  try {
+    const resp = await fetch(apiUrl, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}` },
+      body: JSON.stringify({
+        model,
+        messages: [
+          { role: "system", content: systemPrompt },
+          { role: "user", content: text },
+        ],
+        temperature: 0,
+        max_tokens: 200,
+        response_format: { type: "json_object" },
+      }),
+    });
+    if (!resp.ok) return null;
+    const data = await resp.json();
+    const content = data?.choices?.[0]?.message?.content as string | undefined;
+    if (!content) return null;
+    const parsed = JSON.parse(content) as ParsedRideIntent;
+    return {
+      quer_corrida: !!parsed.quer_corrida,
+      tipo_veiculo: parsed.tipo_veiculo === "moto" ? "moto" : parsed.tipo_veiculo === "carro" ? "carro" : null,
+      endereco_origem: parsed.endereco_origem ?? null,
+      endereco_destino: parsed.endereco_destino ?? null,
+    };
+  } catch {
+    return null;
+  }
+}
+
+// Fuzzy search for POIs/suggestions in the bot_address_suggestions table.
+// Uses ILIKE with accent-insensitive matching so "amarelinha do centro" matches
+// "Amarelinha da Avenida" etc.
+async function findAddressSuggestionFuzzy(
+  connectionId: string,
+  input: string,
+): Promise<{ address_text: string; lat: number | null; lng: number | null } | null> {
+  const { data: suggestions } = await supabase
+    .from("bot_address_suggestions")
+    .select("nickname, address_text, lat, lng")
+    .eq("connection_id", connectionId);
+  if (!suggestions || suggestions.length === 0) return null;
+
+  const normalizedInput = deaccent(input);
+  // Sort by similarity: exact > startsWith > includes > ILIKE
+  let bestMatch: { address_text: string; lat: number | null; lng: number | null } | null = null;
+  let bestScore = 0;
+
+  for (const sug of suggestions) {
+    const nick = deaccent(sug.nickname || "");
+    const addr = deaccent(sug.address_text || "");
+    let score = 0;
+    if (nick === normalizedInput || addr === normalizedInput) score = 100;
+    else if (nick && (nick.startsWith(normalizedInput) || normalizedInput.startsWith(nick))) score = 80;
+    else if (nick && (nick.includes(normalizedInput) || normalizedInput.includes(nick))) score = 60;
+    else if (addr && (addr.includes(normalizedInput) || normalizedInput.includes(addr))) score = 40;
+    // Word-level overlap for partial matches like "amarelinha centro" vs "amarelinha da avenida centro"
+    if (score === 0 && normalizedInput.length > 3) {
+      const inputWords = normalizedInput.split(/\s+/).filter((w) => w.length > 2);
+      const targetWords = (nick + " " + addr).split(/\s+/).filter((w) => w.length > 2);
+      const overlap = inputWords.filter((w) => targetWords.some((t) => t.includes(w) || w.includes(t))).length;
+      if (overlap >= Math.ceil(inputWords.length * 0.6)) score = 30 + overlap * 5;
+    }
+    if (score > bestScore) {
+      bestScore = score;
+      bestMatch = { address_text: sug.address_text, lat: sug.lat, lng: sug.lng };
+    }
+  }
+  return bestScore >= 30 ? bestMatch : null;
+}
+
 async function geocodeAddress(address: string, city?: string, state?: string, biasLat?: number, biasLng?: number): Promise<{ lat: number; lng: number; formatted: string } | null> {
+  // 1. Try Google Geocoding API if a key is configured (per-company or env)
+  let googleKey: string | undefined;
+  if (companyIdForGeocoding) {
+    const { data: config } = await supabase
+      .from("bot_transcription_config")
+      .select("additional_config")
+      .eq("company_id", companyIdForGeocoding)
+      .maybeSingle();
+    const extra = (config?.additional_config ?? {}) as Record<string, string>;
+    googleKey = extra.google_geocoding_key;
+  }
+  if (!googleKey) googleKey = Deno.env.get("GOOGLE_GEOCODING_API_KEY");
+
+  if (googleKey) {
+    try {
+      let googleUrl = `https://maps.googleapis.com/maps/api/geocode/json?address=${encodeURIComponent(address)}&language=pt-BR&region=br&key=${googleKey}`;
+      if (city) googleUrl += `&components=locality:${encodeURIComponent(city)}`;
+      if (biasLat != null && biasLng != null) {
+        googleUrl += `&bounds=${(biasLat - 0.45)},${(biasLng - 0.45)}|${(biasLat + 0.45)},${(biasLng + 0.45)}`;
+      }
+      const gResp = await fetch(googleUrl);
+      if (gResp.ok) {
+        const gData = await gResp.json();
+        if (gData?.results?.length > 0) {
+          const r = gData.results[0];
+          return {
+            lat: r.geometry.location.lat,
+            lng: r.geometry.location.lng,
+            formatted: r.formatted_address ?? address,
+          };
+        }
+      }
+    } catch { /* fall through to Nominatim */ }
+  }
+
+  // 2. Fallback: Nominatim with viewbox bias
   const q = city ? `${address}, ${city}` : address;
   let url = `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(q)}&format=json&limit=1&countrycodes=br&addressdetails=1`;
-  // Add viewbox (proximity bias) when company coordinates are available — restricts
-  // search to ~50km around the company's city so informal/local addresses resolve
-  // correctly instead of matching random global results.
   if (biasLat != null && biasLng != null) {
     const delta = 0.45; // ~50km
     const left = biasLng - delta;
@@ -453,6 +627,10 @@ async function geocodeAddress(address: string, city?: string, state?: string, bi
   }
   return null;
 }
+
+// Module-level variable set during handleBotMessage so geocodeAddress can access
+// the company ID for Google Geocoding key lookup without changing its signature.
+let companyIdForGeocoding: string | null = null;
 
 function cleanAddressPart(value: unknown): string | null {
   if (typeof value !== "string") return null;
@@ -1222,6 +1400,7 @@ async function handleBotMessage(
   audio: { data: string; mimetype: string } | null,
   connectionId?: string,
 ): Promise<void> {
+  companyIdForGeocoding = companyId;
   // Load custom messages for this connection
   let customMessages: Record<string, string> = {};
   if (connectionId) {
@@ -1442,14 +1621,23 @@ As mensagens do passageiro serao encaminhadas a partir de agora.`;
           return;
         }
       } else if (text) {
-        // Check if the message contains both pickup AND destination (e.g. "na rua X vou para Y")
-        const combined = parseCombinedAddress(text.trim());
-        if (combined) {
-          addressText = combined.pickup;
-          combinedDest = combined.destination;
-          await sendBotMessage(companyId, cleanPhone, connectionId, `Entendi:\nEmbarque: ${combined.pickup}\nDestino: ${combined.destination}\nValidando enderecos...`);
+        // Try LLM-based NLU first for richest parsing, fall back to regex
+        const llmResult = await interpretMessageWithLLM(text.trim(), companyId);
+        if (llmResult && llmResult.endereco_origem) {
+          addressText = llmResult.endereco_origem;
+          combinedDest = llmResult.endereco_destino ?? null;
+          const parts = [`Embarque: ${llmResult.endereco_origem}`];
+          if (combinedDest) parts.push(`Destino: ${combinedDest}`);
+          await sendBotMessage(companyId, cleanPhone, connectionId, `Entendi:\n${parts.join("\n")}\nValidando enderecos...`);
         } else {
-          addressText = text.trim();
+          const combined = parseCombinedAddress(text.trim());
+          if (combined) {
+            addressText = combined.pickup;
+            combinedDest = combined.destination;
+            await sendBotMessage(companyId, cleanPhone, connectionId, `Entendi:\nEmbarque: ${combined.pickup}\nDestino: ${combined.destination}\nValidando enderecos...`);
+          } else {
+            addressText = text.trim();
+          }
         }
       }
 
@@ -1458,23 +1646,10 @@ As mensagens do passageiro serao encaminhadas a partir de agora.`;
         return;
       }
 
-      // Check address suggestions first (before geocoding)
+      // Fuzzy match against local POI/suggestion table (accent-insensitive)
       let suggestionMatch: { address_text: string; lat: number | null; lng: number | null } | null = null;
       if (connectionId) {
-        const { data: suggestions } = await supabase
-          .from("bot_address_suggestions")
-          .select("nickname, address_text, lat, lng")
-          .eq("connection_id", connectionId);
-        if (suggestions && suggestions.length > 0) {
-          const normalizedInput = addressText.toLowerCase().trim();
-          for (const sug of suggestions) {
-            const nick = (sug.nickname || "").toLowerCase().trim();
-            if (nick && (normalizedInput === nick || normalizedInput.includes(nick) || nick.includes(normalizedInput))) {
-              suggestionMatch = { address_text: sug.address_text, lat: sug.lat, lng: sug.lng };
-              break;
-            }
-          }
-        }
+        suggestionMatch = await findAddressSuggestionFuzzy(connectionId, addressText);
       }
 
       let finalLat: number;
@@ -1499,7 +1674,10 @@ As mensagens do passageiro serao encaminhadas a partir de agora.`;
             finalLng = companyLoc.lng;
             isFallback = true;
           } else {
-            await sendBotMessage(companyId, cleanPhone, connectionId, msg("address_not_found", "\u274C Nao consegui encontrar esse endereco. Tente enviar um endereco mais completo (ex: Rua, numero, bairro, cidade) ou compartilhe sua localizacao."));
+            await sendBotMessage(companyId, cleanPhone, connectionId, msg("address_not_found", "\u274C Nao encontrei esse endereco. Voce pode:\n\n1\uFE0F\u20E3 Mandar sua localizacao pelo WhatsApp (clipe \u{1F4CE} > Localizacao)\n2\uFE0F\u20E3 Enviar o endereco completo com numero e bairro\n3\uFE0F\u20E3 Seguir sem endereco confirmado — o motorista entra em contato"));
+            await supabase.from("bot_conversas")
+              .update({ state: "aguardando_endereco", updated_at: new Date().toISOString() })
+              .eq("id", conv.id);
             return;
           }
         }
@@ -1525,7 +1703,10 @@ As mensagens do passageiro serao encaminhadas a partir de agora.`;
             finalAddress = addressText;
             isFallback = true;
           } else {
-            await sendBotMessage(companyId, cleanPhone, connectionId, msg("address_not_found", "\u274C Nao consegui encontrar esse endereco. Tente enviar um endereco mais completo (ex: Rua, numero, bairro, cidade) ou compartilhe sua localizacao."));
+            await sendBotMessage(companyId, cleanPhone, connectionId, msg("address_not_found", "\u274C Nao encontrei esse endereco. Voce pode:\n\n1\uFE0F\u20E3 Mandar sua localizacao pelo WhatsApp (clipe \u{1F4CE} > Localizacao)\n2\uFE0F\u20E3 Enviar o endereco completo com numero e bairro\n3\uFE0F\u20E3 Seguir sem endereco confirmado — o motorista entra em contato"));
+            await supabase.from("bot_conversas")
+              .update({ state: "aguardando_endereco", updated_at: new Date().toISOString() })
+              .eq("id", conv.id);
             return;
           }
         }
@@ -1624,20 +1805,7 @@ As mensagens do passageiro serao encaminhadas a partir de agora.`;
 
           let destSuggestionMatch: { address_text: string; lat: number | null; lng: number | null } | null = null;
           if (connectionId) {
-            const { data: suggestions } = await supabase
-              .from("bot_address_suggestions")
-              .select("nickname, address_text, lat, lng")
-              .eq("connection_id", connectionId);
-            if (suggestions && suggestions.length > 0) {
-              const normalizedInput = destText.toLowerCase().trim();
-              for (const sug of suggestions) {
-                const nick = (sug.nickname || "").toLowerCase().trim();
-                if (nick && (normalizedInput === nick || normalizedInput.includes(nick) || nick.includes(normalizedInput))) {
-                  destSuggestionMatch = { address_text: sug.address_text, lat: sug.lat, lng: sug.lng };
-                  break;
-                }
-              }
-            }
+            destSuggestionMatch = await findAddressSuggestionFuzzy(connectionId, destText);
           }
 
           let finalDestLat: number;
@@ -1655,7 +1823,7 @@ As mensagens do passageiro serao encaminhadas a partir de agora.`;
                 finalDestLat = geocoded.lat;
                 finalDestLng = geocoded.lng;
               } else {
-                await sendBotMessage(companyId, cleanPhone, connectionId, msg("destination_not_found", "\u274C Nao consegui encontrar o endereco de destino. Tente enviar um endereco mais completo (ex: Rua, numero, bairro, cidade)."));
+                await sendBotMessage(companyId, cleanPhone, connectionId, msg("destination_not_found", "\u274C Nao encontrei o destino. Voce pode:\n\n1\uFE0F\u20E3 Mandar a localizacao do destino (clipe \u{1F4CE} > Localizacao)\n2\uFE0F\u20E3 Enviar o endereco completo com numero e bairro\n3\uFE0F\u20E3 Seguir sem destino — o motorista entra em contato"));
                 return;
               }
             }
@@ -1672,7 +1840,7 @@ As mensagens do passageiro serao encaminhadas a partir de agora.`;
               finalDestLng = geocoded.lng;
               finalDestAddress = geocoded.formatted;
             } else {
-              await sendBotMessage(companyId, cleanPhone, connectionId, msg("destination_not_found", "\u274C Nao consegui encontrar o endereco de destino. Tente enviar um endereco mais completo (ex: Rua, numero, bairro, cidade)."));
+              await sendBotMessage(companyId, cleanPhone, connectionId, msg("destination_not_found", "\u274C Nao encontrei o destino. Voce pode:\n\n1\uFE0F\u20E3 Mandar a localizacao do destino (clipe \u{1F4CE} > Localizacao)\n2\uFE0F\u20E3 Enviar o endereco completo com numero e bairro\n3\uFE0F\u20E3 Seguir sem destino — o motorista entra em contato"));
               return;
             }
           }
@@ -1724,23 +1892,10 @@ As mensagens do passageiro serao encaminhadas a partir de agora.`;
         return;
       }
 
-      // Check destination address suggestions
+      // Fuzzy match destination against local POI/suggestion table
       let destSuggestionMatch: { address_text: string; lat: number | null; lng: number | null } | null = null;
       if (connectionId) {
-        const { data: suggestions } = await supabase
-          .from("bot_address_suggestions")
-          .select("nickname, address_text, lat, lng")
-          .eq("connection_id", connectionId);
-        if (suggestions && suggestions.length > 0) {
-          const normalizedInput = destText.toLowerCase().trim();
-          for (const sug of suggestions) {
-            const nick = (sug.nickname || "").toLowerCase().trim();
-            if (nick && (normalizedInput === nick || normalizedInput.includes(nick) || nick.includes(normalizedInput))) {
-              destSuggestionMatch = { address_text: sug.address_text, lat: sug.lat, lng: sug.lng };
-              break;
-            }
-          }
-        }
+        destSuggestionMatch = await findAddressSuggestionFuzzy(connectionId, destText);
       }
 
       let finalDestLat: number;
@@ -1758,7 +1913,7 @@ As mensagens do passageiro serao encaminhadas a partir de agora.`;
             finalDestLat = geocoded.lat;
             finalDestLng = geocoded.lng;
           } else {
-            await sendBotMessage(companyId, cleanPhone, connectionId, msg("destination_not_found", "\u274C Nao consegui encontrar o endereco de destino. Tente enviar um endereco mais completo (ex: Rua, numero, bairro, cidade)."));
+            await sendBotMessage(companyId, cleanPhone, connectionId, msg("destination_not_found", "\u274C Nao encontrei o destino. Voce pode:\n\n1\uFE0F\u20E3 Mandar a localizacao do destino (clipe \u{1F4CE} > Localizacao)\n2\uFE0F\u20E3 Enviar o endereco completo com numero e bairro\n3\uFE0F\u20E3 Seguir sem destino — o motorista entra em contato"));
             return;
           }
         }
@@ -1775,7 +1930,7 @@ As mensagens do passageiro serao encaminhadas a partir de agora.`;
           finalDestLng = geocoded.lng;
           finalDestAddress = geocoded.formatted;
         } else {
-          await sendBotMessage(companyId, cleanPhone, connectionId, msg("destination_not_found", "\u274C Nao consegui encontrar o endereco de destino. Tente enviar um endereco mais completo (ex: Rua, numero, bairro, cidade)."));
+          await sendBotMessage(companyId, cleanPhone, connectionId, msg("destination_not_found", "\u274C Nao encontrei o destino. Voce pode:\n\n1\uFE0F\u20E3 Mandar a localizacao do destino (clipe \u{1F4CE} > Localizacao)\n2\uFE0F\u20E3 Enviar o endereco completo com numero e bairro\n3\uFE0F\u20E3 Seguir sem destino — o motorista entra em contato"));
           return;
         }
       }
@@ -1924,7 +2079,19 @@ As mensagens do passageiro serao encaminhadas a partir de agora.`;
           })
           .eq("id", conv.id);
 
-        const successMsg = result.machineMessage || msg("ride_success", `\u2705 Corrida solicitada com sucesso! Pagamento: ${paymentMethod}. Um motorista vai aceitar em breve. Aguarde.`);
+        // Sanitize machineMessage: strip raw passenger data (name/phone) that the Machine API
+        // might include in its response, preventing data leak to the passenger's chat.
+        let successMsg = result.machineMessage;
+        if (successMsg) {
+          successMsg = successMsg
+            .replace(/(?:passageiro|nome|cliente)\s*:\s*[^\n]+/gi, "")
+            .replace(/(?:telefone|fone|whatsapp|celular)\s*:\s*\+?\d[\d\s\-()]{6,}/gi, "")
+            .replace(/\b\d{10,13}\b/g, (m) => m.length >= 10 && m.length <= 13 && /^\d+$/.test(m) ? "" : m)
+            .replace(/\n{3,}/g, "\n\n")
+            .trim();
+          if (!successMsg) successMsg = null;
+        }
+        successMsg = successMsg || msg("ride_success", `\u2705 Corrida solicitada com sucesso! Pagamento: ${paymentMethod}. Um motorista vai aceitar em breve. Aguarde.`);
         await sendBotMessage(companyId, cleanPhone, connectionId, successMsg);
 
         await supabase.from("admin_logs").insert({
@@ -3722,3 +3889,4 @@ async function handleIncomingMessage(companyId: string, data: Record<string, unk
 // v8.3 cancel+autocomplete fix Fri Sep 25 13:32:15 UTC 2026
 // v8.4 regex fix Fri Sep 25 13:33:11 UTC 2026
 // v8.5 support timeout Fri Sep 25 14:10:55 UTC 2026
+// v9.0 NLU + fuzzy POI + Google geocoding + failure loop + machineMessage sanitize Fri Sep 25 17:45:00 UTC 2026
