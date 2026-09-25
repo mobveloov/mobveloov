@@ -258,7 +258,7 @@ async function sendWhatsAppMessageWithProvider(
     const resp = await fetch(`${url}/message/sendText/${instance}`, {
       method: "POST",
       headers: { "Content-Type": "application/json", apikey: token },
-      body: JSON.stringify({ number: cleanPhone, text: message, delay: 1200, presence: "available" }),
+      body: JSON.stringify({ number: cleanPhone, text: message, delay: 1200 }),
     });
     const respBody = await resp.text().catch(() => "");
     if (!resp.ok) {
@@ -379,8 +379,12 @@ async function sendInteractiveButtons(
       const fallbackMsg = `${bodyText}${footerText ? `\n${footerText}` : ""}\n\n${buttons.map((b, i) => `${i + 1} - ${b.label}`).join("\n")}\n\nResponda com o numero da opcao.`;
       await sendBotMessage(companyId, phone, connectionId, fallbackMsg);
     }
-  } catch {
-    // Last-resort fallback to text
+  } catch (err) {
+    await supabase.from("admin_logs").insert({
+      company_id: companyId,
+      source: "whatsapp_webhook", level: "error",
+      message: `sendInteractiveButtons exception for ${phone}: ${err instanceof Error ? err.message.slice(0, 500) : String(err).slice(0, 500)}`,
+    });
     const fallbackMsg = `${bodyText}\n\n${buttons.map((b, i) => `${i + 1} - ${b.label}`).join("\n")}\n\nResponda com o numero da opcao.`;
     await sendBotMessage(companyId, phone, connectionId, fallbackMsg);
   }
@@ -395,33 +399,10 @@ async function sendInteractiveWithProvider(
   footerText?: string,
 ): Promise<boolean> {
   if (provider === "evolution" || provider === "veloov") {
-    const url = f["evo_url"] ?? "";
-    const token = f["evo_token"] ?? "";
-    if (!url || !token) return false;
-    const instance = f["evo_instance"] || "veloov";
-    // Evolution API sendButtons endpoint
-    const resp = await fetch(`${url}/message/sendButtons/${instance}`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", apikey: token },
-      body: JSON.stringify({
-        number: cleanPhone,
-        title: bodyText.slice(0, 60),
-        description: bodyText.length > 60 ? bodyText : "",
-        footer: footerText ?? "",
-        buttons: buttons.map((b) => ({ type: "reply", displayText: b.label.slice(0, 20), id: b.id })),
-        delay: 1200,
-        presence: "available",
-      }),
-    });
-    const respBody = await resp.text().catch(() => "");
-    if (!resp.ok) {
-      await supabase.from("admin_logs").insert({
-        source: "whatsapp_webhook", level: "error", message: `sendButtons Evolution HTTP ${resp.status} for ${cleanPhone}: ${respBody.slice(0, 500)}` });
-    } else {
-      await supabase.from("admin_logs").insert({
-        source: "whatsapp_webhook", level: "info", message: `sendButtons Evolution OK for ${cleanPhone}: ${respBody.slice(0, 300)}` });
-    }
-    return resp.ok;
+    // Evolution API sendButtons is unreliable across versions (GitHub issue #1597:
+    // buttons show "content not compatible with WhatsApp Web"). Always return false
+    // so the caller falls back to plain text with numbered options.
+    return false;
   }
 
   if (provider === "meta_cloud") {
@@ -485,7 +466,12 @@ async function sendInteractiveList(
       const fallbackMsg = `${bodyText}\n\n${allRows.map((r, i) => `${i + 1} - ${r.label}`).join("\n")}\n\nResponda com o numero da opcao.`;
       await sendBotMessage(companyId, phone, connectionId, fallbackMsg);
     }
-  } catch {
+  } catch (err) {
+    await supabase.from("admin_logs").insert({
+      company_id: companyId,
+      source: "whatsapp_webhook", level: "error",
+      message: `sendInteractiveList exception for ${phone}: ${err instanceof Error ? err.message.slice(0, 500) : String(err).slice(0, 500)}`,
+    });
     const allRows = sections.flatMap((s) => s.rows);
     const fallbackMsg = `${bodyText}\n\n${allRows.map((r, i) => `${i + 1} - ${r.label}`).join("\n")}\n\nResponda com o numero da opcao.`;
     await sendBotMessage(companyId, phone, connectionId, fallbackMsg);
@@ -502,29 +488,9 @@ async function sendInteractiveListWithProvider(
   footerText?: string,
 ): Promise<boolean> {
   if (provider === "evolution" || provider === "veloov") {
-    const url = f["evo_url"] ?? "";
-    const token = f["evo_token"] ?? "";
-    if (!url || !token) return false;
-    const instance = f["evo_instance"] || "veloov";
-    const resp = await fetch(`${url}/message/sendList/${instance}`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", apikey: token },
-      body: JSON.stringify({
-        number: cleanPhone,
-        title: bodyText.slice(0, 60),
-        description: bodyText.length > 60 ? bodyText : "",
-        footer: footerText ?? "",
-        buttonText: buttonText,
-        menuId: "menu_list",
-        sections: sections.map((s) => ({
-          title: s.title,
-          rows: s.rows.map((r) => ({ rowId: r.id, title: r.label.slice(0, 24), description: "" })),
-        })),
-        delay: 1200,
-        presence: "available",
-      }),
-    });
-    return resp.ok;
+    // Evolution API sendList has the same compatibility issues as sendButtons.
+    // Always return false so the caller falls back to plain text with numbered options.
+    return false;
   }
 
   if (provider === "meta_cloud") {
