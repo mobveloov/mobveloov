@@ -138,61 +138,83 @@ Deno.serve(async (req: Request) => {
   }
 
   try {
-    const { rideId, message } = await req.json();
+    const { rideId, message, companyId: directCompanyId, phone: directPhone } = await req.json();
 
-    if (!rideId || !message) {
+    // Two modes:
+    // 1) Ride chat mode: rideId + message (from RideChat component)
+    // 2) Chat panel mode: companyId + phone + message (from ChatsModule admin panel)
+    const isChatPanelMode = !rideId && directCompanyId && directPhone;
+
+    if (!message || (!rideId && !isChatPanelMode)) {
       return new Response(
-        JSON.stringify({ error: "rideId e message são obrigatórios" }),
+        JSON.stringify({ error: "rideId ou (companyId+phone) e message são obrigatórios" }),
         { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } },
       );
     }
 
-    const { data: ride } = await supabase
-      .from("rides")
-      .select("id, company_id, passenger_phone, passenger_name, status")
-      .eq("id", rideId)
-      .maybeSingle();
+    let resolvedCompanyId: string;
+    let resolvedPhone: string;
+    let rideIdForMsg: string | null = null;
 
-    if (!ride) {
-      return new Response(
-        JSON.stringify({ error: "Corrida não encontrada" }),
-        { status: 404, headers: { ...corsHeaders, "Content-Type": "application/json" } },
-      );
+    if (isChatPanelMode) {
+      resolvedCompanyId = String(directCompanyId);
+      resolvedPhone = toBrazilianWhatsAppNumber(String(directPhone));
+    } else {
+      const { data: ride } = await supabase
+        .from("rides")
+        .select("id, company_id, passenger_phone, passenger_name, status")
+        .eq("id", rideId)
+        .maybeSingle();
+
+      if (!ride) {
+        return new Response(
+          JSON.stringify({ error: "Corrida não encontrada" }),
+          { status: 404, headers: { ...corsHeaders, "Content-Type": "application/json" } },
+        );
+      }
+
+      if (ride.status === "completed" || ride.status === "canceled") {
+        return new Response(
+          JSON.stringify({ error: "Esta corrida já foi finalizada. Não é possível enviar mensagens." }),
+          { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } },
+        );
+      }
+
+      resolvedCompanyId = ride.company_id;
+      resolvedPhone = toBrazilianWhatsAppNumber(ride.passenger_phone);
+      rideIdForMsg = ride.id;
     }
 
-    if (ride.status === "completed" || ride.status === "canceled") {
-      return new Response(
-        JSON.stringify({ error: "Esta corrida já foi finalizada. Não é possível enviar mensagens." }),
-        { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } },
-      );
+    // Save to ride_messages only when we have a rideId
+    let savedMsgId: string | null = null;
+    if (rideIdForMsg) {
+      const { data: savedMsg } = await supabase
+        .from("ride_messages")
+        .insert({
+          ride_id: rideIdForMsg,
+          company_id: resolvedCompanyId,
+          sender: "motorista",
+          content: message,
+          status: "enviada",
+        })
+        .select("id, created_at")
+        .single();
+      savedMsgId = savedMsg?.id ?? null;
     }
 
-    const { data: savedMsg } = await supabase
-      .from("ride_messages")
-      .insert({
-        ride_id: ride.id,
-        company_id: ride.company_id,
-        sender: "motorista",
-        content: message,
-        status: "enviada",
-      })
-      .select("id, created_at")
-      .single();
-
-    const cleanPhone = toBrazilianWhatsAppNumber(ride.passenger_phone);
     let delivered = false;
     try {
-      const { provider, fields } = await getCompanyWhatsAppConfig(ride.company_id);
-      delivered = await sendWhatsAppMessageWithProvider(provider, fields, cleanPhone, message);
+      const { provider, fields } = await getCompanyWhatsAppConfig(resolvedCompanyId);
+      delivered = await sendWhatsAppMessageWithProvider(provider, fields, resolvedPhone, message);
     } catch {
       // best-effort
     }
 
-    if (delivered && savedMsg) {
+    if (delivered && savedMsgId) {
       await supabase
         .from("ride_messages")
         .update({ whatsapp_delivered: true, status: "entregue" })
-        .eq("id", savedMsg.id);
+        .eq("id", savedMsgId);
     }
 
     // Also save to whatsapp_chats / whatsapp_messages for unified chat history
@@ -200,8 +222,8 @@ Deno.serve(async (req: Request) => {
       .from("whatsapp_chats")
       .upsert(
         {
-          company_id: ride.company_id,
-          phone: cleanPhone,
+          company_id: resolvedCompanyId,
+          phone: resolvedPhone,
           last_message_preview: message.slice(0, 200),
           last_message_at: new Date().toISOString(),
           unread_count: 0,
@@ -216,17 +238,17 @@ Deno.serve(async (req: Request) => {
       const { data: existing } = await supabase
         .from("whatsapp_chats")
         .select("id")
-        .eq("company_id", ride.company_id)
-        .eq("phone", cleanPhone)
+        .eq("company_id", resolvedCompanyId)
+        .eq("phone", resolvedPhone)
         .maybeSingle();
       chatId = existing?.id;
     }
     if (chatId) {
       await supabase.from("whatsapp_messages").insert({
         chat_id: chatId,
-        company_id: ride.company_id,
+        company_id: resolvedCompanyId,
         direction: "outgoing",
-        phone: cleanPhone,
+        phone: resolvedPhone,
         body: message,
         message_type: "text",
         sent_at: new Date().toISOString(),
@@ -236,7 +258,7 @@ Deno.serve(async (req: Request) => {
     return new Response(
       JSON.stringify({
         success: true,
-        messageId: savedMsg?.id,
+        messageId: savedMsgId,
         delivered,
       }),
       { headers: { ...corsHeaders, "Content-Type": "application/json" } },

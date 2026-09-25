@@ -98,7 +98,7 @@ export function ChatsModule() {
     if (!selectedChat || !replyText.trim() || !company) return;
     setSending(true);
     try {
-      const apiUrl = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/whatsapp-webhook`;
+      const apiUrl = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/send-chat-message`;
       await fetch(apiUrl, {
         method: 'POST',
         headers: {
@@ -106,11 +106,9 @@ export function ChatsModule() {
           Authorization: `Bearer ${import.meta.env.VITE_SUPABASE_ANON_KEY}`,
         },
         body: JSON.stringify({
-          event: 'admin.reply',
-          data: {
-            phone: selectedChat.phone,
-            text: replyText.trim(),
-          },
+          companyId: company.id,
+          phone: selectedChat.phone,
+          message: replyText.trim(),
         }),
       });
 
