@@ -1173,11 +1173,27 @@ function parseCombinedAddress(rawText: string): { pickup: string; destination: s
   const deaccented = rawText.normalize("NFD").replace(/[\u0300-\u036f]/g, "");
   // Common separators passengers use to split pickup from destination
   const separators = [
+    /\be vou para\b/i,
+    /\be vou pra\b/i,
+    /\be vou no\b/i,
+    /\be vou na\b/i,
+    /\be vou\b/i,
     /\bvou para\b/i,
+    /\bvou pra\b/i,
+    /\bvou no\b/i,
+    /\bvou na\b/i,
+    /\blevo no\b/i,
+    /\blevo na\b/i,
+    /\blevar no\b/i,
+    /\blevar na\b/i,
     /\bquero ir para\b/i,
     /\bquero ir pra\b/i,
+    /\bquero ir no\b/i,
+    /\bquero ir na\b/i,
     /\bir para\b/i,
     /\bir pra\b/i,
+    /\bir no\b/i,
+    /\bir na\b/i,
     /\bdestino\b/i,
     /\bpara a\b/i,
     /\bpara o\b/i,
@@ -1191,8 +1207,8 @@ function parseCombinedAddress(rawText: string): { pickup: string; destination: s
       let destination = deaccented.slice(sepEnd).trim();
       // Remove leading "quero um carro", "quero uma corrida", "preciso de carro" etc. from pickup
       pickup = pickup.replace(/^(quero (um carro|uma corrida)|preciso (de|de um) carro|gostaria de (um|uma) (corrida|carro))\b/i, "").trim();
-      // Remove leading "na" / "no" / "em" from pickup (e.g. "na rua Arthur" -> "rua Arthur")
-      pickup = pickup.replace(/^(na|no|em)\s+/i, "").trim();
+      // Remove leading "estou na", "estou no", "estou em", "to na", "to no", "na", "no", "em" from pickup
+      pickup = pickup.replace(/^(estou (na|no|em)|to (na|no|em)|(na|no|em))\s+/i, "").trim();
       if (pickup && destination) {
         return { pickup, destination };
       }
