@@ -13,12 +13,12 @@ const supabaseServiceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
 const supabase = createClient(supabaseUrl, supabaseServiceKey);
 
 async function saveChatMessage(
-  companyId: string,
-  phone: string,
-  direction: "incoming" | "outgoing",
-  body: string,
+  _companyId: string,
+  _phone: string,
+  _direction: "incoming" | "outgoing",
+  _body: string,
 ): Promise<void> {
-  if (!phone || !body) return;
+  return;
   const cleanPhone = phone.replace(/\D/g, "");
   const { data: chat } = await supabase
     .from("whatsapp_chats")

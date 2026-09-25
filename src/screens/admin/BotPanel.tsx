@@ -739,7 +739,7 @@ function CategorySelectorSection({ conn, companyId, companySlug, onError, onSucc
       state: selectedLocation.state ?? undefined,
       lat: selectedLocation.lat ?? undefined,
       lng: selectedLocation.lng ?? undefined,
-    });
+    }, companyId);
 
     if (result.success && result.data) {
       setMachineCats(result.data);

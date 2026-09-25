@@ -90,13 +90,13 @@ function stripMediaFromPayload(payload: Record<string, unknown> | undefined): Re
 }
 
 async function saveMessage(
-  companyId: string,
-  phone: string,
-  direction: "incoming" | "outgoing",
-  body: string,
-  rawPayload?: Record<string, unknown>,
+  _companyId: string,
+  _phone: string,
+  _direction: "incoming" | "outgoing",
+  _body: string,
+  _rawPayload?: Record<string, unknown>,
 ): Promise<void> {
-  if (!phone || !body) return;
+  return;
   const cleanPhone = phone.replace(/\D/g, "");
 
   // Upsert chat

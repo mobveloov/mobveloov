@@ -172,7 +172,7 @@ export function PricingPanel() {
     if (!company) return;
     setLoadingMachineCats(true);
     setError(null);
-    const result = await fetchMachineCategories(company.slug);
+    const result = await fetchMachineCategories(company.slug, undefined, company.id);
     if (result.success && result.data) {
       setMachineCats(result.data);
       const hasUnlinked = forms.length === 0 || forms.every((f) => !f.machine_category_id);

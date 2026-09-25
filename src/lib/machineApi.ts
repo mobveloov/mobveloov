@@ -35,6 +35,7 @@ export function calculateCategoryPricing(
 
 export interface DispatchPayload {
   companySlug: string;
+  companyId?: string;
   integrationMode: IntegrationMode;
   rideId: string;
   passenger_name: string;
@@ -80,7 +81,8 @@ export async function dispatchRide(
 export async function cancelRide(
   companySlug: string,
   rideId: string,
-  machineOrderId?: string | null
+  machineOrderId?: string | null,
+  companyId?: string,
 ): Promise<{ success: boolean }> {
   const supabaseUrl = import.meta.env.VITE_SUPABASE_URL as string;
   const anonKey = import.meta.env.VITE_SUPABASE_ANON_KEY as string;
@@ -94,6 +96,7 @@ export async function cancelRide(
       },
       body: JSON.stringify({
         companySlug,
+        ...(companyId ? { companyId } : {}),
         integrationMode: 'machine',
         rideId,
         action: 'cancel_ride',
@@ -111,7 +114,8 @@ export async function cancelRide(
 export async function pollRideStatus(
   companySlug: string,
   rideId: string,
-  machineOrderId?: string | null
+  machineOrderId?: string | null,
+  companyId?: string,
 ): Promise<{ success: boolean; status?: string; driver_name?: string | null; driver_phone?: string | null; vehicle_plate?: string | null; vehicle_model?: string | null; vehicle_color?: string | null }> {
   const supabaseUrl = import.meta.env.VITE_SUPABASE_URL as string;
   const anonKey = import.meta.env.VITE_SUPABASE_ANON_KEY as string;
@@ -125,6 +129,7 @@ export async function pollRideStatus(
       },
       body: JSON.stringify({
         companySlug,
+        ...(companyId ? { companyId } : {}),
         integrationMode: 'machine',
         rideId,
         action: 'poll_status',
@@ -170,7 +175,8 @@ export interface MachineEstimate {
 export async function fetchMachineEstimates(
   companySlug: string,
   origin: GeoPoint,
-  destination: GeoPoint
+  destination: GeoPoint,
+  companyId?: string,
 ): Promise<{ success: boolean; data?: MachineEstimate; error?: string }> {
   const supabaseUrl = import.meta.env.VITE_SUPABASE_URL as string;
   const anonKey = import.meta.env.VITE_SUPABASE_ANON_KEY as string;
@@ -184,6 +190,7 @@ export async function fetchMachineEstimates(
       },
       body: JSON.stringify({
         companySlug,
+        ...(companyId ? { companyId } : {}),
         integrationMode: 'machine',
         rideId: 'estimates',
         action: 'estimates',
@@ -203,7 +210,8 @@ export async function fetchMachineEstimates(
 
 export async function fetchMachineCategories(
   companySlug: string,
-  location?: { city?: string; state?: string; address?: string; bairro?: string; lat?: number; lng?: number }
+  location?: { city?: string; state?: string; address?: string; bairro?: string; lat?: number; lng?: number },
+  companyId?: string,
 ): Promise<{ success: boolean; data?: MachineCategory[]; error?: string }> {
   const supabaseUrl = import.meta.env.VITE_SUPABASE_URL as string;
   const anonKey = import.meta.env.VITE_SUPABASE_ANON_KEY as string;
@@ -217,6 +225,7 @@ export async function fetchMachineCategories(
       },
       body: JSON.stringify({
         companySlug,
+        ...(companyId ? { companyId } : {}),
         integrationMode: 'machine',
         rideId: 'categories',
         action: 'list_categories',
