@@ -417,43 +417,86 @@ async function sendBotMessage(companyId: string, phone: string, connectionId: st
 async function geocodeAddress(address: string, city?: string, state?: string): Promise<{ lat: number; lng: number; formatted: string } | null> {
   const q = city ? `${address}, ${city}` : address;
   const url = `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(q)}&format=json&limit=1&countrycodes=br&addressdetails=1`;
-  try {
-    const resp = await fetch(url, { headers: { "User-Agent": "VeloovBot/1.0" } });
-    if (!resp.ok) return null;
-    const results = await resp.json();
-    if (Array.isArray(results) && results.length > 0) {
-      const r = results[0];
-      return {
-        lat: parseFloat(r.lat),
-        lng: parseFloat(r.lon),
-        formatted: r.display_name ?? address,
-      };
-    }
-  } catch { /* ignore */ }
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      const resp = await fetch(url, { headers: { "User-Agent": "VeloovBot/1.0 (contato@veloov.com.br)" } });
+      if (resp.ok) {
+        const results = await resp.json();
+        if (Array.isArray(results) && results.length > 0) {
+          const r = results[0];
+          return {
+            lat: parseFloat(r.lat),
+            lng: parseFloat(r.lon),
+            formatted: r.display_name ?? address,
+          };
+        }
+        return null;
+      }
+      if (resp.status === 429 && attempt === 0) {
+        await new Promise((r) => setTimeout(r, 1100));
+        continue;
+      }
+      return null;
+    } catch { /* retry on next attempt */ }
+  }
   return null;
 }
 
 async function reverseGeocode(lat: number, lng: number): Promise<string | null> {
-  const url = `https://nominatim.openstreetmap.org/reverse?lat=${encodeURIComponent(lat)}&lon=${encodeURIComponent(lng)}&format=json&addressdetails=1&zoom=18&accept-language=pt-BR`;
+  // Primary: BigDataCloud free reverse geocoding (no API key, no rate limit)
   try {
-    const resp = await fetch(url, {
+    const bdcUrl = `https://api.bigdatacloud.net/data/reverse-geocode-client?latitude=${encodeURIComponent(lat)}&longitude=${encodeURIComponent(lng)}&localityLanguage=pt`;
+    const bdcResp = await fetch(bdcUrl);
+    if (bdcResp.ok) {
+      const bdc = await bdcResp.json();
+      const street = bdc?.streetName ?? bdc?.streetAddress ?? bdc?.locality ?? null;
+      const number = bdc?.houseNumber ?? bdc?.buildingName ?? null;
+      const district = bdc?.district ?? bdc?.subLocality ?? null;
+      const city = bdc?.city ?? bdc?.principalSubdivision ?? null;
+      const parts: string[] = [];
+      if (street) parts.push(number ? `${street}, ${number}` : street);
+      if (district && district !== street) parts.push(district);
+      if (city && city !== street && city !== district) parts.push(city);
+      if (parts.length > 0) return parts.join(" - ");
+    }
+  } catch { /* fall through to Nominatim */ }
+
+  // Fallback: Nominatim (OpenStreetMap) — rate-limited, retry once after delay
+  try {
+    const nomUrl = `https://nominatim.openstreetmap.org/reverse?lat=${encodeURIComponent(lat)}&lon=${encodeURIComponent(lng)}&format=json&addressdetails=1&zoom=18&accept-language=pt-BR`;
+    const nomResp = await fetch(nomUrl, {
       headers: {
-        "User-Agent": "VeloovBot/1.0 (WhatsApp ride assistant)",
+        "User-Agent": "VeloovBot/1.0 (contato@veloov.com.br)",
         "Accept-Language": "pt-BR,pt;q=0.9",
       },
     });
-    if (!resp.ok) return null;
-    const data = await resp.json();
-    if (typeof data?.display_name === "string" && data.display_name.trim()) return data.display_name.trim();
-    const address = data?.address as Record<string, unknown> | undefined;
-    if (!address) return null;
-    const street = address.road ?? address.pedestrian ?? address.residential ?? address.highway;
-    const number = address.house_number;
-    const neighborhood = address.neighbourhood ?? address.suburb ?? address.city_district;
-    const city = address.city ?? address.town ?? address.municipality;
-    const parts = [street && (number ? `${street}, ${number}` : street), neighborhood, city].filter(Boolean).map(String);
-    return parts.length > 0 ? parts.join(" - ") : null;
+    if (nomResp.ok) {
+      const data = await nomResp.json();
+      if (typeof data?.display_name === "string" && data.display_name.trim()) return data.display_name.trim();
+      const address = data?.address as Record<string, unknown> | undefined;
+      if (address) {
+        const street = address.road ?? address.pedestrian ?? address.residential ?? address.highway;
+        const number = address.house_number;
+        const neighborhood = address.neighbourhood ?? address.suburb ?? address.city_district;
+        const city = address.city ?? address.town ?? address.municipality;
+        const parts = [street && (number ? `${street}, ${number}` : street), neighborhood, city].filter(Boolean).map(String);
+        if (parts.length > 0) return parts.join(" - ");
+      }
+    } else if (nomResp.status === 429) {
+      await new Promise((r) => setTimeout(r, 1100));
+      const retryResp = await fetch(nomUrl, {
+        headers: {
+          "User-Agent": "VeloovBot/1.0 (contato@veloov.com.br)",
+          "Accept-Language": "pt-BR,pt;q=0.9",
+        },
+      });
+      if (retryResp.ok) {
+        const data = await retryResp.json();
+        if (typeof data?.display_name === "string" && data.display_name.trim()) return data.display_name.trim();
+      }
+    }
   } catch { /* ignore */ }
+
   return null;
 }
 
@@ -966,7 +1009,7 @@ As mensagens do passageiro serao encaminhadas a partir de agora.`;
         lat = location.lat;
         lng = location.lng;
         const reversed = await reverseGeocode(lat, lng);
-        addressText = reversed ?? `Localizacao: ${lat}, ${lng}`;
+        addressText = reversed ?? `Localizacao enviada (lat: ${lat.toFixed(6)}, lng: ${lng.toFixed(6)})`;
       } else if (audio) {
         const transcribed = await transcribeAudio(audio.data, audio.mimetype, companyId);
         if (transcribed) {
@@ -1105,7 +1148,7 @@ As mensagens do passageiro serao encaminhadas a partir de agora.`;
             destLat = location.lat;
             destLng = location.lng;
             const reversed = await reverseGeocode(destLat, destLng);
-            destText = reversed ?? `Localizacao: ${destLat}, ${destLng}`;
+            destText = reversed ?? `Localizacao enviada (lat: ${destLat.toFixed(6)}, lng: ${destLng.toFixed(6)})`;
           } else if (audio) {
             const transcribed = await transcribeAudio(audio.data, audio.mimetype, companyId);
             if (transcribed) {
@@ -1207,7 +1250,7 @@ As mensagens do passageiro serao encaminhadas a partir de agora.`;
         destLat = location.lat;
         destLng = location.lng;
         const reversed = await reverseGeocode(destLat, destLng);
-        destText = reversed ?? `Localizacao: ${destLat}, ${destLng}`;
+        destText = reversed ?? `Localizacao enviada (lat: ${destLat.toFixed(6)}, lng: ${destLng.toFixed(6)})`;
       } else if (audio) {
         const transcribed = await transcribeAudio(audio.data, audio.mimetype, companyId);
         if (transcribed) {
