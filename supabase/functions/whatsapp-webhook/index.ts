@@ -1,5 +1,5 @@
 // WhatsApp webhook: Evolution API events + bot ride-request flow — v8 with security hardening (token required)
-// v8.1: bot conversation resets on ride end (cancel/complete) so passengers can request again.
+// v8.2: bot conversation resets on ride end (cancel/complete) so passengers can request again. Cancel ride on dispatch failure.
 import { createClient } from "npm:@supabase/supabase-js@2.57.4";
 
 const corsHeaders = {
@@ -140,6 +140,40 @@ async function getCompanyWhatsAppConfig(companyId: string): Promise<{ provider: 
     } else if (p === "custom_webhook") {
       if (instance.provider_api_url) fields["custom_url"] = instance.provider_api_url;
       if (instance.provider_token) fields["custom_token"] = instance.provider_token;
+    }
+    return { provider: p, fields };
+  }
+
+  // Fallback: check bot_whatsapp_conexoes (the bot connection may be the connected one)
+  const { data: botConn } = await supabase
+    .from("bot_whatsapp_conexoes")
+    .select("provider, evolution_api_url, evolution_global_token, instance_name, provider_api_url, provider_token, meta_phone_id, meta_waba_id, connection_status")
+    .eq("company_id", companyId)
+    .eq("connection_status", "connected")
+    .maybeSingle();
+
+  if (botConn && botConn.provider) {
+    const fields: Record<string, string> = {};
+    const p = botConn.provider;
+    if (p === "evolution" || p === "veloov") {
+      if (botConn.evolution_api_url) fields["evo_url"] = botConn.evolution_api_url;
+      if (botConn.evolution_global_token) fields["evo_token"] = botConn.evolution_global_token;
+      if (botConn.instance_name) fields["evo_instance"] = botConn.instance_name;
+    } else if (p === "zapi") {
+      if (botConn.provider_api_url) fields["zapi_url"] = botConn.provider_api_url;
+      if (botConn.provider_token) fields["zapi_instance_token"] = botConn.provider_token;
+      if (botConn.meta_waba_id) fields["zapi_client_token"] = botConn.meta_waba_id;
+    } else if (p === "zpro") {
+      if (botConn.provider_api_url) fields["zpro_url"] = botConn.provider_api_url;
+      if (botConn.provider_token) fields["zpro_instance_token"] = botConn.provider_token;
+      if (botConn.meta_waba_id) fields["zpro_client_token"] = botConn.meta_waba_id;
+    } else if (p === "meta_cloud") {
+      if (botConn.provider_token) fields["meta_token"] = botConn.provider_token;
+      if (botConn.meta_phone_id) fields["meta_phone_id"] = botConn.meta_phone_id;
+      if (botConn.meta_waba_id) fields["meta_waba_id"] = botConn.meta_waba_id;
+    } else if (p === "custom_webhook") {
+      if (botConn.provider_api_url) fields["custom_url"] = botConn.provider_api_url;
+      if (botConn.provider_token) fields["custom_token"] = botConn.provider_token;
     }
     return { provider: p, fields };
   }
@@ -541,14 +575,40 @@ async function getCategoriesForConnection(companyId: string, connectionId?: stri
       .maybeSingle();
     const catIds = conn?.bot_category_ids as string[] | null;
     if (catIds && catIds.length > 0) {
-      const { data: cats } = await supabase
-        .from("vehicle_categories")
-        .select("id, label, machine_category_id")
-        .eq("company_id", companyId)
-        .eq("is_active", true)
-        .in("id", catIds)
-        .order("sort_order", { ascending: true });
-      if (cats && cats.length > 0) return cats as { id: string; label: string; machine_category_id: string | null }[];
+      const isUuid = (s: string) => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(s);
+      const uuidIds = catIds.filter(isUuid);
+      const machineIds = catIds.filter((s) => !isUuid(s));
+
+      let cats: { id: string; label: string; machine_category_id: string | null }[] = [];
+      if (uuidIds.length > 0) {
+        const { data } = await supabase
+          .from("vehicle_categories")
+          .select("id, label, machine_category_id")
+          .eq("company_id", companyId)
+          .in("id", uuidIds)
+          .order("sort_order", { ascending: true });
+        cats = (data ?? []) as { id: string; label: string; machine_category_id: string | null }[];
+      }
+      if (machineIds.length > 0) {
+        const { data } = await supabase
+          .from("vehicle_categories")
+          .select("id, label, machine_category_id")
+          .eq("company_id", companyId)
+          .in("machine_category_id", machineIds)
+          .order("sort_order", { ascending: true });
+        const machineCats = (data ?? []) as { id: string; label: string; machine_category_id: string | null }[];
+        const existingIds = new Set(cats.map((c) => c.id));
+        for (const c of machineCats) if (!existingIds.has(c.id)) cats.push(c);
+      }
+      // Deduplicate by machine_category_id+label to avoid showing the same category twice (one per location)
+      const seen = new Set<string>();
+      const deduped = cats.filter((c) => {
+        const key = `${c.machine_category_id ?? c.id}|${c.label}`;
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      });
+      if (deduped.length > 0) return deduped;
     }
   }
   // Fallback: first active category (by location if available)
@@ -908,12 +968,7 @@ As mensagens do passageiro serao encaminhadas a partir de agora.`;
     }
 
     case "aguardando_destino": {
-      if (normalizedText === "1") {
-        await supabase.from("bot_conversas")
-          .update({ state: "aguardando_endereco_destino", updated_at: new Date().toISOString() })
-          .eq("id", conv.id);
-        await sendBotMessage(companyId, cleanPhone, connectionId, msg("ask_destination_address", "Digite o endereco de destino. Voce pode digitar, enviar sua localizacao ou mandar um audio."));
-      } else if (normalizedText === "2") {
+      if (normalizedText === "2" || normalizedText === "nao" || normalizedText === "nao informar") {
         await supabase.from("bot_conversas")
           .update({
             state: "aguardando_confirmacao",
@@ -926,6 +981,110 @@ As mensagens do passageiro serao encaminhadas a partir de agora.`;
           .eq("id", conv.id);
         const pickupAddr = conv.address_formatted || conv.address_text || "Endereco nao informado";
         await sendBotMessage(companyId, cleanPhone, connectionId, msg("confirm_address", `Confirma o embarque em: ${pickupAddr}?\n\nResponda SIM para confirmar ou NAO para corrigir.`));
+      } else if (normalizedText === "1" || location || audio || (text && !["1","2"].includes(normalizedText))) {
+        // Accept "1" (menu choice), location, audio, or any typed text as a destination address
+        if (normalizedText === "1" && !location && !audio) {
+          await supabase.from("bot_conversas")
+            .update({ state: "aguardando_endereco_destino", updated_at: new Date().toISOString() })
+            .eq("id", conv.id);
+          await sendBotMessage(companyId, cleanPhone, connectionId, msg("ask_destination_address", "Digite o endereco de destino. Voce pode digitar, enviar sua localizacao ou mandar um audio."));
+        } else {
+          // Process the destination directly — reuse the aguardando_endereco_destino logic
+          let destText: string | null = null;
+          let destLat: number | null = null;
+          let destLng: number | null = null;
+
+          if (location) {
+            destLat = location.lat;
+            destLng = location.lng;
+            const reversed = await reverseGeocode(destLat, destLng);
+            destText = reversed ?? `Localizacao: ${destLat}, ${destLng}`;
+          } else if (audio) {
+            const transcribed = await transcribeAudio(audio.data, audio.mimetype, companyId);
+            if (transcribed) {
+              destText = transcribed.trim();
+              await sendBotMessage(companyId, cleanPhone, connectionId, `Entendi: "${destText}". Validando o destino...`);
+            } else {
+              await sendBotMessage(companyId, cleanPhone, connectionId, "Nao consegui transcrever o audio. Por favor, digite o endereco de destino.");
+              return;
+            }
+          } else if (text) {
+            destText = text.trim();
+          }
+
+          if (!destText) {
+            await sendBotMessage(companyId, cleanPhone, connectionId, msg("destination_retry", "Por favor, envie o endereco de destino. Voce pode digitar, mandar um audio ou compartilhar a localizacao."));
+            return;
+          }
+
+          let destSuggestionMatch: { address_text: string; lat: number | null; lng: number | null } | null = null;
+          if (connectionId) {
+            const { data: suggestions } = await supabase
+              .from("bot_address_suggestions")
+              .select("nickname, address_text, lat, lng")
+              .eq("connection_id", connectionId);
+            if (suggestions && suggestions.length > 0) {
+              const normalizedInput = destText.toLowerCase().trim();
+              for (const sug of suggestions) {
+                const nick = (sug.nickname || "").toLowerCase().trim();
+                if (nick && (normalizedInput === nick || normalizedInput.includes(nick) || nick.includes(normalizedInput))) {
+                  destSuggestionMatch = { address_text: sug.address_text, lat: sug.lat, lng: sug.lng };
+                  break;
+                }
+              }
+            }
+          }
+
+          let finalDestLat: number;
+          let finalDestLng: number;
+          let finalDestAddress: string;
+
+          if (destSuggestionMatch) {
+            if (destSuggestionMatch.lat != null && destSuggestionMatch.lng != null) {
+              finalDestLat = destSuggestionMatch.lat;
+              finalDestLng = destSuggestionMatch.lng;
+            } else {
+              const companyLoc = await getCompanyLocationInfo(companyId);
+              const geocoded = await geocodeAddress(destSuggestionMatch.address_text, companyLoc.city ?? undefined, companyLoc.state ?? undefined);
+              if (geocoded) {
+                finalDestLat = geocoded.lat;
+                finalDestLng = geocoded.lng;
+              } else {
+                await sendBotMessage(companyId, cleanPhone, connectionId, msg("destination_not_found", "Nao consegui encontrar o endereco de destino. Tente enviar um endereco mais completo (ex: Rua, numero, bairro, cidade)."));
+                return;
+              }
+            }
+            finalDestAddress = destSuggestionMatch.address_text;
+          } else if (location) {
+            finalDestLat = destLat!;
+            finalDestLng = destLng!;
+            finalDestAddress = destText;
+          } else {
+            const companyLoc = await getCompanyLocationInfo(companyId);
+            const geocoded = await geocodeAddress(destText, companyLoc.city ?? undefined, companyLoc.state ?? undefined);
+            if (geocoded) {
+              finalDestLat = geocoded.lat;
+              finalDestLng = geocoded.lng;
+              finalDestAddress = geocoded.formatted;
+            } else {
+              await sendBotMessage(companyId, cleanPhone, connectionId, msg("destination_not_found", "Nao consegui encontrar o endereco de destino. Tente enviar um endereco mais completo (ex: Rua, numero, bairro, cidade)."));
+              return;
+            }
+          }
+
+          const pickupAddr = conv.address_formatted || conv.address_text || "Endereco nao informado";
+          await supabase.from("bot_conversas")
+            .update({
+              state: "aguardando_confirmacao",
+              destination_text: destText,
+              destination_lat: finalDestLat,
+              destination_lng: finalDestLng,
+              destination_formatted: finalDestAddress,
+              updated_at: new Date().toISOString(),
+            })
+            .eq("id", conv.id);
+          await sendBotMessage(companyId, cleanPhone, connectionId, msg("confirm_address", `Confirma os dados da corrida?\n\nEmbarque: ${pickupAddr}\nDestino: ${finalDestAddress}\n\nResponda SIM para confirmar ou NAO para corrigir.`));
+        }
       } else {
         await sendBotMessage(companyId, cleanPhone, connectionId, msg("destination_menu_retry", `Opcao invalida.\n\n1 - Digitar o Endereco de Destino\n2 - Nao informar Endereco\n\nResponda com o numero da opcao.`));
       }
@@ -1171,6 +1330,11 @@ As mensagens do passageiro serao encaminhadas a partir de agora.`;
           ride_id: result.rideId,
         });
       } else {
+        if (result.rideId) {
+          await supabase.from("rides")
+            .update({ status: "canceled", updated_at: new Date().toISOString() })
+            .eq("id", result.rideId);
+        }
         await sendBotMessage(companyId, cleanPhone, connectionId, msg("ride_error", `Houve um erro ao solicitar a corrida: ${result.error ?? "erro desconhecido"}.\n\nPara tentar novamente, envie uma mensagem.`));
         await supabase.from("bot_conversas")
           .update({ state: "menu_inicial", ride_id: null, updated_at: new Date().toISOString() })
