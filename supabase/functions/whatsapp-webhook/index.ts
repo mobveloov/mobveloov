@@ -1755,6 +1755,23 @@ Deno.serve(async (req: Request) => {
             await supabase.from("bot_whatsapp_conexoes")
               .update({ connection_status: "connected", qr_code: null, updated_at: new Date().toISOString() })
               .eq("id", botConn.id);
+            // Auto-reconfigure webhook + settings on every reconnection
+            if (botConn.evolution_api_url && botConn.evolution_global_token && botConn.instance_name) {
+              try {
+                await fetch(`${supabaseUrl}/functions/v1/configure-whatsapp-webhook`, {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({
+                    apiUrl: botConn.evolution_api_url,
+                    globalToken: botConn.evolution_global_token,
+                    instanceName: botConn.instance_name,
+                    companyId: botConn.company_id,
+                    connectionId: botConn.id,
+                    isBot: true,
+                  }),
+                });
+              } catch { /* best-effort */ }
+            }
           } else if (state === "close" || state === "DISCONNECTED") {
             await supabase.from("bot_whatsapp_conexoes")
               .update({ connection_status: "disconnected", updated_at: new Date().toISOString() })
@@ -1849,6 +1866,26 @@ Deno.serve(async (req: Request) => {
             updated_at: new Date().toISOString(),
           })
           .eq("id", waInstance.id);
+        // Auto-reconfigure webhook + settings on every reconnection
+        const { data: waInstFull } = await supabase
+          .from("whatsapp_instances")
+          .select("whatsapp_provider, evolution_api_url, evolution_global_token, instance_name")
+          .eq("id", waInstance.id)
+          .maybeSingle();
+        if (waInstFull && (waInstFull.whatsapp_provider === "evolution" || waInstFull.whatsapp_provider === "veloov") && waInstFull.evolution_api_url && waInstFull.evolution_global_token && waInstFull.instance_name) {
+          try {
+            await fetch(`${supabaseUrl}/functions/v1/configure-whatsapp-webhook`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                apiUrl: waInstFull.evolution_api_url,
+                globalToken: waInstFull.evolution_global_token,
+                instanceName: waInstFull.instance_name,
+                companyId: waInstance.company_id,
+              }),
+            });
+          } catch { /* best-effort */ }
+        }
       } else if (state === "close" || state === "DISCONNECTED") {
         await supabase
           .from("whatsapp_instances")
