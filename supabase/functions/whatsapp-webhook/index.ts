@@ -442,26 +442,40 @@ async function geocodeAddress(address: string, city?: string, state?: string): P
   return null;
 }
 
+function cleanAddressPart(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const normalized = value.trim();
+  return normalized ? normalized : null;
+}
+
+function formatReverseAddress(data: Record<string, unknown>): string | null {
+  const street = cleanAddressPart(data.streetName ?? data.road ?? data.street ?? data.pedestrian ?? data.residential);
+  const number = cleanAddressPart(data.houseNumber ?? data.house_number ?? data.housenumber);
+  const neighborhood = cleanAddressPart(data.district ?? data.neighbourhood ?? data.suburb ?? data.city_district);
+  const city = cleanAddressPart(data.city ?? data.town ?? data.municipality ?? data.locality);
+  const state = cleanAddressPart(data.principalSubdivision ?? data.state);
+  const parts = [
+    street ? (number ? `${street}, ${number}` : street) : null,
+    neighborhood,
+    city,
+    state,
+  ].filter((part, index, all) => part && all.indexOf(part) === index) as string[];
+  return parts.length > 0 ? parts.join(" - ") : null;
+}
+
 async function reverseGeocode(lat: number, lng: number): Promise<string | null> {
-  // Primary: BigDataCloud free reverse geocoding (no API key, no rate limit)
+  // BigDataCloud provides detailed results without an API key.
   try {
     const bdcUrl = `https://api.bigdatacloud.net/data/reverse-geocode-client?latitude=${encodeURIComponent(lat)}&longitude=${encodeURIComponent(lng)}&localityLanguage=pt`;
     const bdcResp = await fetch(bdcUrl);
     if (bdcResp.ok) {
-      const bdc = await bdcResp.json();
-      const street = bdc?.streetName ?? bdc?.streetAddress ?? bdc?.locality ?? null;
-      const number = bdc?.houseNumber ?? bdc?.buildingName ?? null;
-      const district = bdc?.district ?? bdc?.subLocality ?? null;
-      const city = bdc?.city ?? bdc?.principalSubdivision ?? null;
-      const parts: string[] = [];
-      if (street) parts.push(number ? `${street}, ${number}` : street);
-      if (district && district !== street) parts.push(district);
-      if (city && city !== street && city !== district) parts.push(city);
-      if (parts.length > 0) return parts.join(" - ");
+      const bdc = await bdcResp.json() as Record<string, unknown>;
+      const formatted = formatReverseAddress(bdc);
+      if (formatted) return formatted;
     }
-  } catch { /* fall through to Nominatim */ }
+  } catch { /* try the next provider */ }
 
-  // Fallback: Nominatim (OpenStreetMap) — rate-limited, retry once after delay
+  // Nominatim fallback.
   try {
     const nomUrl = `https://nominatim.openstreetmap.org/reverse?lat=${encodeURIComponent(lat)}&lon=${encodeURIComponent(lng)}&format=json&addressdetails=1&zoom=18&accept-language=pt-BR`;
     const nomResp = await fetch(nomUrl, {
@@ -471,31 +485,28 @@ async function reverseGeocode(lat: number, lng: number): Promise<string | null> 
       },
     });
     if (nomResp.ok) {
-      const data = await nomResp.json();
-      if (typeof data?.display_name === "string" && data.display_name.trim()) return data.display_name.trim();
-      const address = data?.address as Record<string, unknown> | undefined;
-      if (address) {
-        const street = address.road ?? address.pedestrian ?? address.residential ?? address.highway;
-        const number = address.house_number;
-        const neighborhood = address.neighbourhood ?? address.suburb ?? address.city_district;
-        const city = address.city ?? address.town ?? address.municipality;
-        const parts = [street && (number ? `${street}, ${number}` : street), neighborhood, city].filter(Boolean).map(String);
-        if (parts.length > 0) return parts.join(" - ");
-      }
-    } else if (nomResp.status === 429) {
-      await new Promise((r) => setTimeout(r, 1100));
-      const retryResp = await fetch(nomUrl, {
-        headers: {
-          "User-Agent": "VeloovBot/1.0 (contato@veloov.com.br)",
-          "Accept-Language": "pt-BR,pt;q=0.9",
-        },
-      });
-      if (retryResp.ok) {
-        const data = await retryResp.json();
-        if (typeof data?.display_name === "string" && data.display_name.trim()) return data.display_name.trim();
+      const data = await nomResp.json() as Record<string, unknown>;
+      const address = data.address as Record<string, unknown> | undefined;
+      const formatted = address ? formatReverseAddress(address) : null;
+      if (formatted) return formatted;
+      const displayName = cleanAddressPart(data.display_name);
+      if (displayName) return displayName;
+    }
+  } catch { /* try the next provider */ }
+
+  // Photon fallback is useful when Nominatim is rate-limited from an Edge Function.
+  try {
+    const photonUrl = `https://photon.komoot.io/reverse?lat=${encodeURIComponent(lat)}&lon=${encodeURIComponent(lng)}`;
+    const photonResp = await fetch(photonUrl);
+    if (photonResp.ok) {
+      const photon = await photonResp.json() as { features?: Array<{ properties?: Record<string, unknown> }> };
+      const properties = photon.features?.[0]?.properties;
+      if (properties) {
+        const formatted = formatReverseAddress(properties);
+        if (formatted) return formatted;
       }
     }
-  } catch { /* ignore */ }
+  } catch { /* no address provider available */ }
 
   return null;
 }
@@ -944,7 +955,7 @@ async function handleBotMessage(
       // A location sent from the menu is already the pickup point.
       if (!text && location) {
         const pickupAddress = await reverseGeocode(location.lat, location.lng) ??
-          `Localizacao enviada (lat: ${location.lat.toFixed(6)}, lng: ${location.lng.toFixed(6)})`;
+          "Localizacao compartilhada pelo passageiro";
         await supabase.from("bot_conversas")
           .update({
             state: "aguardando_destino",
@@ -1028,7 +1039,7 @@ As mensagens do passageiro serao encaminhadas a partir de agora.`;
         lat = location.lat;
         lng = location.lng;
         const reversed = await reverseGeocode(lat, lng);
-        addressText = reversed ?? `Localizacao enviada (lat: ${lat.toFixed(6)}, lng: ${lng.toFixed(6)})`;
+        addressText = reversed ?? "Localizacao compartilhada pelo passageiro";
       } else if (audio) {
         const transcribed = await transcribeAudio(audio.data, audio.mimetype, companyId);
         if (transcribed) {
@@ -1167,7 +1178,7 @@ As mensagens do passageiro serao encaminhadas a partir de agora.`;
             destLat = location.lat;
             destLng = location.lng;
             const reversed = await reverseGeocode(destLat, destLng);
-            destText = reversed ?? `Localizacao enviada (lat: ${destLat.toFixed(6)}, lng: ${destLng.toFixed(6)})`;
+            destText = reversed ?? "Localizacao compartilhada pelo passageiro";
           } else if (audio) {
             const transcribed = await transcribeAudio(audio.data, audio.mimetype, companyId);
             if (transcribed) {
@@ -1269,7 +1280,7 @@ As mensagens do passageiro serao encaminhadas a partir de agora.`;
         destLat = location.lat;
         destLng = location.lng;
         const reversed = await reverseGeocode(destLat, destLng);
-        destText = reversed ?? `Localizacao enviada (lat: ${destLat.toFixed(6)}, lng: ${destLng.toFixed(6)})`;
+        destText = reversed ?? "Localizacao compartilhada pelo passageiro";
       } else if (audio) {
         const transcribed = await transcribeAudio(audio.data, audio.mimetype, companyId);
         if (transcribed) {
