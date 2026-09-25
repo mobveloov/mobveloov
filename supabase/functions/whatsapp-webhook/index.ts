@@ -2228,9 +2228,10 @@ async function handleIncomingMessage(companyId: string, data: Record<string, unk
     ?? null;
   let audioMimeType = String(audioSource?.mimetype ?? audioSource?.mimeType ?? data?.mimetype ?? "audio/ogg");
 
-  // Evolution API often sends audioMessage with NO audio data in the webhook payload.
-  // We must call the getBase64FromMediaMessage endpoint to fetch the actual base64 audio.
-  if (!audioData && audioMessage && connectionId) {
+  // Evolution API sends OGG/Opus audio which Groq/Whisper cannot process.
+  // Always fetch the audio via getBase64FromMediaMessage with convertToMp4=true
+  // to get MP4 format, even if base64 OGG data was already in the webhook.
+  if (audioMessage && connectionId) {
     try {
       const botConfig = await getBotConnectionConfig(connectionId);
       if (botConfig && (botConfig.provider === "evolution" || botConfig.provider === "veloov")) {
@@ -2250,9 +2251,11 @@ async function handleIncomingMessage(companyId: string, data: Record<string, unk
             });
             if (mediaResp.ok) {
               const mediaData = await mediaResp.json() as Record<string, unknown>;
-              audioData = mediaData.base64 ?? mediaData.base64Media ?? null;
-              // convertToMp4 returns MP4 audio, which Groq/Whisper can process
-              if (audioData) audioMimeType = "audio/mp4";
+              const mp4Base64 = mediaData.base64 ?? mediaData.base64Media ?? null;
+              if (mp4Base64) {
+                audioData = mp4Base64;
+                audioMimeType = "audio/mp4";
+              }
             } else {
               const errBody = await mediaResp.text().catch(() => "");
               await supabase.from("admin_logs").insert({
