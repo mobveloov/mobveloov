@@ -106,6 +106,7 @@ export function TrackingScreen({ origin, destination, passengerName, passengerPh
       const categoryValue = selectedCategory?.machine_category_id || categoryLabel;
       const dispatchPayload = {
         companySlug: company.slug,
+        companyId: company.id,
         integrationMode,
         rideId: typedRide.id,
         passenger_name: passengerName,
@@ -226,7 +227,7 @@ export function TrackingScreen({ origin, destination, passengerName, passengerPh
 
     const interval = setInterval(async () => {
       if (!rideRef.current) return;
-      await pollRideStatus(companySlug, rideRef.current, machineOrderId);
+      await pollRideStatus(companySlug, rideRef.current, machineOrderId, company.id);
       const { data: fresh } = await supabase
         .from('rides')
         .select('*')
@@ -280,7 +281,7 @@ export function TrackingScreen({ origin, destination, passengerName, passengerPh
     const integrationMode = settings?.integration_mode ?? 'manual';
 
     if (integrationMode === 'machine') {
-      await cancelRide(company.slug, rideRef.current, ride?.machine_order_id ?? null);
+      await cancelRide(company.slug, rideRef.current, ride?.machine_order_id ?? null, company.id);
     } else {
       await supabase
         .from('rides')
