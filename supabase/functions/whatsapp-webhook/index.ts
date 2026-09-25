@@ -1801,22 +1801,23 @@ As mensagens do passageiro serao encaminhadas a partir de agora.`;
         })
         .eq("id", conv.id);
 
-      // If the LLM already extracted a destination reference, skip destination
+      // If the LLM or regex already extracted a destination, skip destination
       // geocoding entirely — the driver sees the text, and the Machine API
       // calculates the fare by KM (taximeter) with no mapped destination.
-      if (destinationReference) {
+      const extractedDest = destinationReference ?? combinedDest ?? null;
+      if (extractedDest) {
         await supabase.from("bot_conversas")
           .update({
             state: "aguardando_confirmacao",
-            destination_text: destinationReference,
+            destination_text: extractedDest,
             destination_lat: null,
             destination_lng: null,
             destination_formatted: null,
-            destination_reference: destinationReference,
+            destination_reference: extractedDest,
             updated_at: new Date().toISOString(),
           })
           .eq("id", conv.id);
-        await sendBotMessage(companyId, cleanPhone, connectionId, msg("confirm_address", `\u2705 Confirma os dados da corrida?\n\n\u{1F4CD} Embarque: ${originReference ?? finalAddress}\n\u{1F3AF} Destino: ${destinationReference}\n\nResponda SIM para confirmar ou NAO para corrigir.`));
+        await sendBotMessage(companyId, cleanPhone, connectionId, msg("confirm_address", `\u2705 Confirma os dados da corrida?\n\n\u{1F4CD} Embarque: ${originReference ?? finalAddress}\n\u{1F3AF} Destino: ${extractedDest}\n\nResponda SIM para confirmar ou NAO para corrigir.`));
         break;
       }
 
