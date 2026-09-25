@@ -349,7 +349,8 @@ async function dispatchToMachine(
 
   // Use a unique id_externo on every dispatch so re-dispatches after driver cancellation
   // are not rejected as "ID Externo já utilizado" by the Machine API.
-  const externalId = `${rideId}-${Date.now()}`;
+  // Machine API limits id_externo to 36 chars, so use first 8 chars of rideId + timestamp.
+  const externalId = `${rideId.slice(0, 8)}${Date.now()}`;
 
   // Build the v2 API payload per docs.machine.global spec
   const v2Payload: Record<string, unknown> = {
