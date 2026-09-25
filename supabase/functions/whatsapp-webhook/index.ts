@@ -428,7 +428,11 @@ interface ParsedRideIntent {
   endereco_destino: string | null;
 }
 
-async function interpretMessageWithLLM(text: string, companyId?: string): Promise<ParsedRideIntent | null> {
+async function interpretMessageWithLLM(
+  text: string,
+  companyId: string | undefined,
+  context?: { city: string | null; state: string | null; totemReference: string | null },
+): Promise<ParsedRideIntent | null> {
   let apiKey: string | undefined;
   let provider = "groq";
   let model = "llama-3.3-70b-versatile";
@@ -463,26 +467,43 @@ async function interpretMessageWithLLM(text: string, companyId?: string): Promis
     ? "https://api.openai.com/v1/chat/completions"
     : "https://api.groq.com/openai/v1/chat/completions";
 
-  const systemPrompt = `Voce e um extrator de intenção de corrida de mobilidade. Dada a mensagem de um passageiro no WhatsApp, extraia os campos estruturados. Responda APENAS com JSON valido, sem markdown.
+  const cidade = context?.city || "cidade";
+  const estado = context?.state || "estado";
+  const refTotem = context?.totemReference || "";
 
-Regras:
-- "quer_corrida": true se o passageiro quer solicitar uma corrida/taxi/uber, false caso contrario
-- "tipo_veiculo": "moto" se pediu moto/mototaxi, "carro" se pediu carro/taxi/uber, null se nao especificado
-- "endereco_origem": o endereco de embarque mencionado (texto bruto, sem formatacao), ou null se nao mencionado
-- "endereco_destino": o endereco de destino mencionado (texto bruto, sem formatacao), ou null se nao mencionado
-- Se o passageiro disser "nao informar destino" ou equivalente, defina endereco_destino como null
-- Frases como "na rua X vou para Y" significam origem=X, destino=Y
-- Remova prefixos como "quero um carro na", "preciso de taxi na", etc. do endereco_origem
+  const systemPrompt = `Voce e a inteligencia artificial do sistema de despacho de corridas. Sua unica missao e extrair locais de origem e destino a partir de mensagens enviadas por passageiros e estrutura-las em um JSON limpo.
 
-Exemplos:
+### CONTEXTO DA OPERACAO DESTA INSTANCIA (DINAMICO)
+- Cidade de Operacao Padrao: ${cidade}
+- Estado: ${estado}
+${refTotem ? `- Localizacao/Referencia Adicional do Totem: ${refTotem}\n` : ""}
+### REGRA DE OURO (ANTI-LOOP DE ERRO)
+Mesmo que o passageiro envie um local informal, apelido, nome de estabelecimento ou termo que nao pareca uma rua oficial (Ex: "Amarelinha", "Bar do Ze", "Mercadinho da Esquina", "Entrada da Cidade"), voce NUNCA deve retornar null ou vazio se houver alguma intencao de local.
+Se o local for informal, monte o endereco anexando a Cidade de Operacao Padrao e o Estado ao termo literal enviado pelo usuario.
+Exemplo: Se o cliente disser "To na amarelinha", o endereco_origem DEVE SER "Amarelinha, ${cidade} - ${estado}".
+
+### DIRETRIZES DE SAIDA:
+1. "endereco_origem": String contendo o local de partida. Use o nome da rua/numero ou o apelido literal enviado + ", ${cidade} - ${estado}". ${refTotem ? `Se a mensagem vier de um TOTEM fisico fixo e o usuario nao disser onde esta, use o valor de "${refTotem}" + ", ${cidade} - ${estado}".` : "Se o usuario nao mencionar onde esta, use null."}
+2. "endereco_destino": String contendo o local de chegada. Se o usuario disser que decide no carro ou nao informar, preencha estritamente com "Definir no carro, ${cidade} - ${estado}".
+3. NUNCA adicione textos complementares, saudacoes ou explicacoes. Retorne EXCLUSIVAMENTE o objeto JSON limpo para que o parser do sistema nao quebre.
+
+### FORMATO DE RETORNO OBRIGATORIO (JSON):
+{
+  "quer_corrida": true/false,
+  "tipo_veiculo": "moto" | "carro" | null,
+  "endereco_origem": "string contendo o endereco tratado ou o termo literal + cidade/estado",
+  "endereco_destino": "string contendo o endereco tratado ou o termo literal + cidade/estado"
+}
+
+### EXEMPLOS DE COMPORTAMENTO ESPERADO:
+Input: "Quero uma corrida da rodoviaria pro hospital"
+Output: {"quer_corrida":true,"tipo_veiculo":null,"endereco_origem":"Rodoviaria, ${cidade} - ${estado}","endereco_destino":"Hospital, ${cidade} - ${estado}"}
+
 Input: "Quero um carro na rua Arthur mesquita 57 vou para amarelinha do centro"
-Output: {"quer_corrida":true,"tipo_veiculo":"carro","endereco_origem":"rua Arthur mesquita 57","endereco_destino":"amarelinha do centro"}
-
-Input: "Amarelinha do Centro Pitangueiras"
-Output: {"quer_corrida":false,"tipo_veiculo":null,"endereco_origem":null,"endereco_destino":"Amarelinha do Centro Pitangueiras"}
+Output: {"quer_corrida":true,"tipo_veiculo":"carro","endereco_origem":"rua Arthur mesquita 57, ${cidade} - ${estado}","endereco_destino":"Amarelinha do centro, ${cidade} - ${estado}"}
 
 Input: "Nao informar destino"
-Output: {"quer_corrida":false,"tipo_veiculo":null,"endereco_origem":null,"endereco_destino":null}`;
+Output: {"quer_corrida":false,"tipo_veiculo":null,"endereco_origem":null,"endereco_destino":"Definir no carro, ${cidade} - ${estado}"}`;
 
   try {
     const resp = await fetch(apiUrl, {
@@ -1143,7 +1164,7 @@ function parseCombinedAddress(rawText: string): { pickup: string; destination: s
   return null;
 }
 
-async function getCompanyLocationInfo(companyId: string, connectionId?: string): Promise<{ city: string | null; state: string | null; lat: number | null; lng: number | null; slug: string | null }> {
+async function getCompanyLocationInfo(companyId: string, connectionId?: string): Promise<{ city: string | null; state: string | null; lat: number | null; lng: number | null; slug: string | null; totemName: string | null; pickupAddress: string | null }> {
   // If a bot connection is provided, try its linked location first (per-totem city)
   if (connectionId) {
     const { data: conn } = await supabase
@@ -1154,7 +1175,7 @@ async function getCompanyLocationInfo(companyId: string, connectionId?: string):
     if (conn?.location_id) {
       const { data: loc } = await supabase
         .from("company_locations")
-        .select("city, state, lat, lng")
+        .select("city, state, lat, lng, name, pickup_address")
         .eq("id", conn.location_id)
         .maybeSingle();
       if (loc) {
@@ -1169,6 +1190,8 @@ async function getCompanyLocationInfo(companyId: string, connectionId?: string):
           lat: loc.lat ?? null,
           lng: loc.lng ?? null,
           slug: company?.slug ?? null,
+          totemName: loc.name ?? null,
+          pickupAddress: loc.pickup_address ?? null,
         };
       }
     }
@@ -1192,6 +1215,8 @@ async function getCompanyLocationInfo(companyId: string, connectionId?: string):
     lat: cred?.lat ?? null,
     lng: cred?.lng ?? null,
     slug: company?.slug ?? null,
+    totemName: null,
+    pickupAddress: null,
   };
 }
 
@@ -1622,7 +1647,12 @@ As mensagens do passageiro serao encaminhadas a partir de agora.`;
         }
       } else if (text) {
         // Try LLM-based NLU first for richest parsing, fall back to regex
-        const llmResult = await interpretMessageWithLLM(text.trim(), companyId);
+        const llmCtx = await getCompanyLocationInfo(companyId, connectionId);
+        const llmResult = await interpretMessageWithLLM(text.trim(), companyId, {
+          city: llmCtx.city,
+          state: llmCtx.state,
+          totemReference: llmCtx.pickupAddress || llmCtx.totemName,
+        });
         if (llmResult && llmResult.endereco_origem) {
           addressText = llmResult.endereco_origem;
           combinedDest = llmResult.endereco_destino ?? null;
@@ -3890,3 +3920,4 @@ async function handleIncomingMessage(companyId: string, data: Record<string, unk
 // v8.4 regex fix Fri Sep 25 13:33:11 UTC 2026
 // v8.5 support timeout Fri Sep 25 14:10:55 UTC 2026
 // v9.0 NLU + fuzzy POI + Google geocoding + failure loop + machineMessage sanitize Fri Sep 25 17:45:00 UTC 2026
+// v9.1 NLU anti-error-loop prompt with dynamic city/state/totem context Fri Sep 25 18:00:00 UTC 2026
