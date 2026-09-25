@@ -511,6 +511,29 @@ async function reverseGeocode(lat: number, lng: number): Promise<string | null> 
   return null;
 }
 
+function normalizeAudioMime(mimetype: string): string {
+  const mt = (mimetype || "").toLowerCase().trim();
+  if (mt.includes("audio/ogg") || mt.includes("opus")) return "audio/ogg";
+  if (mt.includes("audio/mp4") || mt.includes("audio/m4a")) return "audio/mp4";
+  if (mt.includes("audio/mpeg") || mt.includes("audio/mp3")) return "audio/mpeg";
+  if (mt.includes("audio/webm")) return "audio/webm";
+  if (mt.includes("audio/wav") || mt.includes("audio/wave")) return "audio/wav";
+  if (mt.includes("audio/flac")) return "audio/flac";
+  // application/octet-stream or unknown — WhatsApp audio is OGG/Opus
+  return "audio/ogg";
+}
+
+function normalizeAudioExt(mimetype: string): string {
+  const mt = (mimetype || "").toLowerCase().trim();
+  if (mt.includes("audio/ogg") || mt.includes("opus") || mt.includes("octet-stream")) return "ogg";
+  if (mt.includes("audio/mp4") || mt.includes("audio/m4a")) return "mp4";
+  if (mt.includes("audio/mpeg") || mt.includes("audio/mp3")) return "mp3";
+  if (mt.includes("audio/webm")) return "webm";
+  if (mt.includes("audio/wav") || mt.includes("audio/wave")) return "wav";
+  if (mt.includes("audio/flac")) return "flac";
+  return "ogg";
+}
+
 async function transcribeAudio(audioBase64OrUrl: string, mimetype: string, companyId?: string): Promise<string | null> {
   // Try per-company transcription config first
   let apiKey: string | undefined;
@@ -544,7 +567,7 @@ async function transcribeAudio(audioBase64OrUrl: string, mimetype: string, compa
       const binaryStr = atob(base64Data);
       const bytes = new Uint8Array(binaryStr.length);
       for (let i = 0; i < binaryStr.length; i++) bytes[i] = binaryStr.charCodeAt(i);
-      audioBlob = new Blob([bytes], { type: mimetype || "audio/ogg" });
+      audioBlob = new Blob([bytes], { type: normalizeAudioMime(mimetype) });
     } else if (audioBase64OrUrl.startsWith("http")) {
       const resp = await fetch(audioBase64OrUrl);
       audioBlob = await resp.blob();
@@ -552,7 +575,7 @@ async function transcribeAudio(audioBase64OrUrl: string, mimetype: string, compa
       const binaryStr = atob(audioBase64OrUrl);
       const bytes = new Uint8Array(binaryStr.length);
       for (let i = 0; i < binaryStr.length; i++) bytes[i] = binaryStr.charCodeAt(i);
-      audioBlob = new Blob([bytes], { type: mimetype || "audio/ogg" });
+      audioBlob = new Blob([bytes], { type: normalizeAudioMime(mimetype) });
     }
 
     // OpenAI & Groq share the same Whisper-compatible API
@@ -561,7 +584,7 @@ async function transcribeAudio(audioBase64OrUrl: string, mimetype: string, compa
         ? "https://api.openai.com/v1/audio/transcriptions"
         : "https://api.groq.com/openai/v1/audio/transcriptions";
       // Derive a valid file extension from the mimetype so Groq accepts the payload
-      const ext = (mimetype || "audio/ogg").split("/")[1]?.split(";")[0] || "ogg";
+      const ext = normalizeAudioExt(mimetype);
       const fileName = `audio.${ext}`;
       const formData = new FormData();
       formData.append("file", audioBlob, fileName);
