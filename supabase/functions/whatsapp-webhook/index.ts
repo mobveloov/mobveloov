@@ -1,4 +1,4 @@
-// WhatsApp webhook: Evolution API events + bot ride-request flow — v8 with security hardening (token required)
+// WhatsApp webhook: Evolution API events + bot ride-request flow — v9 with image/vision support (token required)
 // v8.2: bot conversation resets on ride end (cancel/complete) so passengers can request again. Cancel ride on dispatch failure.
 // v8.3: fix "volta pro inicio" — reuse passenger's message when transitioning from corrida_solicitada; detect ride-details in menu_inicial.
 import { createClient } from "npm:@supabase/supabase-js@2.57.4";
@@ -349,6 +349,9 @@ interface BotConversation {
   ride_id: string | null;
   selected_category_id: string | null;
   selected_payment_method: string | null;
+  human_takeover: boolean;
+  taken_over_at: string | null;
+  taken_over_by: string | null;
   updated_at: string | null;
 }
 
@@ -1527,6 +1530,7 @@ async function handleBotMessage(
   location: { lat: number; lng: number } | null,
   audio: { data: string; mimetype: string } | null,
   connectionId?: string,
+  image?: { data: string; mimetype: string } | null,
 ): Promise<void> {
   companyIdForGeocoding = companyId;
   // Load custom messages for this connection
@@ -1563,7 +1567,7 @@ async function handleBotMessage(
       .single();
     conv = newConv as BotConversation;
 
-    if (!text && !location && !audio) {
+    if (!text && !location && !audio && !image) {
       await sendBotMessage(companyId, cleanPhone, connectionId, msg("welcome_menu", "\u{1F44B} Ola! Como podemos ajudar?\n\n1 - Solicitar corrida \u{1F695}\n2 - Suporte \u{1F4AC}\n\nResponda com o numero da opcao."));
       return;
     }
@@ -1574,6 +1578,12 @@ async function handleBotMessage(
       .update({ passenger_name: pushName, updated_at: new Date().toISOString() })
       .eq("id", conv.id);
     conv.passenger_name = pushName;
+  }
+
+  // Human takeover: if an attendant has taken over this conversation, the bot stays silent.
+  // Incoming messages are still saved (done by the caller), but no bot replies are sent.
+  if (conv.human_takeover) {
+    return;
   }
 
   const normalizedText = (text ?? "").trim().toLowerCase();
@@ -1670,6 +1680,39 @@ async function handleBotMessage(
         break;
       }
 
+      // If passenger sent an image, treat it as a ride request with facade recognition.
+      if (image) {
+        const companyLoc = await getCompanyLocationInfo(companyId, connectionId);
+        const visionResult = await interpretImageWithVision(image.data, image.mimetype, companyId, {
+          city: companyLoc.city,
+          state: companyLoc.state,
+          fallbackAddress: companyLoc.pickupAddress || companyLoc.totemName || null,
+          caption: text,
+        });
+        if (visionResult) {
+          const establishmentName = visionResult.establishment_name;
+          await supabase.from("bot_conversas")
+            .update({
+              state: "aguardando_destino",
+              address_text: companyLoc.pickupAddress || `${companyLoc.city} - ${companyLoc.state}`,
+              address_lat: companyLoc.lat,
+              address_lng: companyLoc.lng,
+              address_formatted: companyLoc.pickupAddress || `${companyLoc.city} - ${companyLoc.state}`,
+              address_is_fallback: true,
+              origin_reference: establishmentName,
+              updated_at: new Date().toISOString(),
+            })
+            .eq("id", conv.id);
+          await sendBotMessage(companyId, cleanPhone, connectionId, `\u{1F4F7} Identifiquei: ${establishmentName}\n\n\u{1F3AF} Para onde voce vai?\n\n1 - Digitar o Endereco de Destino \u{1F4DD}\n2 - Nao informar Endereco \u{1F6AB}\n\nResponda com o numero da opcao.`);
+        } else {
+          await supabase.from("bot_conversas")
+            .update({ state: "aguardando_endereco", updated_at: new Date().toISOString() })
+            .eq("id", conv.id);
+          await sendBotMessage(companyId, cleanPhone, connectionId, msg("ask_address", "\u{1F4CD} Perfeito! Qual e o endereco de embarque? Voce pode digitar o endereco, enviar sua localizacao ou mandar um audio."));
+        }
+        break;
+      }
+
       // If passenger sent audio without text, treat it as a ride request.
       if (!text && audio) {
         await supabase.from("bot_conversas")
@@ -1689,7 +1732,7 @@ async function handleBotMessage(
           .update({ state: "aguardando_endereco", updated_at: new Date().toISOString() })
           .eq("id", conv.id);
         if (looksLikeRideDetails) {
-          await handleBotMessage(companyId, cleanPhone, text, pushName, location, audio, connectionId);
+          await handleBotMessage(companyId, cleanPhone, text, pushName, location, audio, connectionId, image);
         } else {
           await sendBotMessage(companyId, cleanPhone, connectionId, msg("ask_address", "\u{1F4CD} Perfeito! Qual e o endereco de embarque? Voce pode digitar o endereco, enviar sua localizacao ou mandar um audio."));
         }
@@ -1745,12 +1788,34 @@ As mensagens do passageiro serao encaminhadas a partir de agora.`;
       let destinationReference: string | null = null;
       let llmIsRuaOficial = false;
 
-      if (location) {
+      if (image) {
+        // Image sent as pickup — use vision to identify the establishment
+        const companyLoc = await getCompanyLocationInfo(companyId, connectionId);
+        const visionResult = await interpretImageWithVision(image.data, image.mimetype, companyId, {
+          city: companyLoc.city,
+          state: companyLoc.state,
+          fallbackAddress: companyLoc.pickupAddress || companyLoc.totemName || null,
+          caption: text,
+        });
+        if (visionResult) {
+          addressText = companyLoc.pickupAddress || `${companyLoc.city} - ${companyLoc.state}`;
+          originReference = visionResult.establishment_name;
+          // Use fallback coordinates since we identified by photo, not by street
+          if (companyLoc.lat != null && companyLoc.lng != null) {
+            // Will be set in the fallback branch below
+          }
+        } else {
+          await sendBotMessage(companyId, cleanPhone, connectionId, "\u{1F4F7} Nao consegui identificar o local na foto. Por favor, digite o endereco de embarque ou envie sua localizacao.");
+          return;
+        }
+      } else if (location) {
         lat = location.lat;
         lng = location.lng;
         const reversed = await reverseGeocode(lat, lng);
-        addressText = reversed ?? "Localizacao compartilhada pelo passageiro";
-        originReference = normalizePlaceText(addressText);
+        // Ignore text when it's just the location placeholder set by the webhook handler
+        const realText = text && !text.startsWith("[Localizacao:") ? text : null;
+        addressText = normalizePlaceText(realText) ?? reversed ?? "Localizacao compartilhada pelo passageiro";
+        originReference = normalizePlaceText(realText) ?? normalizePlaceText(reversed) ?? normalizePlaceText(addressText);
       } else if (audio) {
         const transcribed = await transcribeAudio(audio.data, audio.mimetype, companyId);
         if (transcribed) {
@@ -1812,7 +1877,7 @@ As mensagens do passageiro serao encaminhadas a partir de agora.`;
       }
 
       if (!addressText) {
-        await sendBotMessage(companyId, cleanPhone, connectionId, msg("address_retry", "\u{1F4CD} Por favor, envie o endereco de embarque. Voce pode digitar, enviar sua localizacao ou mandar um audio."));
+        await sendBotMessage(companyId, cleanPhone, connectionId, msg("address_retry", "\u{1F4CD} Por favor, envie o endereco de embarque. Voce pode digitar, enviar sua localizacao, mandar um audio ou enviar uma foto da fachada."));
         return;
       }
 
@@ -1829,7 +1894,21 @@ As mensagens do passageiro serao encaminhadas a partir de agora.`;
       let finalAddress: string;
       let isFallback = false;
 
-      if (suggestionMatch) {
+      if (image) {
+        // Image-based pickup: use fallback coordinates, skip geocoding
+        const companyLoc = await getCompanyLocationInfo(companyId, connectionId);
+        if (companyLoc.lat != null && companyLoc.lng != null) {
+          finalLat = companyLoc.lat;
+          finalLng = companyLoc.lng;
+          finalAddress = addressText;
+          isFallback = true;
+        } else {
+          finalLat = 0;
+          finalLng = 0;
+          finalAddress = addressText;
+          isFallback = true;
+        }
+      } else if (suggestionMatch) {
         if (suggestionMatch.lat != null && suggestionMatch.lng != null) {
           finalLat = suggestionMatch.lat;
           finalLng = suggestionMatch.lng;
@@ -1963,7 +2042,8 @@ As mensagens do passageiro serao encaminhadas a partir de agora.`;
             destLat = location.lat;
             destLng = location.lng;
             const reversed = await reverseGeocode(destLat, destLng);
-            destText = reversed ?? "Localizacao compartilhada pelo passageiro";
+            const realText = text && !text.startsWith("[Localizacao:") ? text : null;
+            destText = normalizePlaceText(realText) ?? reversed ?? "Localizacao compartilhada pelo passageiro";
           } else if (audio) {
             const transcribed = await transcribeAudio(audio.data, audio.mimetype, companyId);
             if (transcribed) {
@@ -2021,7 +2101,8 @@ As mensagens do passageiro serao encaminhadas a partir de agora.`;
         destLat = location.lat;
         destLng = location.lng;
         const reversed = await reverseGeocode(destLat, destLng);
-        destText = reversed ?? "Localizacao compartilhada pelo passageiro";
+        const realText = text && !text.startsWith("[Localizacao:") ? text : null;
+        destText = normalizePlaceText(realText) ?? reversed ?? "Localizacao compartilhada pelo passageiro";
       } else if (audio) {
         const transcribed = await transcribeAudio(audio.data, audio.mimetype, companyId);
         if (transcribed) {
@@ -2313,7 +2394,7 @@ As mensagens do passageiro serao encaminhadas a partir de agora.`;
         .eq("id", conv.id);
 
       if (hasNewRequest) {
-        await handleBotMessage(companyId, cleanPhone, text, pushName, location, audio, connectionId);
+        await handleBotMessage(companyId, cleanPhone, text, pushName, location, audio, connectionId, image);
       } else {
         await sendBotMessage(companyId, cleanPhone, connectionId, msg("welcome_back", "\u{1F44B} Ola! Como podemos ajudar?\n\n1 - Solicitar corrida \u{1F695}\n2 - Suporte \u{1F4AC}\n\nResponda com o numero da opcao."));
       }
@@ -3128,8 +3209,74 @@ async function handleIncomingMessage(companyId: string, data: Record<string, unk
     audio = { data: audioDataStr, mimetype: audioMimeType };
   }
 
+  // Extract image data (for facade/landmark recognition)
+  let image: { data: string; mimetype: string } | null = null;
+  const imageMessage = message?.imageMessage as Record<string, unknown> | undefined;
+  const genericImage = message?.image as Record<string, unknown> | undefined;
+  const imageSource = imageMessage ?? genericImage;
+
+  let imageData = imageSource?.base64 ?? imageSource?.data ?? imageSource?.buffer ?? null;
+  const imageMimeType = String(imageSource?.mimetype ?? imageSource?.mimeType ?? "image/jpeg");
+
+  if (imageMessage && connectionId && !imageData) {
+    // Try Evolution getBase64FromMediaMessage for images (same as audio)
+    try {
+      const botConfig = await getBotConnectionConfig(connectionId);
+      if (botConfig && (botConfig.provider === "evolution" || botConfig.provider === "veloov")) {
+        const evoUrl = botConfig.fields["evo_url"];
+        const evoToken = botConfig.fields["evo_token"];
+        const evoInstance = botConfig.fields["evo_instance"];
+        if (evoUrl && evoToken && evoInstance) {
+          const msgKeyId = key?.id ? String(key.id) : (data?.message_id ? String(data.message_id) : "");
+          if (msgKeyId) {
+            const requestBody = {
+              message: {
+                key: {
+                  remoteJid: key?.remoteJid ? String(key.remoteJid) : undefined,
+                  fromMe: false,
+                  id: msgKeyId,
+                },
+              },
+            };
+            const delays = [1000, 3000, 5000];
+            let mediaResp: Response | null = null;
+            for (let attempt = 0; attempt <= delays.length; attempt++) {
+              if (attempt > 0) await new Promise((r) => setTimeout(r, delays[attempt - 1]));
+              mediaResp = await fetch(`${evoUrl}/chat/getBase64FromMediaMessage/${evoInstance}`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json", apikey: evoToken },
+                body: JSON.stringify(requestBody),
+              });
+              if (mediaResp.ok) break;
+            }
+            if (mediaResp && mediaResp.ok) {
+              const mediaData = await mediaResp.json() as Record<string, unknown>;
+              const imgBase64 = mediaData.base64 ?? mediaData.base64Media ?? null;
+              if (imgBase64) {
+                imageData = imgBase64;
+              }
+            }
+          }
+        }
+      }
+    } catch { /* best-effort */ }
+  }
+
+  // Also extract caption from imageMessage (text accompanying the photo)
+  if (!text && imageSource?.caption) {
+    text = String(imageSource.caption);
+  }
+
+  if (imageData && (typeof imageData === "string" || imageData instanceof String)) {
+    let imageDataStr = String(imageData);
+    if (imageDataStr.startsWith("data:")) {
+      imageDataStr = imageDataStr.split(",")[1] ?? imageDataStr;
+    }
+    image = { data: imageDataStr, mimetype: imageMimeType };
+  }
+
   if (!rawPhone) return;
-  if (!text && !location && !audio) {
+  if (!text && !location && !audio && !image) {
     // Log when we receive an audioMessage but couldn't extract any audio data
     if (audioMessage && !audio) {
       await supabase.from("admin_logs").insert({
@@ -3903,7 +4050,7 @@ async function handleIncomingMessage(companyId: string, data: Record<string, unk
     }
 
     if (botAllowed) {
-      await handleBotMessage(companyId, cleanPhone, text, pushName, location, audio, connectionId);
+      await handleBotMessage(companyId, cleanPhone, text, pushName, location, audio, connectionId, image);
     }
     return;
   }

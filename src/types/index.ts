@@ -349,6 +349,18 @@ export interface WhatsAppMessage {
   created_at: string;
 }
 
+export interface BotConversation {
+  id: string;
+  company_id: string;
+  phone: string;
+  passenger_name: string | null;
+  state: string;
+  human_takeover: boolean;
+  taken_over_at: string | null;
+  taken_over_by: string | null;
+  updated_at: string;
+}
+
 export interface BotWhatsappConexao {
   id: string;
   company_id: string;

@@ -1,8 +1,8 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
-import { MessageCircle, Loader2, Search, ArrowLeft, Send, CheckCheck, Phone } from 'lucide-react';
+import { MessageCircle, Loader2, Search, ArrowLeft, Send, CheckCheck, Phone, UserCog, Bot } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 import { useAuth } from '@/context/AuthContext';
-import type { WhatsAppChat, WhatsAppMessage } from '@/types';
+import type { WhatsAppChat, WhatsAppMessage, BotConversation } from '@/types';
 
 function formatPhone(phone: string): string {
   const d = phone.replace(/\D/g, '');
@@ -40,6 +40,8 @@ export function ChatsModule() {
   const [search, setSearch] = useState('');
   const [replyText, setReplyText] = useState('');
   const [sending, setSending] = useState(false);
+  const [botConv, setBotConv] = useState<BotConversation | null>(null);
+  const [takeoverLoading, setTakeoverLoading] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   const loadChats = useCallback(async () => {
@@ -63,6 +65,7 @@ export function ChatsModule() {
       loadChats();
       if (selectedChat) {
         loadMessages(selectedChat.id);
+        loadBotConv(selectedChat.phone);
       }
     }, 5000);
     return () => clearInterval(interval);
@@ -82,15 +85,75 @@ export function ChatsModule() {
     }, 100);
   }, []);
 
+  const loadBotConv = useCallback(async (phone: string) => {
+    if (!company) return;
+    const { data } = await supabase
+      .from('bot_conversas')
+      .select('*')
+      .eq('company_id', company.id)
+      .eq('phone', phone)
+      .maybeSingle();
+    setBotConv(data as BotConversation | null);
+  }, [company]);
+
   const handleSelectChat = async (chat: WhatsAppChat) => {
     setSelectedChat(chat);
+    setBotConv(null);
     await loadMessages(chat.id);
+    await loadBotConv(chat.phone);
     if (chat.unread_count > 0) {
       await supabase
         .from('whatsapp_chats')
         .update({ unread_count: 0, updated_at: new Date().toISOString() })
         .eq('id', chat.id);
       loadChats();
+    }
+  };
+
+  const handleTakeover = async () => {
+    if (!selectedChat || !company) return;
+    setTakeoverLoading(true);
+    try {
+      const now = new Date().toISOString();
+      if (botConv) {
+        await supabase
+          .from('bot_conversas')
+          .update({ human_takeover: true, taken_over_at: now, taken_over_by: 'admin', updated_at: now })
+          .eq('id', botConv.id);
+      } else {
+        await supabase
+          .from('bot_conversas')
+          .insert({
+            company_id: company.id,
+            phone: selectedChat.phone,
+            state: 'menu_inicial',
+            human_takeover: true,
+            taken_over_at: now,
+            taken_over_by: 'admin',
+          });
+      }
+      await loadBotConv(selectedChat.phone);
+    } catch {
+      // best-effort
+    } finally {
+      setTakeoverLoading(false);
+    }
+  };
+
+  const handleReturnToBot = async () => {
+    if (!selectedChat || !botConv) return;
+    setTakeoverLoading(true);
+    try {
+      const now = new Date().toISOString();
+      await supabase
+        .from('bot_conversas')
+        .update({ human_takeover: false, taken_over_at: null, taken_over_by: null, updated_at: now })
+        .eq('id', botConv.id);
+      await loadBotConv(selectedChat.phone);
+    } catch {
+      // best-effort
+    } finally {
+      setTakeoverLoading(false);
     }
   };
 
@@ -111,6 +174,29 @@ export function ChatsModule() {
           message: replyText.trim(),
         }),
       });
+
+      // Auto-enable takeover when admin replies, so the bot doesn't interfere
+      if (botConv && !botConv.human_takeover) {
+        const now = new Date().toISOString();
+        await supabase
+          .from('bot_conversas')
+          .update({ human_takeover: true, taken_over_at: now, taken_over_by: 'admin', updated_at: now })
+          .eq('id', botConv.id);
+        await loadBotConv(selectedChat.phone);
+      } else if (!botConv) {
+        const now = new Date().toISOString();
+        await supabase
+          .from('bot_conversas')
+          .insert({
+            company_id: company.id,
+            phone: selectedChat.phone,
+            state: 'menu_inicial',
+            human_takeover: true,
+            taken_over_at: now,
+            taken_over_by: 'admin',
+          });
+        await loadBotConv(selectedChat.phone);
+      }
 
       setReplyText('');
       await loadMessages(selectedChat.id);
@@ -144,7 +230,7 @@ export function ChatsModule() {
         </div>
         <div>
           <h2 className="text-xl font-bold text-slate-100">Conversas</h2>
-          <p className="text-sm text-slate-500">Histórico de mensagens com passageiros</p>
+          <p className="text-sm text-slate-500">Atendimento humano e intervenção no bot</p>
         </div>
       </div>
 
@@ -214,7 +300,7 @@ export function ChatsModule() {
         <div className={`${selectedChat ? 'flex' : 'hidden lg:flex'} flex-1 flex-col rounded-2xl border border-slate-800 bg-slate-900/50 overflow-hidden`}>
           {selectedChat ? (
             <>
-              {/* Chat header */}
+              {/* Chat header with takeover controls */}
               <div className="flex items-center gap-3 px-4 py-3 border-b border-slate-800 bg-slate-900/80">
                 <button
                   onClick={() => setSelectedChat(null)}
@@ -231,7 +317,44 @@ export function ChatsModule() {
                   </p>
                   <p className="text-xs text-slate-500">{formatPhone(selectedChat.phone)}</p>
                 </div>
+
+                {/* Takeover badge + button */}
+                {botConv?.human_takeover ? (
+                  <div className="flex items-center gap-2">
+                    <span className="flex items-center gap-1.5 rounded-full bg-amber-500/15 px-2.5 py-1 text-[11px] font-semibold text-amber-400">
+                      <UserCog className="h-3 w-3" />
+                      Humano
+                    </span>
+                    <button
+                      onClick={handleReturnToBot}
+                      disabled={takeoverLoading}
+                      className="flex items-center gap-1.5 rounded-lg bg-slate-800 px-3 py-1.5 text-xs font-medium text-slate-200 transition-colors hover:bg-slate-700 disabled:opacity-50"
+                    >
+                      {takeoverLoading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Bot className="h-3.5 w-3.5" />}
+                      Devolver para o Bot
+                    </button>
+                  </div>
+                ) : (
+                  <button
+                    onClick={handleTakeover}
+                    disabled={takeoverLoading}
+                    className="flex items-center gap-1.5 rounded-lg bg-gold-500 px-3 py-1.5 text-xs font-semibold text-slate-900 transition-opacity hover:opacity-90 disabled:opacity-50"
+                  >
+                    {takeoverLoading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <UserCog className="h-3.5 w-3.5" />}
+                    Assumir Atendimento
+                  </button>
+                )}
               </div>
+
+              {/* Takeover notice banner */}
+              {botConv?.human_takeover && (
+                <div className="flex items-center gap-2 bg-amber-500/10 border-b border-amber-500/20 px-4 py-2">
+                  <UserCog className="h-4 w-4 text-amber-400 shrink-0" />
+                  <p className="text-xs text-amber-300">
+                    O bot esta pausado para este passageiro. Suas mensagens serao enviadas manualmente. Clique em "Devolver para o Bot" para que o bot volte a responder.
+                  </p>
+                </div>
+              )}
 
               {/* Messages */}
               <div className="flex-1 overflow-y-auto px-4 py-4 space-y-2">
