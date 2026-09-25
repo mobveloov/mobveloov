@@ -93,7 +93,6 @@ export function WhatsAppPanel() {
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
   const [planFeatures, setPlanFeatures] = useState<{ plan_name: string; send_driver_info: boolean; send_eta: boolean; distance_update_interval_min: number } | null>(null);
-  const [messageCount, setMessageCount] = useState<number>(0);
   const [qrError, setQrError] = useState<string | null>(null);
   const [qrImageError, setQrImageError] = useState(false);
   const [qrExpiresAt, setQrExpiresAt] = useState<number | null>(null);
@@ -167,14 +166,6 @@ export function WhatsAppPanel() {
       }
     }
 
-    // Current month message count
-    const currentMonth = new Date().toISOString().slice(0, 7);
-    const { count } = await supabase
-      .from('whatsapp_message_log')
-      .select('*', { count: 'exact', head: true })
-      .eq('company_id', company.id)
-      .eq('billing_month', currentMonth);
-    setMessageCount(count ?? 0);
   }, [company]);
 
   useEffect(() => {
@@ -635,11 +626,6 @@ export function WhatsAppPanel() {
             </div>
           )}
 
-          {/* Monthly message counter */}
-          <div className="mt-3 flex items-center justify-between border-t border-neutral-200 dark:border-neutral-700 pt-3">
-            <span className="text-xs text-neutral-500">Mensagens enviadas este mês</span>
-            <span className="text-sm font-bold text-neutral-900 dark:text-neutral-100">{messageCount}</span>
-          </div>
         </div>
       )}
 

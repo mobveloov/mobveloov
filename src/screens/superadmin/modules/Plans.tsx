@@ -87,7 +87,6 @@ export function PlansModule({ success, error, logAction }: ModuleProps) {
                 <div className="h-px bg-slate-800 my-2" />
                 <div className="flex justify-between items-center"><span>Bot WhatsApp</span><span className={`font-bold ${p.bot_incluso ? 'text-emerald-400' : 'text-slate-500'}`}>{p.bot_incluso ? 'Incluso' : 'Não incluso'}</span></div>
                 {p.bot_incluso && <div className="flex justify-between"><span>Limite Conexões Bot</span><span className="text-[#D4AF37] font-bold">{p.limite_conexoes_bot}</span></div>}
-                {p.bot_incluso && <div className="flex justify-between"><span>Limite Mensagens Bot</span><span className="text-[#D4AF37] font-bold">{p.limite_mensagens_bot == null ? 'Ilimitado' : p.limite_mensagens_bot}</span></div>}
               </div>
               <div className="flex gap-2 mt-4">
                 <button onClick={() => setEditPlan(p)} className="flex-1 bg-slate-800 hover:bg-slate-700 border border-slate-700 text-white font-bold py-2 rounded-lg text-[11px] transition-colors">Editar</button>
@@ -156,7 +155,6 @@ function PlanFormModal({ plan, onClose, onSaved, onError, onLog }: {
   const [sortOrder, setSortOrder] = useState(plan?.sort_order?.toString() ?? '0');
   const [botIncluso, setBotIncluso] = useState(plan?.bot_incluso ?? false);
   const [limiteConexoesBot, setLimiteConexoesBot] = useState(plan?.limite_conexoes_bot?.toString() ?? '0');
-  const [limiteMensagensBot, setLimiteMensagensBot] = useState(plan?.limite_mensagens_bot == null ? '' : plan?.limite_mensagens_bot?.toString() ?? '0');
   const [saving, setSaving] = useState(false);
 
   const handleSave = async (e: React.FormEvent) => {
@@ -179,7 +177,6 @@ function PlanFormModal({ plan, onClose, onSaved, onError, onLog }: {
       price: parseFloat(baseMonthly) || 0,
       bot_incluso: botIncluso,
       limite_conexoes_bot: parseInt(limiteConexoesBot) || 0,
-      limite_mensagens_bot: limiteMensagensBot === '' ? null : (parseInt(limiteMensagensBot) || 0),
     };
     if (plan) {
       const { error: err } = await supabase.from('subscription_plans').update(payload).eq('id', plan.id);
@@ -260,10 +257,6 @@ function PlanFormModal({ plan, onClose, onSaved, onError, onLog }: {
               <label className={labelCls}>Limite de Conexões</label>
               <input type="number" className={inputCls} value={limiteConexoesBot} onChange={(e) => setLimiteConexoesBot(e.target.value)} min="0" disabled={!botIncluso} />
             </div>
-          </div>
-          <div className="mt-2">
-            <label className={labelCls}>Limite de Mensagens/Mês (vazio = ilimitado)</label>
-            <input type="number" className={inputCls} value={limiteMensagensBot} onChange={(e) => setLimiteMensagensBot(e.target.value)} min="0" disabled={!botIncluso} placeholder="Ilimitado" />
           </div>
         </div>
         <div className="flex gap-3 justify-end pt-2">

@@ -64,7 +64,7 @@ Deno.serve(async (req: Request) => {
 
     const { data: plan } = await supabase
       .from("subscription_plans")
-      .select("bot_incluso, limite_conexoes_bot, limite_mensagens_bot, name")
+      .select("bot_incluso, limite_conexoes_bot, name")
       .eq("id", company.plan_id)
       .maybeSingle();
 
@@ -126,15 +126,6 @@ Deno.serve(async (req: Request) => {
         .maybeSingle();
       const machineConfigured = !!(cred?.machine_api_url && (cred?.machine_api_key || cred?.taximetro_username));
 
-      // Count messages sent this month for usage display
-      const currentMonth = new Date().toISOString().slice(0, 7);
-      const { count: messageCount } = await supabase
-        .from("whatsapp_message_log")
-        .select("*", { count: "exact", head: true })
-        .eq("company_id", companyId)
-        .eq("success", true)
-        .eq("billing_month", currentMonth);
-
       return new Response(JSON.stringify({
         success: true,
         connections,
@@ -142,8 +133,6 @@ Deno.serve(async (req: Request) => {
         planName: plan.name,
         usingVeloovShared,
         machineConfigured,
-        messageLimit: plan.limite_mensagens_bot,
-        messageCount: messageCount ?? 0,
       }), {
         headers: { ...corsHeaders, "Content-Type": "application/json" },
       });

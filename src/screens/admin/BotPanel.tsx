@@ -58,8 +58,6 @@ export function BotPanel() {
   const [connections, setConnections] = useState<BotWhatsappConexao[]>([]);
   const [planLimit, setPlanLimit] = useState(0);
   const [planName, setPlanName] = useState('');
-  const [messageLimit, setMessageLimit] = useState<number | null>(null);
-  const [messageCount, setMessageCount] = useState(0);
   const [usingVeloovShared, setUsingVeloovShared] = useState(false);
   const [machineConfigured, setMachineConfigured] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -75,14 +73,12 @@ export function BotPanel() {
     setLoading(true);
     const result = await callBotApi('list', { companyId: company.id });
     if (result.ok && result.data) {
-      const d = result.data as { connections: BotWhatsappConexao[]; planLimit: number; planName: string; usingVeloovShared: boolean; machineConfigured: boolean; messageLimit: number | null; messageCount: number };
+      const d = result.data as { connections: BotWhatsappConexao[]; planLimit: number; planName: string; usingVeloovShared: boolean; machineConfigured: boolean };
       setConnections(d.connections ?? []);
       setPlanLimit(d.planLimit ?? 0);
       setPlanName(d.planName ?? '');
       setUsingVeloovShared(d.usingVeloovShared ?? false);
       setMachineConfigured(d.machineConfigured ?? false);
-      setMessageLimit(d.messageLimit ?? 0);
-      setMessageCount(d.messageCount ?? 0);
     } else {
       setError(result.error ?? 'Erro ao carregar');
     }
@@ -149,25 +145,10 @@ export function BotPanel() {
         <div className="rounded-xl border border-slate-800 bg-slate-900/40 p-4">
           <div className="flex items-center gap-2 mb-1">
             <MessageSquare className="h-4 w-4 text-gold-400" />
-            <h3 className="text-xs font-bold text-slate-300 uppercase tracking-wide">Mensagens (mês)</h3>
+            <h3 className="text-xs font-bold text-slate-300 uppercase tracking-wide">Mensagens</h3>
           </div>
-          <p className="text-2xl font-bold text-slate-100">
-            {messageLimit === null
-              ? <span className="text-success-400">Ilimitado</span>
-              : <>{messageCount}<span className="text-slate-500 text-base font-normal">/{messageLimit}</span></>
-            }
-          </p>
-          <p className="text-xs text-slate-500 mt-0.5">
-            {messageLimit === null ? 'plano sem limite de mensagens' : 'mensagens enviadas no mês'}
-          </p>
-          {messageLimit !== null && messageLimit > 0 && (
-            <div className="mt-2 h-1.5 rounded-full bg-slate-800 overflow-hidden">
-              <div
-                className="h-full rounded-full bg-gold-500 transition-all"
-                style={{ width: `${Math.min(100, (messageCount / messageLimit) * 100)}%` }}
-              />
-            </div>
-          )}
+          <p className="text-2xl font-bold text-success-400">Ilimitado</p>
+          <p className="text-xs text-slate-500 mt-0.5">plano sem limite de mensagens</p>
         </div>
       </div>
 
