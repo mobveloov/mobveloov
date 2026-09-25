@@ -260,6 +260,20 @@ async function sendWhatsAppMessageWithProvider(
       headers: { "Content-Type": "application/json", apikey: token },
       body: JSON.stringify({ number: cleanPhone, text: message, delay: 1200, presence: "available" }),
     });
+    const respBody = await resp.text().catch(() => "");
+    if (!resp.ok) {
+      await supabase.from("admin_logs").insert({
+        source: "whatsapp_webhook",
+        level: "error",
+        message: `sendText Evolution HTTP ${resp.status} for ${cleanPhone}: ${respBody.slice(0, 500)}`,
+      });
+    } else {
+      await supabase.from("admin_logs").insert({
+        source: "whatsapp_webhook",
+        level: "info",
+        message: `sendText Evolution OK for ${cleanPhone}: ${respBody.slice(0, 300)}`,
+      });
+    }
     return resp.ok;
   }
 
@@ -399,9 +413,13 @@ async function sendInteractiveWithProvider(
         presence: "available",
       }),
     });
+    const respBody = await resp.text().catch(() => "");
     if (!resp.ok) {
-      const errBody = await resp.text().catch(() => "");
-      console.error(`sendButtons failed (${resp.status}): ${errBody.slice(0, 300)}`);
+      await supabase.from("admin_logs").insert({
+        source: "whatsapp_webhook", level: "error", message: `sendButtons Evolution HTTP ${resp.status} for ${cleanPhone}: ${respBody.slice(0, 500)}` });
+    } else {
+      await supabase.from("admin_logs").insert({
+        source: "whatsapp_webhook", level: "info", message: `sendButtons Evolution OK for ${cleanPhone}: ${respBody.slice(0, 300)}` });
     }
     return resp.ok;
   }
@@ -836,7 +854,8 @@ Output: {"quer_corrida":true,"tipo_veiculo":null,"eh_rua_oficial":false,"enderec
     clearTimeout(timeout);
     if (!resp.ok) {
       const errBody = await resp.text().catch(() => "");
-      console.error(`[interpretMessageWithLLM] ${provider} HTTP ${resp.status}: ${errBody.slice(0, 300)}`);
+      await supabase.from("admin_logs").insert({
+        source: "whatsapp_webhook", level: "error", message: `LLM ${provider} HTTP ${resp.status}: ${errBody.slice(0, 500)}` });
       return null;
     }
     const data = await resp.json();
@@ -853,7 +872,9 @@ Output: {"quer_corrida":true,"tipo_veiculo":null,"eh_rua_oficial":false,"enderec
       texto_destino_motorista: parsed.texto_destino_motorista ?? null,
     };
   } catch (err) {
-    console.error(`[interpretMessageWithLLM] exception: ${err instanceof Error ? err.message : String(err)}`);
+    const errMsg = err instanceof Error ? err.message : String(err);
+    await supabase.from("admin_logs").insert({
+      source: "whatsapp_webhook", level: "error", message: `LLM exception: ${errMsg.slice(0, 500)}` });
     return null;
   }
 }
