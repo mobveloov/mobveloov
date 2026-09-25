@@ -425,6 +425,7 @@ function deaccent(s: string): string {
 interface ParsedRideIntent {
   quer_corrida: boolean;
   tipo_veiculo: "moto" | "carro" | null;
+  eh_rua_oficial: boolean;
   endereco_origem: string | null;
   texto_embarque_motorista: string | null;
   endereco_destino: string | null;
@@ -477,26 +478,32 @@ async function interpretMessageWithLLM(
   const tipoInstancia = isTotemFixo ? "TOTEM_FIXO" : "BOT_WHATSAPP";
   const fallbackAddr = refTotem ? `${refTotem}, ${cidade} - ${estado}` : `${cidade} - ${estado}`;
 
-  const systemPrompt = `Voce e o modulo unificado de Inteligencia Artificial e Engenharia de Backend de uma plataforma de mobilidade urbana profissional (que atende Bot de Corridas no WhatsApp e Totens Fisicos). Sua funcao e receber a mensagem de texto livre do passageiro, processar as regras de negocio, formatar o texto de exibicao e estruturar o payload de envio para a API da Machine.
+  const systemPrompt = `Voce e o modulo unificado de Inteligencia Artificial e Engenharia de Backend de uma plataforma de mobilidade urbana profissional (que atende Bot de Corridas no WhatsApp e Totens Fisicos). Sua funcao e receber a mensagem de texto livre do passageiro, processar as regras de negocio, validar enderecos via OpenStreetMap e estruturar o payload de envio para a API da Machine.
 
 ### CONTEXTO DA OPERACAO DESTA INSTANCIA (INJETADO DINAMICAMENTE PELO SISTEMA)
 - Canal de Entrada: ${tipoInstancia} (Valores possiveis: "BOT_WHATSAPP" ou "TOTEM_FIXO")
 - Cidade de Operacao Padrao: ${cidade}
 - Estado: ${estado}
 ${refTotem ? `- Endereco de Fallback Obrigatorio (Mapa): "${fallbackAddr}"\n` : ""}
-### REGRA DE OURO (SEM MENSAGEM INTERMEDIARIA E CALCULO POR KM)
+### REGRA DE OURO 1: VALIDACAO INTELIGENTE (OPENSTREETMAP & FALLBACK)
+1. Se o usuario digitar um endereco com nome de rua/avenida (Ex: "Rua Arthur Mesquita 57"): o sistema deve tentar estruturar adicionando o Bairro (se identificado) junto com a Cidade e Estado Cadastrados para validacao no OpenStreetMap.
+2. Se o OpenStreetMap falhar (nao encontrar o endereco) OU se o cliente digitar um local informal/apelido (Ex: "Amarelinha da Avenida", "Prainha"): defina a geolocalizacao_origem obrigatoriamente como o Endereco de Fallback ("${fallbackAddr}").
+3. O texto digitado pelo cliente NUNCA deve ser perdido. Mesmo usando o fallback no mapa, o texto exato da rua ou apelido deve ir para o motorista ler.
+
+### REGRA DE OURO 2: FLUXO DIRETO E CALCULO POR KM
 1. NAO responda com "Entendi:", "Validando...", etc. O sistema vai gerar DIRETAMENTE o bloco final de confirmacao.
-2. Para permitir o calculo livre por KM rodado dependendo da categoria do veiculo, voce deve FIXAR a geolocalizacao_origem no Endereco de Fallback (caso o cliente mande local informal) e deixar a geolocalizacao_destino obrigatoriamente como NULL.
+2. A geolocalizacao_destino deve ser configurada obrigatoriamente como NULL para permitir o calculo livre por KM rodado dependendo da categoria escolhida pelo passageiro.
 
 ### DIRETRIZES DE FORMATACAO DOS LOCAIS (OBRIGATORIO: TUDO EM MAIUSCULO)
-1. Extraia apenas o nome do local ou ponto de referencia (Ex: "amarelinha da avenida" vira "AMARELINHA DA AVENIDA", "prainha" vira "PRAINHA").
-2. Remova termos conectivos ou frases de conversacao do passageiro no texto de exibicao (Ex: "Estou na amarelinha" -> Extrair e exibir apenas "AMARELINHA").
+1. Limpe termos conectivos de conversacao (Ex: "Estou na rua arthur mesquita 57" -> "RUA ARTHUR MESQUITA, 57").
+2. Formate todo o texto descritivo de embarque e destino em LETRAS MAIUSCULAS.
 3. Se o Canal de Entrada for "TOTEM_FIXO", o local de embarque deve ser padronizado como "TOTEM - ${refTotem ? refTotem.toUpperCase() : "RUA PERNAMBUCO, 402"}".
-4. Se o destino nao for informado ou o usuario disser que decide no veiculo, o destino deve ser formatado como "DEFINIR NO CARRO".
+4. Se o destino nao for informado, use "DEFINIR NO CARRO".
 
 ### PARTE 1: DIRETRIZES DE MAPEAMENTO LOGICO DO JSON:
 1. TRATAMENTO DO EMBARQUE (ORIGEM):
-   - "endereco_origem": Se o Canal de Entrada for "TOTEM_FIXO" ou se o cliente no "BOT_WHATSAPP" informou um local informal/apelido, preencha obrigatoriamente com "${fallbackAddr}". Se for rua oficial com numero, use a rua + ", ${cidade} - ${estado}".
+   - "eh_rua_oficial": true se o cliente digitou uma rua/avenida com numero (Ex: "Rua Arthur Mesquita 57"). false se for apelido/local informal (Ex: "Amarelinha da Avenida").
+   - "endereco_origem": Se for rua oficial, estruture como "rua + numero, ${cidade} - ${estado}" para validacao no OpenStreetMap. Se for apelido/local informal OU se for TOTEM_FIXO, preencha obrigatoriamente com "${fallbackAddr}".
    - "texto_embarque_motorista": Extraia o termo exato ou apelido que o cliente usou para a partida em MAIUSCULO. Se for Totem fixo, preencha com "TOTEM - ${refTotem ? refTotem.toUpperCase() : "RUA PERNAMBUCO, 402"}".
 2. TRATAMENTO DO DESTINO (ZERA GEOLOCALIZACAO PARA CALCULO POR KM):
    - "endereco_destino": Defina OBRIGATORIAMENTE como null.
@@ -507,7 +514,8 @@ Retorne APENAS um objeto JSON valido. Sem textos introdutorios ou explicativos.
 {
   "quer_corrida": true/false,
   "tipo_veiculo": "moto" | "carro" | null,
-  "endereco_origem": "string - endereco geocodificavel ou fallback",
+  "eh_rua_oficial": true/false,
+  "endereco_origem": "string - endereco estruturado para OSM ou fallback",
   "texto_embarque_motorista": "STRING EM MAIUSCULO PARA O MOTORISTA",
   "endereco_destino": null,
   "texto_destino_motorista": "STRING EM MAIUSCULO PARA O MOTORISTA"
@@ -515,20 +523,20 @@ Retorne APENAS um objeto JSON valido. Sem textos introdutorios ou explicativos.
 
 ### EXEMPLOS DE COMPORTAMENTO:
 
-Exemplo 1 (BOT_WHATSAPP - Local Informal):
-Contexto: Canal="BOT_WHATSAPP", Cidade="Pitangueiras", Estado="SP", Fallback="Rua Pernambuco, 402 - Pitangueiras - SP"
-Input: "Estou na amarelinha da avenida e vou para prainha"
-Output: {"quer_corrida":true,"tipo_veiculo":null,"endereco_origem":"Rua Pernambuco, 402 - Pitangueiras - SP","texto_embarque_motorista":"AMARELINHA DA AVENIDA","endereco_destino":null,"texto_destino_motorista":"PRAINHA"}
-
-Exemplo 2 (BOT_WHATSAPP - Rua oficial):
+Exemplo 1 (BOT_WHATSAPP - Rua oficial que passa pela checagem do OSM):
 Contexto: Canal="BOT_WHATSAPP", Cidade="Pitangueiras", Estado="SP"
-Input: "Quero um carro na rua Arthur mesquita 57 vou para amarelinha do centro"
-Output: {"quer_corrida":true,"tipo_veiculo":"carro","endereco_origem":"rua Arthur mesquita 57, Pitangueiras - SP","texto_embarque_motorista":"RUA ARTHUR MESQUITA 57","endereco_destino":null,"texto_destino_motorista":"AMARELINHA DO CENTRO"}
+Input: "Estou na rua arthur mesquita 57 e vou para a prainha"
+Output: {"quer_corrida":true,"tipo_veiculo":null,"eh_rua_oficial":true,"endereco_origem":"Rua Arthur Mesquita, 57, Pitangueiras - SP","texto_embarque_motorista":"RUA ARTHUR MESQUITA, 57","endereco_destino":null,"texto_destino_motorista":"PRAINHA"}
+
+Exemplo 2 (BOT_WHATSAPP - Local informal - cai direto no Fallback do mapa):
+Contexto: Canal="BOT_WHATSAPP", Cidade="Pitangueiras", Estado="SP", Fallback="Rua Pernambuco, 402 - Pitangueiras - SP"
+Input: "Me pega na amarelinha da avenida e leva na prainha"
+Output: {"quer_corrida":true,"tipo_veiculo":null,"eh_rua_oficial":false,"endereco_origem":"Rua Pernambuco, 402 - Pitangueiras - SP","texto_embarque_motorista":"AMARELINHA DA AVENIDA","endereco_destino":null,"texto_destino_motorista":"PRAINHA"}
 
 ${refTotem ? `Exemplo 3 (TOTEM_FIXO - Cliente so digita o destino):
 Contexto: Canal="TOTEM_FIXO", Cidade="${cidade}", Estado="${estado}", Fallback="${fallbackAddr}"
 Input: "Quero ir para o Hospital Sao Paulo"
-Output: {"quer_corrida":true,"tipo_veiculo":null,"endereco_origem":"${fallbackAddr}","texto_embarque_motorista":"TOTEM - ${refTotem.toUpperCase()}","endereco_destino":null,"texto_destino_motorista":"HOSPITAL SAO PAULO"}
+Output: {"quer_corrida":true,"tipo_veiculo":null,"eh_rua_oficial":false,"endereco_origem":"${fallbackAddr}","texto_embarque_motorista":"TOTEM - ${refTotem.toUpperCase()}","endereco_destino":null,"texto_destino_motorista":"HOSPITAL SAO PAULO"}
 ` : ""}`;
 
   try {
@@ -554,6 +562,7 @@ Output: {"quer_corrida":true,"tipo_veiculo":null,"endereco_origem":"${fallbackAd
     return {
       quer_corrida: !!parsed.quer_corrida,
       tipo_veiculo: parsed.tipo_veiculo === "moto" ? "moto" : parsed.tipo_veiculo === "carro" ? "carro" : null,
+      eh_rua_oficial: !!parsed.eh_rua_oficial,
       endereco_origem: parsed.endereco_origem ?? null,
       texto_embarque_motorista: parsed.texto_embarque_motorista ?? null,
       endereco_destino: parsed.endereco_destino ?? null,
@@ -1673,6 +1682,7 @@ As mensagens do passageiro serao encaminhadas a partir de agora.`;
       let combinedDest: string | null = null;
       let originReference: string | null = null;
       let destinationReference: string | null = null;
+      let llmIsRuaOficial = false;
 
       if (location) {
         lat = location.lat;
@@ -1683,7 +1693,6 @@ As mensagens do passageiro serao encaminhadas a partir de agora.`;
         const transcribed = await transcribeAudio(audio.data, audio.mimetype, companyId);
         if (transcribed) {
           addressText = transcribed.trim();
-          await sendBotMessage(companyId, cleanPhone, connectionId, `Entendi: "${addressText}". Validando o endereco...`);
         } else {
           await sendBotMessage(companyId, cleanPhone, connectionId, "Nao consegui transcrever o audio. Por favor, digite o endereco de embarque ou envie sua localizacao.");
           return;
@@ -1702,6 +1711,7 @@ As mensagens do passageiro serao encaminhadas a partir de agora.`;
           combinedDest = llmResult.endereco_destino ?? null;
           originReference = (llmResult.texto_embarque_motorista ?? llmResult.endereco_origem).toUpperCase();
           destinationReference = (llmResult.texto_destino_motorista ?? null) ? (llmResult.texto_destino_motorista as string).toUpperCase() : null;
+          llmIsRuaOficial = !!llmResult.eh_rua_oficial;
         } else {
           const combined = parseCombinedAddress(text.trim());
           if (combined) {
@@ -1720,11 +1730,11 @@ As mensagens do passageiro serao encaminhadas a partir de agora.`;
         return;
       }
 
-      // Fuzzy match against local POI/suggestion table (accent-insensitive)
-      // Use the geocodable address (llmResult.endereco_origem) for matching, not the display text
+      // If the LLM identified this as an informal place (not a real street),
+      // skip geocoding entirely and use the fallback address. Only attempt OSM
+      // validation when the LLM says it's a structured street address.
       let suggestionMatch: { address_text: string; lat: number | null; lng: number | null } | null = null;
-      let geocodableAddress = addressText;
-      if (connectionId) {
+      if (connectionId && llmIsRuaOficial) {
         suggestionMatch = await findAddressSuggestionFuzzy(connectionId, addressText);
       }
 
@@ -1734,12 +1744,10 @@ As mensagens do passageiro serao encaminhadas a partir de agora.`;
       let isFallback = false;
 
       if (suggestionMatch) {
-        // Use the suggestion's real address
         if (suggestionMatch.lat != null && suggestionMatch.lng != null) {
           finalLat = suggestionMatch.lat;
           finalLng = suggestionMatch.lng;
         } else {
-          // Geocode the suggestion's real address
           const companyLoc = await getCompanyLocationInfo(companyId, connectionId);
           const geocoded = await geocodeAddress(suggestionMatch.address_text, companyLoc.city ?? undefined, companyLoc.state ?? undefined, companyLoc.lat ?? undefined, companyLoc.lng ?? undefined);
           if (geocoded) {
@@ -1759,32 +1767,42 @@ As mensagens do passageiro serao encaminhadas a partir de agora.`;
         }
         finalAddress = suggestionMatch.address_text;
       } else if (location) {
-        // Location was already set above
         finalLat = lat!;
         finalLng = lng!;
         finalAddress = addressText;
-      } else {
-        // Geocode the text address
+      } else if (llmIsRuaOficial) {
+        // Official street — try OSM geocoding
         const companyLoc = await getCompanyLocationInfo(companyId, connectionId);
         const geocoded = await geocodeAddress(addressText, companyLoc.city ?? undefined, companyLoc.state ?? undefined, companyLoc.lat ?? undefined, companyLoc.lng ?? undefined);
-
         if (geocoded) {
           finalLat = geocoded.lat;
           finalLng = geocoded.lng;
           finalAddress = geocoded.formatted;
+        } else if (companyLoc.lat != null && companyLoc.lng != null) {
+          finalLat = companyLoc.lat;
+          finalLng = companyLoc.lng;
+          finalAddress = addressText;
+          isFallback = true;
         } else {
-          if (companyLoc.lat != null && companyLoc.lng != null) {
-            finalLat = companyLoc.lat;
-            finalLng = companyLoc.lng;
-            finalAddress = addressText;
-            isFallback = true;
-          } else {
-            await sendBotMessage(companyId, cleanPhone, connectionId, msg("address_not_found", "\u274C Nao encontrei esse endereco. Voce pode:\n\n1\uFE0F\u20E3 Mandar sua localizacao pelo WhatsApp (clipe \u{1F4CE} > Localizacao)\n2\uFE0F\u20E3 Enviar o endereco completo com numero e bairro\n3\uFE0F\u20E3 Seguir sem endereco confirmado — o motorista entra em contato"));
-            await supabase.from("bot_conversas")
-              .update({ state: "aguardando_endereco", updated_at: new Date().toISOString() })
-              .eq("id", conv.id);
-            return;
-          }
+          await sendBotMessage(companyId, cleanPhone, connectionId, msg("address_not_found", "\u274C Nao encontrei esse endereco. Voce pode:\n\n1\uFE0F\u20E3 Mandar sua localizacao pelo WhatsApp (clipe \u{1F4CE} > Localizacao)\n2\uFE0F\u20E3 Enviar o endereco completo com numero e bairro\n3\uFE0F\u20E3 Seguir sem endereco confirmado — o motorista entra em contato"));
+          await supabase.from("bot_conversas")
+            .update({ state: "aguardando_endereco", updated_at: new Date().toISOString() })
+            .eq("id", conv.id);
+          return;
+        }
+      } else {
+        // Informal place — skip geocoding, use fallback coordinates directly
+        const companyLoc = await getCompanyLocationInfo(companyId, connectionId);
+        if (companyLoc.lat != null && companyLoc.lng != null) {
+          finalLat = companyLoc.lat;
+          finalLng = companyLoc.lng;
+          finalAddress = addressText;
+          isFallback = true;
+        } else {
+          finalLat = 0;
+          finalLng = 0;
+          finalAddress = addressText;
+          isFallback = true;
         }
       }
 
