@@ -477,27 +477,30 @@ async function interpretMessageWithLLM(
   const tipoInstancia = isTotemFixo ? "TOTEM_FIXO" : "BOT_WHATSAPP";
   const fallbackAddr = refTotem ? `${refTotem}, ${cidade} - ${estado}` : `${cidade} - ${estado}`;
 
-  const systemPrompt = `Voce e o modulo de Inteligencia Artificial e Engenharia de Backend de uma plataforma de mobilidade urbana profissional (que atende Bot de Corridas no WhatsApp e Totens Fisicos). Sua funcao e receber a mensagem de texto livre do passageiro, processar as regras de negocio e estruturar os dados de origem e destino separando o endereco geocodificavel do texto de exibicao para o motorista.
+  const systemPrompt = `Voce e o modulo unificado de Inteligencia Artificial e Engenharia de Backend de uma plataforma de mobilidade urbana profissional (que atende Bot de Corridas no WhatsApp e Totens Fisicos). Sua funcao e receber a mensagem de texto livre do passageiro, processar as regras de negocio, formatar o texto de exibicao e estruturar o payload de envio para a API da Machine.
 
 ### CONTEXTO DA OPERACAO DESTA INSTANCIA (INJETADO DINAMICAMENTE PELO SISTEMA)
 - Canal de Entrada: ${tipoInstancia} (Valores possiveis: "BOT_WHATSAPP" ou "TOTEM_FIXO")
 - Cidade de Operacao Padrao: ${cidade}
 - Estado: ${estado}
 ${refTotem ? `- Endereco de Fallback Obrigatorio (Mapa): "${fallbackAddr}"\n` : ""}
-### REGRA DE OURO (ANTI-LOOP DE ERRO NA GEOLOCALIZACAO)
-Toda vez que o passageiro usar apelidos, locais informais ou estabelecimentos sem o endereco oficial com rua e numero (Ex: "Amarelinha da Avenida", "Prainha", "Bar do Ze", "Mercadinho"), voce NUNCA deve retornar erro ou nulo.
-Para esses locais informais, defina o campo de geolocalizacao com o Endereco de Fallback ("${fallbackAddr}"), mas preserve o termo original digitado pelo cliente nos campos de exibicao do motorista.
+### REGRA DE OURO (SEM MENSAGEM INTERMEDIARIA E CALCULO POR KM)
+1. NAO responda com "Entendi:", "Validando...", etc. O sistema vai gerar DIRETAMENTE o bloco final de confirmacao.
+2. Para permitir o calculo livre por KM rodado dependendo da categoria do veiculo, voce deve FIXAR a geolocalizacao_origem no Endereco de Fallback (caso o cliente mande local informal) e deixar a geolocalizacao_destino obrigatoriamente como NULL.
 
-### REGRA DE OURO (CORRIDA POR KM / CATEGORIA - SEM DESTINO MAPEADO)
-Para evitar loops de erro de geolocalizacao e permitir o calculo livre por KM rodado dependendo da categoria do veiculo, voce deve FIXAR apenas a geolocalizacao de origem na Rua Pernambuco, 402 (caso o cliente mande local informal) e deixar o destino mapeado como NULL ou VAZIO. Os locais reais digitados serao enviados apenas como campos de texto descritivo para leitura do motorista.
+### DIRETRIZES DE FORMATACAO DOS LOCAIS (OBRIGATORIO: TUDO EM MAIUSCULO)
+1. Extraia apenas o nome do local ou ponto de referencia (Ex: "amarelinha da avenida" vira "AMARELINHA DA AVENIDA", "prainha" vira "PRAINHA").
+2. Remova termos conectivos ou frases de conversacao do passageiro no texto de exibicao (Ex: "Estou na amarelinha" -> Extrair e exibir apenas "AMARELINHA").
+3. Se o Canal de Entrada for "TOTEM_FIXO", o local de embarque deve ser padronizado como "TOTEM - ${refTotem ? refTotem.toUpperCase() : "RUA PERNAMBUCO, 402"}".
+4. Se o destino nao for informado ou o usuario disser que decide no veiculo, o destino deve ser formatado como "DEFINIR NO CARRO".
 
 ### PARTE 1: DIRETRIZES DE MAPEAMENTO LOGICO DO JSON:
 1. TRATAMENTO DO EMBARQUE (ORIGEM):
-   - "endereco_origem": Se o Canal de Entrada for "TOTEM_FIXO" ou se o cliente no "BOT_WHATSAPP" informou um local informal/apelido (Ex: "Amarelinha da Avenida"), preencha obrigatoriamente com "${fallbackAddr}". Se for rua oficial com numero, use a rua + ", ${cidade} - ${estado}".
-   - "texto_embarque_motorista": Extraia o termo exato ou apelido que o cliente usou para a partida (Ex: "Amarelinha da Avenida"). Se for Totem fixo, preencha com "Totem - ${refTotem}".
+   - "endereco_origem": Se o Canal de Entrada for "TOTEM_FIXO" ou se o cliente no "BOT_WHATSAPP" informou um local informal/apelido, preencha obrigatoriamente com "${fallbackAddr}". Se for rua oficial com numero, use a rua + ", ${cidade} - ${estado}".
+   - "texto_embarque_motorista": Extraia o termo exato ou apelido que o cliente usou para a partida em MAIUSCULO. Se for Totem fixo, preencha com "TOTEM - ${refTotem ? refTotem.toUpperCase() : "RUA PERNAMBUCO, 402"}".
 2. TRATAMENTO DO DESTINO (ZERA GEOLOCALIZACAO PARA CALCULO POR KM):
-   - "endereco_destino": Defina OBRIGATORIAMENTE como null. Nao tente geolocalizar o destino para permitir o calculo livre por taximetro/KM.
-   - "texto_destino_motorista": Extraia o termo exato ou apelido que o cliente digitou (Ex: "Prainha") para que o motorista saiba para onde ir ao ler a tela do aplicativo. Se nao informado, use "Definir no carro".
+   - "endereco_destino": Defina OBRIGATORIAMENTE como null.
+   - "texto_destino_motorista": Extraia o termo exato ou apelido que o cliente digitou em MAIUSCULO. Se nao informado, use "DEFINIR NO CARRO".
 
 ### FORMATO DE SAIDA EXCLUSIVO (JSON)
 Retorne APENAS um objeto JSON valido. Sem textos introdutorios ou explicativos.
@@ -505,9 +508,9 @@ Retorne APENAS um objeto JSON valido. Sem textos introdutorios ou explicativos.
   "quer_corrida": true/false,
   "tipo_veiculo": "moto" | "carro" | null,
   "endereco_origem": "string - endereco geocodificavel ou fallback",
-  "texto_embarque_motorista": "string - apelido/termo exato para o motorista",
+  "texto_embarque_motorista": "STRING EM MAIUSCULO PARA O MOTORISTA",
   "endereco_destino": null,
-  "texto_destino_motorista": "string - apelido/termo exato para o motorista"
+  "texto_destino_motorista": "STRING EM MAIUSCULO PARA O MOTORISTA"
 }
 
 ### EXEMPLOS DE COMPORTAMENTO:
@@ -515,17 +518,17 @@ Retorne APENAS um objeto JSON valido. Sem textos introdutorios ou explicativos.
 Exemplo 1 (BOT_WHATSAPP - Local Informal):
 Contexto: Canal="BOT_WHATSAPP", Cidade="Pitangueiras", Estado="SP", Fallback="Rua Pernambuco, 402 - Pitangueiras - SP"
 Input: "Estou na amarelinha da avenida e vou para prainha"
-Output: {"quer_corrida":true,"tipo_veiculo":null,"endereco_origem":"Rua Pernambuco, 402 - Pitangueiras - SP","texto_embarque_motorista":"Amarelinha da Avenida","endereco_destino":null,"texto_destino_motorista":"Prainha"}
+Output: {"quer_corrida":true,"tipo_veiculo":null,"endereco_origem":"Rua Pernambuco, 402 - Pitangueiras - SP","texto_embarque_motorista":"AMARELINHA DA AVENIDA","endereco_destino":null,"texto_destino_motorista":"PRAINHA"}
 
 Exemplo 2 (BOT_WHATSAPP - Rua oficial):
 Contexto: Canal="BOT_WHATSAPP", Cidade="Pitangueiras", Estado="SP"
 Input: "Quero um carro na rua Arthur mesquita 57 vou para amarelinha do centro"
-Output: {"quer_corrida":true,"tipo_veiculo":"carro","endereco_origem":"rua Arthur mesquita 57, Pitangueiras - SP","texto_embarque_motorista":"rua Arthur mesquita 57","endereco_destino":null,"texto_destino_motorista":"Amarelinha do centro"}
+Output: {"quer_corrida":true,"tipo_veiculo":"carro","endereco_origem":"rua Arthur mesquita 57, Pitangueiras - SP","texto_embarque_motorista":"RUA ARTHUR MESQUITA 57","endereco_destino":null,"texto_destino_motorista":"AMARELINHA DO CENTRO"}
 
 ${refTotem ? `Exemplo 3 (TOTEM_FIXO - Cliente so digita o destino):
 Contexto: Canal="TOTEM_FIXO", Cidade="${cidade}", Estado="${estado}", Fallback="${fallbackAddr}"
 Input: "Quero ir para o Hospital Sao Paulo"
-Output: {"quer_corrida":true,"tipo_veiculo":null,"endereco_origem":"${fallbackAddr}","texto_embarque_motorista":"Totem - ${refTotem}","endereco_destino":null,"texto_destino_motorista":"Hospital Sao Paulo"}
+Output: {"quer_corrida":true,"tipo_veiculo":null,"endereco_origem":"${fallbackAddr}","texto_embarque_motorista":"TOTEM - ${refTotem.toUpperCase()}","endereco_destino":null,"texto_destino_motorista":"HOSPITAL SAO PAULO"}
 ` : ""}`;
 
   try {
@@ -1697,17 +1700,15 @@ As mensagens do passageiro serao encaminhadas a partir de agora.`;
         if (llmResult && llmResult.endereco_origem) {
           addressText = llmResult.endereco_origem;
           combinedDest = llmResult.endereco_destino ?? null;
-          originReference = llmResult.texto_embarque_motorista ?? llmResult.endereco_origem;
-          destinationReference = llmResult.texto_destino_motorista ?? null;
-          const parts = [`Embarque: ${originReference}`];
-          if (destinationReference) parts.push(`Destino: ${destinationReference}`);
-          await sendBotMessage(companyId, cleanPhone, connectionId, `Entendi:\n${parts.join("\n")}\nValidando enderecos...`);
+          originReference = (llmResult.texto_embarque_motorista ?? llmResult.endereco_origem).toUpperCase();
+          destinationReference = (llmResult.texto_destino_motorista ?? null) ? (llmResult.texto_destino_motorista as string).toUpperCase() : null;
         } else {
           const combined = parseCombinedAddress(text.trim());
           if (combined) {
             addressText = combined.pickup;
             combinedDest = combined.destination;
-            await sendBotMessage(companyId, cleanPhone, connectionId, `Entendi:\nEmbarque: ${combined.pickup}\nDestino: ${combined.destination}\nValidando enderecos...`);
+            originReference = combined.pickup.toUpperCase();
+            destinationReference = combined.destination.toUpperCase();
           } else {
             addressText = text.trim();
           }
@@ -1839,8 +1840,8 @@ As mensagens do passageiro serao encaminhadas a partir de agora.`;
             updated_at: new Date().toISOString(),
           })
           .eq("id", conv.id);
-        const pickupAddr = conv.address_formatted || conv.address_text || "Endereco nao informado";
-        await sendBotMessage(companyId, cleanPhone, connectionId, msg("confirm_address", `\u2705 Confirma o embarque em: ${pickupAddr}?\n\nResponda SIM para confirmar ou NAO para corrigir.`));
+        const pickupAddr = (conv.origin_reference || conv.address_formatted || conv.address_text || "Endereco nao informado").toUpperCase();
+        await sendBotMessage(companyId, cleanPhone, connectionId, msg("confirm_address", `\u2705 Confirma os dados da corrida?\n\n\u{1F4CD} Embarque: ${pickupAddr}\n\u{1F3AF} Destino: DEFINIR NO CARRO\n\nResponda SIM para confirmar ou NAO para corrigir.`));
       } else if (normalizedText === "1" || location || audio || (text && !["1","2"].includes(normalizedText))) {
         // Accept "1" (menu choice), location, audio, or any typed text as a destination address
         if (normalizedText === "1" && !location && !audio) {
@@ -1863,7 +1864,6 @@ As mensagens do passageiro serao encaminhadas a partir de agora.`;
             const transcribed = await transcribeAudio(audio.data, audio.mimetype, companyId);
             if (transcribed) {
               destText = transcribed.trim();
-              await sendBotMessage(companyId, cleanPhone, connectionId, `Entendi: "${destText}". Validando o destino...`);
             } else {
               await sendBotMessage(companyId, cleanPhone, connectionId, "Nao consegui transcrever o audio. Por favor, digite o endereco de destino.");
               return;
@@ -1877,56 +1877,26 @@ As mensagens do passageiro serao encaminhadas a partir de agora.`;
             return;
           }
 
-          let destSuggestionMatch: { address_text: string; lat: number | null; lng: number | null } | null = null;
-          if (connectionId) {
-            destSuggestionMatch = await findAddressSuggestionFuzzy(connectionId, destText);
-          }
+          // For text/audio destinations, keep lat/lng null so Machine API calculates by KM
+          let finalDestLat: number | null = null;
+          let finalDestLng: number | null = null;
+          let finalDestAddress = destText.toUpperCase();
 
-          let finalDestLat: number;
-          let finalDestLng: number;
-          let finalDestAddress: string;
-
-          if (destSuggestionMatch) {
-            if (destSuggestionMatch.lat != null && destSuggestionMatch.lng != null) {
-              finalDestLat = destSuggestionMatch.lat;
-              finalDestLng = destSuggestionMatch.lng;
-            } else {
-              const companyLoc = await getCompanyLocationInfo(companyId, connectionId);
-              const geocoded = await geocodeAddress(destSuggestionMatch.address_text, companyLoc.city ?? undefined, companyLoc.state ?? undefined, companyLoc.lat ?? undefined, companyLoc.lng ?? undefined);
-              if (geocoded) {
-                finalDestLat = geocoded.lat;
-                finalDestLng = geocoded.lng;
-              } else {
-                await sendBotMessage(companyId, cleanPhone, connectionId, msg("destination_not_found", "\u274C Nao encontrei o destino. Voce pode:\n\n1\uFE0F\u20E3 Mandar a localizacao do destino (clipe \u{1F4CE} > Localizacao)\n2\uFE0F\u20E3 Enviar o endereco completo com numero e bairro\n3\uFE0F\u20E3 Seguir sem destino — o motorista entra em contato"));
-                return;
-              }
-            }
-            finalDestAddress = destSuggestionMatch.address_text;
-          } else if (location) {
+          if (location) {
             finalDestLat = destLat!;
             finalDestLng = destLng!;
             finalDestAddress = destText;
-          } else {
-            const companyLoc = await getCompanyLocationInfo(companyId, connectionId);
-            const geocoded = await geocodeAddress(destText, companyLoc.city ?? undefined, companyLoc.state ?? undefined, companyLoc.lat ?? undefined, companyLoc.lng ?? undefined);
-            if (geocoded) {
-              finalDestLat = geocoded.lat;
-              finalDestLng = geocoded.lng;
-              finalDestAddress = geocoded.formatted;
-            } else {
-              await sendBotMessage(companyId, cleanPhone, connectionId, msg("destination_not_found", "\u274C Nao encontrei o destino. Voce pode:\n\n1\uFE0F\u20E3 Mandar a localizacao do destino (clipe \u{1F4CE} > Localizacao)\n2\uFE0F\u20E3 Enviar o endereco completo com numero e bairro\n3\uFE0F\u20E3 Seguir sem destino — o motorista entra em contato"));
-              return;
-            }
           }
 
-          const pickupAddr = conv.address_formatted || conv.address_text || "Endereco nao informado";
+          const pickupAddr = (conv.origin_reference || conv.address_formatted || conv.address_text || "Endereco nao informado").toUpperCase();
           await supabase.from("bot_conversas")
             .update({
               state: "aguardando_confirmacao",
-              destination_text: destText,
+              destination_text: finalDestAddress,
               destination_lat: finalDestLat,
               destination_lng: finalDestLng,
               destination_formatted: finalDestAddress,
+              destination_reference: finalDestAddress,
               updated_at: new Date().toISOString(),
             })
             .eq("id", conv.id);
@@ -1952,7 +1922,6 @@ As mensagens do passageiro serao encaminhadas a partir de agora.`;
         const transcribed = await transcribeAudio(audio.data, audio.mimetype, companyId);
         if (transcribed) {
           destText = transcribed.trim();
-          await sendBotMessage(companyId, cleanPhone, connectionId, `Entendi: "${destText}". Validando o destino...`);
         } else {
           await sendBotMessage(companyId, cleanPhone, connectionId, "Nao consegui transcrever o audio. Por favor, digite o endereco de destino.");
           return;
@@ -1966,57 +1935,26 @@ As mensagens do passageiro serao encaminhadas a partir de agora.`;
         return;
       }
 
-      // Fuzzy match destination against local POI/suggestion table
-      let destSuggestionMatch: { address_text: string; lat: number | null; lng: number | null } | null = null;
-      if (connectionId) {
-        destSuggestionMatch = await findAddressSuggestionFuzzy(connectionId, destText);
-      }
+      // For text/audio destinations, keep lat/lng null so Machine API calculates by KM
+      let finalDestLat: number | null = null;
+      let finalDestLng: number | null = null;
+      let finalDestAddress = destText.toUpperCase();
 
-      let finalDestLat: number;
-      let finalDestLng: number;
-      let finalDestAddress: string;
-
-      if (destSuggestionMatch) {
-        if (destSuggestionMatch.lat != null && destSuggestionMatch.lng != null) {
-          finalDestLat = destSuggestionMatch.lat;
-          finalDestLng = destSuggestionMatch.lng;
-        } else {
-          const companyLoc = await getCompanyLocationInfo(companyId, connectionId);
-          const geocoded = await geocodeAddress(destSuggestionMatch.address_text, companyLoc.city ?? undefined, companyLoc.state ?? undefined, companyLoc.lat ?? undefined, companyLoc.lng ?? undefined);
-          if (geocoded) {
-            finalDestLat = geocoded.lat;
-            finalDestLng = geocoded.lng;
-          } else {
-            await sendBotMessage(companyId, cleanPhone, connectionId, msg("destination_not_found", "\u274C Nao encontrei o destino. Voce pode:\n\n1\uFE0F\u20E3 Mandar a localizacao do destino (clipe \u{1F4CE} > Localizacao)\n2\uFE0F\u20E3 Enviar o endereco completo com numero e bairro\n3\uFE0F\u20E3 Seguir sem destino — o motorista entra em contato"));
-            return;
-          }
-        }
-        finalDestAddress = destSuggestionMatch.address_text;
-      } else if (location) {
+      if (location) {
         finalDestLat = destLat!;
         finalDestLng = destLng!;
         finalDestAddress = destText;
-      } else {
-        const companyLoc = await getCompanyLocationInfo(companyId, connectionId);
-        const geocoded = await geocodeAddress(destText, companyLoc.city ?? undefined, companyLoc.state ?? undefined, companyLoc.lat ?? undefined, companyLoc.lng ?? undefined);
-        if (geocoded) {
-          finalDestLat = geocoded.lat;
-          finalDestLng = geocoded.lng;
-          finalDestAddress = geocoded.formatted;
-        } else {
-          await sendBotMessage(companyId, cleanPhone, connectionId, msg("destination_not_found", "\u274C Nao encontrei o destino. Voce pode:\n\n1\uFE0F\u20E3 Mandar a localizacao do destino (clipe \u{1F4CE} > Localizacao)\n2\uFE0F\u20E3 Enviar o endereco completo com numero e bairro\n3\uFE0F\u20E3 Seguir sem destino — o motorista entra em contato"));
-          return;
-        }
       }
 
-      const pickupAddr = conv.address_formatted || conv.address_text || "Endereco nao informado";
+      const pickupAddr = (conv.origin_reference || conv.address_formatted || conv.address_text || "Endereco nao informado").toUpperCase();
       await supabase.from("bot_conversas")
         .update({
           state: "aguardando_confirmacao",
-          destination_text: destText,
+          destination_text: finalDestAddress,
           destination_lat: finalDestLat,
           destination_lng: finalDestLng,
           destination_formatted: finalDestAddress,
+          destination_reference: finalDestAddress,
           updated_at: new Date().toISOString(),
         })
         .eq("id", conv.id);
