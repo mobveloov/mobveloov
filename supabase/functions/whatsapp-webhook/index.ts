@@ -420,6 +420,33 @@ function deaccent(s: string): string {
   return s.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().trim();
 }
 
+function normalizePlaceText(value: string | null | undefined): string | null {
+  if (typeof value !== "string") return null;
+  let s = value.trim();
+  // Iteratively strip leading conversational prefixes until only the place name remains
+  for (let i = 0; i < 3; i++) {
+    const before = s;
+    s = s
+      .replace(/^eu\s+estou\s+(?:aqui\s+)?(?:na|no|em)\s+/i, "")
+      .replace(/^estou\s+(?:aqui\s+)?(?:na|no|em)\s+/i, "")
+      .replace(/^to\s+(?:aqui\s+)?(?:na|no|em)\s+/i, "")
+      .replace(/^tô\s+(?:aqui\s+)?(?:na|no|em)\s+/i, "")
+      .replace(/^me\s+(?:pega|busca|pega\s+ai|busca\s+ai)\s+(?:na|no|em)\s+/i, "")
+      .replace(/^me\s+(?:leva|leve)\s+(?:ate|até|no|na|para|pra|pro|a|o)\s+/i, "")
+      .replace(/^(?:vou|irei|indo|quero\s+ir)\s+(?:para|pra|pro|no|na|em)\s+/i, "")
+      .replace(/^(?:quero\s+ir\s+para\s+o|quero\s+ir\s+para\s+a|quero\s+ir\s+no|quero\s+ir\s+na)\s+/i, "")
+      .replace(/^(?:leve|leva|levar)\s+(?:ate|até|no|na|para|pra|pro)\s+/i, "")
+      .replace(/^(?:ate|até|a|o)\s+/i, "")
+      .replace(/^(?:lá|la)\s+(?:no|na|em)\s+/i, "")
+      .replace(/^(?:aqui\s+)?(?:na|no|em)\s+/i, "")
+      .trim();
+    if (s === before) break;
+  }
+  // Remove trailing punctuation and collapse spaces
+  s = s.replace(/[.!?,;:]+$/g, "").replace(/\s+/g, " ").trim();
+  return s ? s.toUpperCase() : null;
+}
+
 // NLU: Uses LLM (OpenAI/Groq chat completion) to extract structured ride intent from a free-form message.
 // Falls back to null if no LLM key is configured, letting the regex-based parseCombinedAddress handle it.
 interface ParsedRideIntent {
@@ -497,17 +524,18 @@ ${refTotem ? `- Endereco de Fallback Obrigatorio (Mapa): "${fallbackAddr}"\n` : 
 ### DIRETRIZES DE FORMATACAO DOS LOCAIS (OBRIGATORIO: TUDO EM MAIUSCULO)
 1. Limpe termos conectivos de conversacao (Ex: "Estou na rua arthur mesquita 57" -> "RUA ARTHUR MESQUITA, 57").
 2. Formate todo o texto descritivo de embarque e destino em LETRAS MAIUSCULAS.
-3. Se o Canal de Entrada for "TOTEM_FIXO", o local de embarque deve ser padronizado como "TOTEM - ${refTotem ? refTotem.toUpperCase() : "RUA PERNAMBUCO, 402"}".
-4. Se o destino nao for informado, use "DEFINIR NO CARRO".
+3. NUNCA inclua frases introdutorias como "EU ESTOU AQUI NA", "ESTOU NA", "TO NO", "ME PEGA NA", "QUERO IR PARA", "VOU PARA", "LEVA NA" nos campos texto_embarque_motorista ou texto_destino_motorista. Esses campos devem conter APENAS o nome do local ou endereco limpo.
+4. Se o Canal de Entrada for "TOTEM_FIXO", o local de embarque deve ser padronizado como "TOTEM - ${refTotem ? refTotem.toUpperCase() : "RUA PERNAMBUCO, 402"}".
+5. Se o destino nao for informado, use "DEFINIR NO CARRO".
 
 ### PARTE 1: DIRETRIZES DE MAPEAMENTO LOGICO DO JSON:
 1. TRATAMENTO DO EMBARQUE (ORIGEM):
    - "eh_rua_oficial": true se o cliente digitou uma rua/avenida com numero (Ex: "Rua Arthur Mesquita 57"). false se for apelido/local informal (Ex: "Amarelinha da Avenida").
    - "endereco_origem": Se for rua oficial, estruture como "rua + numero, ${cidade} - ${estado}" para validacao no OpenStreetMap. Se for apelido/local informal OU se for TOTEM_FIXO, preencha obrigatoriamente com "${fallbackAddr}".
-   - "texto_embarque_motorista": Extraia o termo exato ou apelido que o cliente usou para a partida em MAIUSCULO. Se for Totem fixo, preencha com "TOTEM - ${refTotem ? refTotem.toUpperCase() : "RUA PERNAMBUCO, 402"}".
+   - "texto_embarque_motorista": Extraia APENAS o nome da rua/apelido do local de partida em MAIUSCULO, SEM frases introdutorias. Ex: "Estou na rua arthur mesquita 57" -> "RUA ARTHUR MESQUITA, 57" (NUNCA "EU ESTOU AQUI NA RUA ARTHUR MESQUITA 57"). Se for Totem fixo, preencha com "TOTEM - ${refTotem ? refTotem.toUpperCase() : "RUA PERNAMBUCO, 402"}".
 2. TRATAMENTO DO DESTINO (ZERA GEOLOCALIZACAO PARA CALCULO POR KM):
    - "endereco_destino": Defina OBRIGATORIAMENTE como null.
-   - "texto_destino_motorista": Extraia o termo exato ou apelido que o cliente digitou em MAIUSCULO. Se nao informado, use "DEFINIR NO CARRO".
+   - "texto_destino_motorista": Extraia APENAS o nome do local/apelido de destino em MAIUSCULO, SEM frases introdutorias. Ex: "e vou para a prainha" -> "PRAINHA" (NUNCA "VOU PARA A PRAINHA"). Se nao informado, use "DEFINIR NO CARRO".
 
 ### FORMATO DE SAIDA EXCLUSIVO (JSON)
 Retorne APENAS um objeto JSON valido. Sem textos introdutorios ou explicativos.
@@ -533,7 +561,22 @@ Contexto: Canal="BOT_WHATSAPP", Cidade="Pitangueiras", Estado="SP", Fallback="Ru
 Input: "Me pega na amarelinha da avenida e leva na prainha"
 Output: {"quer_corrida":true,"tipo_veiculo":null,"eh_rua_oficial":false,"endereco_origem":"Rua Pernambuco, 402 - Pitangueiras - SP","texto_embarque_motorista":"AMARELINHA DA AVENIDA","endereco_destino":null,"texto_destino_motorista":"PRAINHA"}
 
-${refTotem ? `Exemplo 3 (TOTEM_FIXO - Cliente so digita o destino):
+Exemplo 3 (BOT_WHATSAPP - Audio transcrito com frase completa - LIMPE A FRASE):
+Contexto: Canal="BOT_WHATSAPP", Cidade="Pitangueiras", Estado="SP"
+Input: "Eu estou aqui na rua arthur mesquita 57 e vou no bar do carlao"
+Output: {"quer_corrida":true,"tipo_veiculo":null,"eh_rua_oficial":true,"endereco_origem":"Rua Arthur Mesquita, 57, Pitangueiras - SP","texto_embarque_motorista":"RUA ARTHUR MESQUITA, 57","endereco_destino":null,"texto_destino_motorista":"BAR DO CARLAO"}
+
+Exemplo 4 (BOT_WHATSAPP - Variacao "to no" - LIMPE A FRASE):
+Contexto: Canal="BOT_WHATSAPP", Cidade="Pitangueiras", Estado="SP"
+Input: "to no bar do carlao e quero ir pro hospital"
+Output: {"quer_corrida":true,"tipo_veiculo":null,"eh_rua_oficial":false,"endereco_origem":"Rua Pernambuco, 402 - Pitangueiras - SP","texto_embarque_motorista":"BAR DO CARLAO","endereco_destino":null,"texto_destino_motorista":"HOSPITAL"}
+
+Exemplo 5 (BOT_WHATSAPP - Variacao "me busca na" - LIMPE A FRASE):
+Contexto: Canal="BOT_WHATSAPP", Cidade="Pitangueiras", Estado="SP"
+Input: "me busca na padaria do joao e leva ate a rodoviaria"
+Output: {"quer_corrida":true,"tipo_veiculo":null,"eh_rua_oficial":false,"endereco_origem":"Rua Pernambuco, 402 - Pitangueiras - SP","texto_embarque_motorista":"PADARIA DO JOAO","endereco_destino":null,"texto_destino_motorista":"RODOVIARIA"}
+
+${refTotem ? `Exemplo 6 (TOTEM_FIXO - Cliente so digita o destino):
 Contexto: Canal="TOTEM_FIXO", Cidade="${cidade}", Estado="${estado}", Fallback="${fallbackAddr}"
 Input: "Quero ir para o Hospital Sao Paulo"
 Output: {"quer_corrida":true,"tipo_veiculo":null,"eh_rua_oficial":false,"endereco_origem":"${fallbackAddr}","texto_embarque_motorista":"TOTEM - ${refTotem.toUpperCase()}","endereco_destino":null,"texto_destino_motorista":"HOSPITAL SAO PAULO"}
@@ -1634,7 +1677,7 @@ async function handleBotMessage(
         break;
       }
       const looksLikeRideDetails = normalizedText.length > 3 &&
-        ["estou", "to ", "tô ", "vou ", "para ", "pra ", "em ", "na ", "no ", "origem", "destino", "embarque"].some((marker) => normalizedText.includes(marker));
+        ["estou", "to ", "tô ", "vou ", "para ", "pra ", "em ", "na ", "no ", "leva", "leva ", "me pega", "me busca", "quero ir", "ir pro", "ir pra", "indo", "origem", "destino", "embarque", "rua ", "avenida ", "praca ", "travessa "].some((marker) => normalizedText.includes(marker));
       const requestedRide = ["1", "corrida", "sim", "sim.", "quero", "viagem", "sim!"].includes(normalizedText)
         || normalizedText.includes("corrida")
         || normalizedText.includes("viagem")
@@ -1717,20 +1760,20 @@ As mensagens do passageiro serao encaminhadas a partir de agora.`;
             isTotemFixo: !!llmCtx.pickupAddress,
           });
           if (llmResult && llmResult.endereco_origem) {
-            addressText = llmResult.endereco_origem;
-            combinedDest = llmResult.endereco_destino ?? null;
-            originReference = (llmResult.texto_embarque_motorista ?? llmResult.endereco_origem).toUpperCase();
-            destinationReference = (llmResult.texto_destino_motorista ?? null) ? (llmResult.texto_destino_motorista as string).toUpperCase() : null;
+            addressText = normalizePlaceText(llmResult.endereco_origem);
+            combinedDest = normalizePlaceText(llmResult.endereco_destino);
+            originReference = normalizePlaceText(llmResult.texto_embarque_motorista ?? llmResult.endereco_origem);
+            destinationReference = normalizePlaceText(llmResult.texto_destino_motorista);
             llmIsRuaOficial = !!llmResult.eh_rua_oficial;
           } else {
             const combined = parseCombinedAddress(audioText);
             if (combined) {
-              addressText = combined.pickup;
-              combinedDest = combined.destination;
-              originReference = combined.pickup.toUpperCase();
-              destinationReference = combined.destination.toUpperCase();
+              addressText = normalizePlaceText(combined.pickup);
+              combinedDest = normalizePlaceText(combined.destination);
+              originReference = normalizePlaceText(combined.pickup);
+              destinationReference = normalizePlaceText(combined.destination);
             } else {
-              addressText = audioText;
+              addressText = normalizePlaceText(audioText);
             }
           }
         } else {
@@ -1760,7 +1803,7 @@ As mensagens do passageiro serao encaminhadas a partir de agora.`;
             originReference = combined.pickup.toUpperCase();
             destinationReference = combined.destination.toUpperCase();
           } else {
-            addressText = text.trim();
+            addressText = normalizePlaceText(text);
           }
         }
       }
@@ -1898,7 +1941,7 @@ As mensagens do passageiro serao encaminhadas a partir de agora.`;
             updated_at: new Date().toISOString(),
           })
           .eq("id", conv.id);
-        const pickupAddr = (conv.origin_reference || conv.address_formatted || conv.address_text || "Endereco nao informado").toUpperCase();
+        const pickupAddr = normalizePlaceText(conv.origin_reference || conv.address_formatted || conv.address_text || "Endereco nao informado");
         await sendBotMessage(companyId, cleanPhone, connectionId, msg("confirm_address", `\u2705 Confirma os dados da corrida?\n\n\u{1F4CD} Embarque: ${pickupAddr}\n\u{1F3AF} Destino: DEFINIR NO CARRO\n\nResponda SIM para confirmar ou NAO para corrigir.`));
       } else if (normalizedText === "1" || location || audio || (text && !["1","2"].includes(normalizedText))) {
         // Accept "1" (menu choice), location, audio, or any typed text as a destination address
@@ -1921,13 +1964,13 @@ As mensagens do passageiro serao encaminhadas a partir de agora.`;
           } else if (audio) {
             const transcribed = await transcribeAudio(audio.data, audio.mimetype, companyId);
             if (transcribed) {
-              destText = transcribed.trim().toUpperCase();
+              destText = normalizePlaceText(transcribed);
             } else {
               await sendBotMessage(companyId, cleanPhone, connectionId, "Nao consegui transcrever o audio. Por favor, digite o endereco de destino.");
               return;
             }
           } else if (text) {
-            destText = text.trim().toUpperCase();
+            destText = normalizePlaceText(text);
           }
 
           if (!destText) {
@@ -1946,7 +1989,7 @@ As mensagens do passageiro serao encaminhadas a partir de agora.`;
             finalDestAddress = destText;
           }
 
-          const pickupAddr = (conv.origin_reference || conv.address_formatted || conv.address_text || "Endereco nao informado").toUpperCase();
+          const pickupAddr = normalizePlaceText(conv.origin_reference || conv.address_formatted || conv.address_text || "Endereco nao informado");
           await supabase.from("bot_conversas")
             .update({
               state: "aguardando_confirmacao",
@@ -1979,13 +2022,13 @@ As mensagens do passageiro serao encaminhadas a partir de agora.`;
       } else if (audio) {
         const transcribed = await transcribeAudio(audio.data, audio.mimetype, companyId);
         if (transcribed) {
-          destText = transcribed.trim().toUpperCase();
+          destText = normalizePlaceText(transcribed);
         } else {
           await sendBotMessage(companyId, cleanPhone, connectionId, "Nao consegui transcrever o audio. Por favor, digite o endereco de destino.");
           return;
         }
       } else if (text) {
-        destText = text.trim().toUpperCase();
+        destText = normalizePlaceText(text);
       }
 
       if (!destText) {
@@ -2004,7 +2047,7 @@ As mensagens do passageiro serao encaminhadas a partir de agora.`;
         finalDestAddress = destText;
       }
 
-      const pickupAddr = (conv.origin_reference || conv.address_formatted || conv.address_text || "Endereco nao informado").toUpperCase();
+      const pickupAddr = normalizePlaceText(conv.origin_reference || conv.address_formatted || conv.address_text || "Endereco nao informado");
       await supabase.from("bot_conversas")
         .update({
           state: "aguardando_confirmacao",
