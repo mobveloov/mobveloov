@@ -560,8 +560,11 @@ async function transcribeAudio(audioBase64OrUrl: string, mimetype: string, compa
       const apiUrl = provider === "openai"
         ? "https://api.openai.com/v1/audio/transcriptions"
         : "https://api.groq.com/openai/v1/audio/transcriptions";
+      // Derive a valid file extension from the mimetype so Groq accepts the payload
+      const ext = (mimetype || "audio/ogg").split("/")[1]?.split(";")[0] || "ogg";
+      const fileName = `audio.${ext}`;
       const formData = new FormData();
-      formData.append("file", audioBlob, "audio.ogg");
+      formData.append("file", audioBlob, fileName);
       formData.append("model", provider === "openai" ? "whisper-1" : "whisper-large-v3");
       formData.append("language", "pt");
       const resp = await fetch(apiUrl, {
@@ -569,7 +572,11 @@ async function transcribeAudio(audioBase64OrUrl: string, mimetype: string, compa
         headers: { Authorization: `Bearer ${apiKey}` },
         body: formData,
       });
-      if (!resp.ok) return null;
+      if (!resp.ok) {
+        const errBody = await resp.text().catch(() => "");
+        console.error(`[transcribeAudio] ${provider} HTTP ${resp.status}: ${errBody.slice(0, 500)}`);
+        return null;
+      }
       const data = await resp.json();
       return data?.text ?? null;
     }
@@ -661,7 +668,10 @@ async function transcribeAudio(audioBase64OrUrl: string, mimetype: string, compa
     }
 
     return null;
-  } catch { return null; }
+  } catch (err) {
+    console.error(`[transcribeAudio] exception: ${err instanceof Error ? err.message : String(err)}`);
+    return null;
+  }
 }
 
 function blobToBase64(blob: Blob): Promise<string> {
