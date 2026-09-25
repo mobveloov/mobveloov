@@ -348,6 +348,7 @@ interface BotConversation {
   ride_id: string | null;
   selected_category_id: string | null;
   selected_payment_method: string | null;
+  updated_at: string | null;
 }
 
 async function getBotConnectionConfig(connectionId: string): Promise<{ provider: string; fields: Record<string, string> } | null> {
@@ -1868,6 +1869,30 @@ As mensagens do passageiro serao encaminhadas a partir de agora.`;
     }
 
     case "suporte": {
+      const supportExitWords = ["sair", "voltar", "corrida", "1", "menu", "fim", "encerrar", "encerra", "finalizar", "finaliza", "terminar", "termina", "encerrar suporte", "finalizar suporte"];
+
+      // Auto-exit after 5 minutes of inactivity
+      if (conv.updated_at) {
+        const lastActivity = new Date(conv.updated_at).getTime();
+        const idleMs = Date.now() - lastActivity;
+        if (idleMs > 5 * 60 * 1000) {
+          await supabase.from("bot_conversas")
+            .update({ state: "menu_inicial", updated_at: new Date().toISOString() })
+            .eq("id", conv.id);
+          await sendBotMessage(companyId, cleanPhone, connectionId, msg("support_timeout", "\u23F1\uFE0F O atendimento de suporte foi encerrado por inatividade.\n\n1 - Solicitar corrida \u{1F695}\n2 - Suporte \u{1F4AC}\n\nResponda com o numero da opcao."));
+          break;
+        }
+      }
+
+      // Check if passenger wants to exit support mode — check before forwarding
+      if (text && supportExitWords.includes(normalizedText)) {
+        await supabase.from("bot_conversas")
+          .update({ state: "menu_inicial", updated_at: new Date().toISOString() })
+          .eq("id", conv.id);
+        await sendBotMessage(companyId, cleanPhone, connectionId, msg("support_exit", "\u{1F44B} Suporte encerrado.\n\n1 - Solicitar corrida \u{1F695}\n2 - Suporte \u{1F4AC}\n\nResponda com o numero da opcao."));
+        break;
+      }
+
       // Forward passenger messages to the company's support WhatsApp
       const { data: company } = await supabase
         .from("companies")
@@ -1883,21 +1908,18 @@ As mensagens do passageiro serao encaminhadas a partir de agora.`;
           await sendWhatsAppMessageWithProvider(provider, f, supportPhone, forwardMsg);
           await saveMessage(companyId, supportPhone, "outgoing", forwardMsg);
         } catch { /* best-effort */ }
-
-        // Check if passenger wants to exit support mode
-        if (["sair", "voltar", "corrida", "1", "menu", "fim"].includes(normalizedText)) {
-          await supabase.from("bot_conversas")
-            .update({ state: "menu_inicial", updated_at: new Date().toISOString() })
-            .eq("id", conv.id);
-          await sendBotMessage(companyId, cleanPhone, connectionId, msg("support_exit", "\u{1F44B} Voce saiu do suporte.\n\n1 - Solicitar corrida \u{1F695}\n2 - Suporte \u{1F4AC}\n\nResponda com o numero da opcao."));
-          break;
-        }
-      } else if (text && ["sair", "voltar", "corrida", "1", "menu", "fim"].includes(normalizedText)) {
+      } else if (!company?.support_whatsapp && text) {
+        await sendBotMessage(companyId, cleanPhone, connectionId, msg("support_unavailable", "\u26A0\uFE0F O suporte nao esta disponivel no momento. Tente novamente mais tarde ou solicite uma corrida digitando 1."));
         await supabase.from("bot_conversas")
           .update({ state: "menu_inicial", updated_at: new Date().toISOString() })
           .eq("id", conv.id);
-        await sendBotMessage(companyId, cleanPhone, connectionId, msg("support_exit", "\u{1F44B} Voce saiu do suporte.\n\n1 - Solicitar corrida \u{1F695}\n2 - Suporte \u{1F4AC}\n\nResponda com o numero da opcao."));
+        break;
       }
+
+      // Update activity timestamp on every support message
+      await supabase.from("bot_conversas")
+        .update({ updated_at: new Date().toISOString() })
+        .eq("id", conv.id);
       break;
     }
 
@@ -3154,3 +3176,4 @@ async function handleIncomingMessage(companyId: string, data: Record<string, unk
 // force redeploy Fri Sep 25 13:21:45 UTC 2026
 // v8.3 cancel+autocomplete fix Fri Sep 25 13:32:15 UTC 2026
 // v8.4 regex fix Fri Sep 25 13:33:11 UTC 2026
+// v8.5 support timeout Fri Sep 25 14:10:55 UTC 2026
