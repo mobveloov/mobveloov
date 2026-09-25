@@ -867,6 +867,14 @@ async function handleBotMessage(
   switch (conv.state) {
     case "menu_inicial":
     case "inicio": {
+      // If passenger sent location or audio without text, treat as ride request
+      if (!text && (location || audio)) {
+        await supabase.from("bot_conversas")
+          .update({ state: "aguardando_endereco", updated_at: new Date().toISOString() })
+          .eq("id", conv.id);
+        await sendBotMessage(companyId, cleanPhone, connectionId, msg("ask_address", "Perfeito! Qual e o endereco de embarque? Voce pode digitar o endereco, enviar sua localizacao ou mandar um audio."));
+        break;
+      }
       const requestedRide = ["1", "corrida", "sim", "sim.", "quero", "viagem", "sim!"].includes(normalizedText)
         || normalizedText.includes("corrida")
         || normalizedText.includes("viagem");
@@ -1793,6 +1801,19 @@ Deno.serve(async (req: Request) => {
               headers: { ...corsHeaders, "Content-Type": "application/json" },
             });
           }
+
+          // Deduplicate by message ID
+          const msgId = String(key?.id ?? data?.message_id ?? "");
+          if (msgId) {
+            const { error: dedupErr } = await supabase.from("whatsapp_processed_events")
+              .insert({ company_id: botConn.company_id, event_id: msgId });
+            if (dedupErr && dedupErr.code === "23505") {
+              return new Response(JSON.stringify({ success: true, bot: true, skipped: "duplicate" }), {
+                headers: { ...corsHeaders, "Content-Type": "application/json" },
+              });
+            }
+          }
+
           const msg = data?.message as Record<string, unknown> | undefined;
           let rawPhone: string | null = key?.remoteJid ? String(key.remoteJid).replace(/@.*$/, "") : (data?.from ? String(data.from) : null);
           let text: string | null = msg?.conversation ? String(msg.conversation) : (msg?.text ? String(msg.text) : null);
@@ -1920,6 +1941,19 @@ Deno.serve(async (req: Request) => {
           headers: { ...corsHeaders, "Content-Type": "application/json" },
         });
       }
+
+      // Deduplicate by message ID
+      const msgId = String(key?.id ?? data?.message_id ?? "");
+      if (msgId) {
+        const { error: dedupErr } = await supabase.from("whatsapp_processed_events")
+          .insert({ company_id: waInstance.company_id, event_id: msgId });
+        if (dedupErr && dedupErr.code === "23505") {
+          return new Response(JSON.stringify({ success: true, skipped: "duplicate" }), {
+            headers: { ...corsHeaders, "Content-Type": "application/json" },
+          });
+        }
+      }
+
       // Save ALL incoming messages to chat history (not just "cancelar")
       const msg = data?.message as Record<string, unknown> | undefined;
       let rawPhone: string | null = key?.remoteJid ? String(key.remoteJid).replace(/@.*$/, "") : (data?.from ? String(data.from) : null);
