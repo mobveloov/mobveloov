@@ -136,11 +136,11 @@ const STATUS_MAP: Record<string, string> = {
 
 const STATUS_MESSAGES_PT: Record<string, string> = {
   accepted: "\u2705 Corrida confirmada! Seu motorista esta a caminho.",
-  en_route: "\U0001F697 Seu motorista chegou ao local de embarque! Procure pelo veiculo.",
-  in_progress: "\U0001F697 Sua viagem esta em andamento.",
-  completed: "\U0001F3C1 Sua viagem foi concluida. Obrigado pela preferencia!",
+  en_route: "\u{1F697} Seu motorista chegou ao local de embarque! Procure pelo veiculo.",
+  in_progress: "\u{1F697} Sua viagem esta em andamento.",
+  completed: "\u{1F3C1} Sua viagem foi concluida. Obrigado pela preferencia!",
   canceled: "\u274C Sua corrida foi cancelada.",
-  pending: "\U0001F501 Seu motorista cancelou. Estamos procurando um novo motorista para sua corrida. Aguarde."
+  pending: "\u{1F501} Seu motorista cancelou. Estamos procurando um novo motorista para sua corrida. Aguarde."
 };
 
 Deno.serve(async (req: Request) => {
@@ -851,14 +851,14 @@ async function sendWhatsAppNotification(
   if (internalStatus === "accepted") {
     const isDriverChange = previousStatus === "accepted" && driverChanged;
     if (isDriverChange) {
-      message = "\U0001F501 Seu motorista foi trocado! Confira os dados do novo motorista:";
+      message = "\u{1F501} Seu motorista foi trocado! Confira os dados do novo motorista:";
     }
-    const driverEmoji = driverGender === "F" ? "\U0001F470\u200D\u2640\uFE0F" : "\U0001F9D1\u200D\U0001F4BC";
+    const driverEmoji = driverGender === "F" ? "\u{1F470}\u200D\u2640\uFE0F" : "\u{1F9D1}\u200D\u{1F4BC}";
     if (driverName) {
       message += `\n${driverEmoji}: ${driverName}`;
-      if (vehicleModel) message += `\n\U0001F695: ${vehicleModel}`;
-      if (vehicleColor) message += `\n\U0001F3A8: ${vehicleColor}`;
-      if (vehiclePlate) message += `\n\U0001F524: ${vehiclePlate}`;
+      if (vehicleModel) message += `\n\u{1F695}: ${vehicleModel}`;
+      if (vehicleColor) message += `\n\u{1F3A8}: ${vehicleColor}`;
+      if (vehiclePlate) message += `\n\u{1F524}: ${vehiclePlate}`;
     }
 
     if (features.send_eta && etaMinutes != null) {
@@ -873,7 +873,7 @@ async function sendWhatsAppNotification(
       }
     }
 
-    message += `\n\n\U0001F4AC Chat com Motorista esta ativo\n\nPara cancelar, responda "cancelar".`;
+    message += `\n\n\u{1F4AC} Chat com Motorista esta ativo\n\nPara cancelar, responda "cancelar".`;
   }
 
   const { provider, fields: f } = await getCompanyWhatsAppConfig(companyId);

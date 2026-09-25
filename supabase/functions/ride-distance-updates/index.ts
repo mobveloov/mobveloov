@@ -317,11 +317,11 @@ async function tryFetchAndSendDriverInfo(
   if (existing) return;
 
   let msg = `\u2705 Corrida confirmada! Seu motorista esta a caminho.`;
-  msg += `\n\n\U0001F9D1\u200D\U0001F4BC: ${driverName}`;
-  if (vehicleModel) msg += `\n\U0001F695: ${vehicleModel}`;
-  if (vehicleColor) msg += `\n\U0001F3A8: ${vehicleColor}`;
-  if (vehiclePlate) msg += `\n\U0001F524: ${vehiclePlate}`;
-  msg += `\n\n\U0001F4AC Chat com Motorista esta ativo\n\nPara cancelar, responda "cancelar".`;
+  msg += `\n\n\u{1F9D1}\u200D\u{1F4BC}: ${driverName}`;
+  if (vehicleModel) msg += `\n\u{1F695}: ${vehicleModel}`;
+  if (vehicleColor) msg += `\n\u{1F3A8}: ${vehicleColor}`;
+  if (vehiclePlate) msg += `\n\u{1F524}: ${vehiclePlate}`;
+  msg += `\n\n\u{1F4AC} Chat com Motorista esta ativo\n\nPara cancelar, responda "cancelar".`;
 
   const cleanPhone = toBrazilianWhatsAppNumber(ride.passenger_phone);
   if (!cleanPhone) return;
@@ -540,8 +540,8 @@ Deno.serve(async (req: Request) => {
       }
 
       const updateMsg = distanceKm >= 1
-        ? `\U0001F4CD Atualizacao: O motorista esta a ${distanceKm.toFixed(1)} km de distancia. Tempo estimado: ${etaMin} min.`
-        : `\U0001F4CD Atualizacao: O motorista esta a ${Math.round(distanceKm * 1000)} m de distancia. Quase no local!`;
+        ? `\u{1F4CD} Atualizacao: O motorista esta a ${distanceKm.toFixed(1)} km de distancia. Tempo estimado: ${etaMin} min.`
+        : `\u{1F4CD} Atualizacao: O motorista esta a ${Math.round(distanceKm * 1000)} m de distancia. Quase no local!`;
 
       const cleanPhone = toBrazilianWhatsAppNumber(ride.passenger_phone);
       if (!cleanPhone) { skippedCount++; continue; }
