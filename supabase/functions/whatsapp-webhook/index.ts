@@ -799,7 +799,13 @@ async function interpretMessageWithLLM(
   if (!apiKey) {
     const groqKey = Deno.env.get("GROQ_API_KEY");
     const openaiKey = Deno.env.get("OPENAI_API_KEY");
-    if (!groqKey && !openaiKey) return null;
+    if (!groqKey && !openaiKey) {
+      await supabase.from("admin_logs").insert({
+        source: "whatsapp_webhook", level: "warn",
+        message: `LLM NLU skipped: no API key configured (company_id=${companyId ?? "none"})`,
+      });
+      return null;
+    }
     apiKey = groqKey || openaiKey;
     provider = groqKey ? "groq" : "openai";
   }
@@ -891,6 +897,11 @@ Contexto: Canal="BOT_WHATSAPP", Cidade="Pitangueiras", Estado="SP"
 Input: "me busca na padaria do joao e leva ate a rodoviaria"
 Output: {"quer_corrida":true,"tipo_veiculo":null,"eh_rua_oficial":false,"endereco_origem":"Rua Pernambuco, 402 - Pitangueiras - SP","texto_embarque_motorista":"PADARIA DO JOAO","endereco_destino":null,"texto_destino_motorista":"RODOVIARIA"}
 
+Exemplo 6 (BOT_WHATSAPP - Variacao "vou la no" - LIMPE A FRASE):
+Contexto: Canal="BOT_WHATSAPP", Cidade="Pitangueiras", Estado="SP"
+Input: "Eu quero um carro aqui na amarelinha da avenida porque eu vou la no pesqueiro do dio"
+Output: {"quer_corrida":true,"tipo_veiculo":null,"eh_rua_oficial":false,"endereco_origem":"Rua Pernambuco, 402 - Pitangueiras - SP","texto_embarque_motorista":"AMARELINHA DA AVENIDA","endereco_destino":null,"texto_destino_motorista":"PESQUEIRO DO DIO"}
+
 ${refTotem ? `Exemplo 6 (TOTEM_FIXO - Cliente so digita o destino):
 Contexto: Canal="TOTEM_FIXO", Cidade="${cidade}", Estado="${estado}", Fallback="${fallbackAddr}"
 Input: "Quero ir para o Hospital Sao Paulo"
@@ -924,8 +935,29 @@ Output: {"quer_corrida":true,"tipo_veiculo":null,"eh_rua_oficial":false,"enderec
     }
     const data = await resp.json();
     const content = data?.choices?.[0]?.message?.content as string | undefined;
-    if (!content) return null;
-    const parsed = JSON.parse(content) as ParsedRideIntent;
+    if (!content) {
+      await supabase.from("admin_logs").insert({
+        source: "whatsapp_webhook", level: "warn",
+        message: `LLM returned empty content for: ${text.slice(0, 200)}`,
+      });
+      return null;
+    }
+    let parsed: ParsedRideIntent;
+    try {
+      parsed = JSON.parse(content) as ParsedRideIntent;
+    } catch (parseErr) {
+      await supabase.from("admin_logs").insert({
+        source: "whatsapp_webhook", level: "error",
+        message: `LLM JSON parse failed: ${(parseErr instanceof Error ? parseErr.message : String(parseErr)).slice(0, 300)} | content: ${content.slice(0, 300)}`,
+      });
+      return null;
+    }
+    if (!parsed.endereco_origem) {
+      await supabase.from("admin_logs").insert({
+        source: "whatsapp_webhook", level: "warn",
+        message: `LLM returned no endereco_origem: ${content.slice(0, 300)}`,
+      });
+    }
     return {
       quer_corrida: !!parsed.quer_corrida,
       tipo_veiculo: parsed.tipo_veiculo === "moto" ? "moto" : parsed.tipo_veiculo === "carro" ? "carro" : null,
@@ -1584,8 +1616,12 @@ function parseCombinedAddress(rawText: string): { pickup: string; destination: s
     /\be vou\b/i,
     /\bvou para\b/i,
     /\bvou pra\b/i,
+    /\bvou la no\b/i,
+    /\bvou la na\b/i,
     /\bvou no\b/i,
     /\bvou na\b/i,
+    /\bvou pro\b/i,
+    /\bvou pra\b/i,
     /\blevo no\b/i,
     /\blevo na\b/i,
     /\blevar no\b/i,
