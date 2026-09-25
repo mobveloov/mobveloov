@@ -425,7 +425,9 @@ interface ParsedRideIntent {
   quer_corrida: boolean;
   tipo_veiculo: "moto" | "carro" | null;
   endereco_origem: string | null;
+  texto_embarque_motorista: string | null;
   endereco_destino: string | null;
+  texto_destino_motorista: string | null;
 }
 
 async function interpretMessageWithLLM(
@@ -472,51 +474,57 @@ async function interpretMessageWithLLM(
   const refTotem = context?.totemReference || "";
   const isTotemFixo = context?.isTotemFixo ?? false;
   const tipoInstancia = isTotemFixo ? "TOTEM_FIXO" : "BOT_WHATSAPP";
+  const fallbackAddr = refTotem ? `${refTotem}, ${cidade} - ${estado}` : `${cidade} - ${estado}`;
 
-  const systemPrompt = `Voce e a inteligencia artificial do sistema de despacho de corridas. Sua unica missao e extrair locais de origem e destino a partir de mensagens enviadas por passageiros e estrutura-las em um JSON limpo.
+  const systemPrompt = `Voce e o modulo de Inteligencia Artificial e Engenharia de Backend de uma plataforma de mobilidade urbana profissional (que atende Bot de Corridas no WhatsApp e Totens Fisicos). Sua funcao e receber a mensagem de texto livre do passageiro, processar as regras de negocio e estruturar os dados de origem e destino separando o endereco geocodificavel do texto de exibicao para o motorista.
 
-### CONTEXTO DA OPERACAO DESTA INSTANCIA (INJETADO PELO SISTEMA)
-- Tipo de Instancia: ${tipoInstancia} (Valores possiveis: "BOT_WHATSAPP" ou "TOTEM_FIXO")
+### CONTEXTO DA OPERACAO DESTA INSTANCIA (INJETADO DINAMICAMENTE PELO SISTEMA)
+- Canal de Entrada: ${tipoInstancia} (Valores possiveis: "BOT_WHATSAPP" ou "TOTEM_FIXO")
 - Cidade de Operacao Padrao: ${cidade}
 - Estado: ${estado}
-${refTotem ? `- Endereco Fixo do Totem (Usar se Tipo for TOTEM_FIXO): ${refTotem}\n` : ""}
-### REGRA DE OURO (ANTI-LOOP DE ERRO)
-Mesmo que o passageiro envie um local informal, apelido, nome de estabelecimento ou termo que nao pareca uma rua oficial (Ex: "Amarelinha", "Bar do Ze", "Mercadinho da Esquina", "Entrada da Cidade"), voce NUNCA deve retornar null ou vazio se houver alguma intencao de local.
-Se o local for informal, monte o endereco anexando a Cidade de Operacao Padrao e o Estado ao termo literal enviado pelo usuario.
+${refTotem ? `- Endereco de Fallback Obrigatorio (Mapa): "${fallbackAddr}"\n` : ""}
+### REGRA DE OURO (ANTI-LOOP DE ERRO NA GEOLOCALIZACAO)
+Toda vez que o passageiro usar apelidos, locais informais ou estabelecimentos sem o endereco oficial com rua e numero (Ex: "Amarelinha da Avenida", "Prainha", "Bar do Ze", "Mercadinho"), voce NUNCA deve retornar erro ou nulo.
+Para esses locais informais, defina o campo de geolocalizacao com o Endereco de Fallback ("${fallbackAddr}"), mas preserve o termo original digitado pelo cliente nos campos de exibicao do motorista.
 
-### DIRETRIZES DE EXTRACAO POR TIPO DE INSTANCIA:
+### REGRA DE OURO (CORRIDA POR KM / CATEGORIA - SEM DESTINO MAPEADO)
+Para evitar loops de erro de geolocalizacao e permitir o calculo livre por KM rodado dependendo da categoria do veiculo, voce deve FIXAR apenas a geolocalizacao de origem na Rua Pernambuco, 402 (caso o cliente mande local informal) e deixar o destino mapeado como NULL ou VAZIO. Os locais reais digitados serao enviados apenas como campos de texto descritivo para leitura do motorista.
 
-1. SE TIPO DE INSTANCIA FOR "BOT_WHATSAPP":
-   - "endereco_origem": Extraia o local de partida digitado pelo cliente na mensagem e anexe ", ${cidade} - ${estado}".
-   - Se o cliente NAO informar a origem na mensagem, preencha com "Solicitar localizacao, ${cidade} - ${estado}".
+### PARTE 1: DIRETRIZES DE MAPEAMENTO LOGICO DO JSON:
+1. TRATAMENTO DO EMBARQUE (ORIGEM):
+   - "endereco_origem": Se o Canal de Entrada for "TOTEM_FIXO" ou se o cliente no "BOT_WHATSAPP" informou um local informal/apelido (Ex: "Amarelinha da Avenida"), preencha obrigatoriamente com "${fallbackAddr}". Se for rua oficial com numero, use a rua + ", ${cidade} - ${estado}".
+   - "texto_embarque_motorista": Extraia o termo exato ou apelido que o cliente usou para a partida (Ex: "Amarelinha da Avenida"). Se for Totem fixo, preencha com "Totem - ${refTotem}".
+2. TRATAMENTO DO DESTINO (ZERA GEOLOCALIZACAO PARA CALCULO POR KM):
+   - "endereco_destino": Defina OBRIGATORIAMENTE como null. Nao tente geolocalizar o destino para permitir o calculo livre por taximetro/KM.
+   - "texto_destino_motorista": Extraia o termo exato ou apelido que o cliente digitou (Ex: "Prainha") para que o motorista saiba para onde ir ao ler a tela do aplicativo. Se nao informado, use "Definir no carro".
 
-2. SE TIPO DE INSTANCIA FOR "TOTEM_FIXO":
-   - "endereco_origem": Ignore qualquer tentativa de extracao de partida do texto. Defina este campo OBRIGATORIAMENTE com o valor contido em: "${refTotem}, ${cidade} - ${estado}".
-
-3. PARA AMBOS OS CASOS (DESTINO):
-   - "endereco_destino": Extraia o local de chegada digitado pelo cliente e anexe ", ${cidade} - ${estado}".
-   - Se o usuario disser que decide no carro ou nao informar o destino, preencha estritamente com "Definir no carro, ${cidade} - ${estado}".
-
-### FORMATO DE RETORNO OBRIGATORIO (JSON)
-NUNCA adicione textos complementares, saudacoes ou explicacoes. Retorne EXCLUSIVAMENTE o objeto JSON limpo:
+### FORMATO DE SAIDA EXCLUSIVO (JSON)
+Retorne APENAS um objeto JSON valido. Sem textos introdutorios ou explicativos.
 {
   "quer_corrida": true/false,
   "tipo_veiculo": "moto" | "carro" | null,
-  "endereco_origem": "string contendo o endereco de partida tratado + cidade/estado",
-  "endereco_destino": "string contendo o endereco de chegada tratado + cidade/estado"
+  "endereco_origem": "string - endereco geocodificavel ou fallback",
+  "texto_embarque_motorista": "string - apelido/termo exato para o motorista",
+  "endereco_destino": null,
+  "texto_destino_motorista": "string - apelido/termo exato para o motorista"
 }
 
 ### EXEMPLOS DE COMPORTAMENTO:
 
 Exemplo 1 (BOT_WHATSAPP - Local Informal):
-Contexto: Tipo="BOT_WHATSAPP", Cidade="Pitangueiras", Estado="SP"
-Input: "Quero uma corrida da Amarelinha pro Bar do Ze"
-Output: {"quer_corrida":true,"tipo_veiculo":null,"endereco_origem":"Amarelinha, Pitangueiras - SP","endereco_destino":"Bar do Ze, Pitangueiras - SP"}
+Contexto: Canal="BOT_WHATSAPP", Cidade="Pitangueiras", Estado="SP", Fallback="Rua Pernambuco, 402 - Pitangueiras - SP"
+Input: "Estou na amarelinha da avenida e vou para prainha"
+Output: {"quer_corrida":true,"tipo_veiculo":null,"endereco_origem":"Rua Pernambuco, 402 - Pitangueiras - SP","texto_embarque_motorista":"Amarelinha da Avenida","endereco_destino":null,"texto_destino_motorista":"Prainha"}
 
-${refTotem ? `Exemplo 2 (TOTEM_FIXO - Cliente so digita o destino):
-Contexto: Tipo="TOTEM_FIXO", Cidade="${cidade}", Estado="${estado}", Endereco_Totem="${refTotem}"
+Exemplo 2 (BOT_WHATSAPP - Rua oficial):
+Contexto: Canal="BOT_WHATSAPP", Cidade="Pitangueiras", Estado="SP"
+Input: "Quero um carro na rua Arthur mesquita 57 vou para amarelinha do centro"
+Output: {"quer_corrida":true,"tipo_veiculo":"carro","endereco_origem":"rua Arthur mesquita 57, Pitangueiras - SP","texto_embarque_motorista":"rua Arthur mesquita 57","endereco_destino":null,"texto_destino_motorista":"Amarelinha do centro"}
+
+${refTotem ? `Exemplo 3 (TOTEM_FIXO - Cliente so digita o destino):
+Contexto: Canal="TOTEM_FIXO", Cidade="${cidade}", Estado="${estado}", Fallback="${fallbackAddr}"
 Input: "Quero ir para o Hospital Sao Paulo"
-Output: {"quer_corrida":true,"tipo_veiculo":null,"endereco_origem":"${refTotem}, ${cidade} - ${estado}","endereco_destino":"Hospital Sao Paulo, ${cidade} - ${estado}"}
+Output: {"quer_corrida":true,"tipo_veiculo":null,"endereco_origem":"${fallbackAddr}","texto_embarque_motorista":"Totem - ${refTotem}","endereco_destino":null,"texto_destino_motorista":"Hospital Sao Paulo"}
 ` : ""}`;
 
   try {
@@ -543,7 +551,9 @@ Output: {"quer_corrida":true,"tipo_veiculo":null,"endereco_origem":"${refTotem},
       quer_corrida: !!parsed.quer_corrida,
       tipo_veiculo: parsed.tipo_veiculo === "moto" ? "moto" : parsed.tipo_veiculo === "carro" ? "carro" : null,
       endereco_origem: parsed.endereco_origem ?? null,
+      texto_embarque_motorista: parsed.texto_embarque_motorista ?? null,
       endereco_destino: parsed.endereco_destino ?? null,
+      texto_destino_motorista: parsed.texto_destino_motorista ?? null,
     };
   } catch {
     return null;
@@ -1324,6 +1334,8 @@ async function createAndDispatchRide(
   machineCategoryId: string | null,
   paymentMethod: string | null = null,
   destination?: { lat: number; lng: number; address: string } | null,
+  originReference?: string | null,
+  destinationReference?: string | null,
 ): Promise<{ rideId: string; success: boolean; error?: string; machineMessage?: string }> {
   const { data: ride, error: rideErr } = await supabase
     .from("rides")
@@ -1334,6 +1346,7 @@ async function createAndDispatchRide(
       origin_label: origin.address,
       origin_lat: origin.lat,
       origin_lng: origin.lng,
+      origin_reference: originReference ?? null,
       category_label: categoryLabel,
       payment_method: paymentMethod,
       ...(destination ? {
@@ -1341,6 +1354,7 @@ async function createAndDispatchRide(
         destination_lat: destination.lat,
         destination_lng: destination.lng,
       } : {}),
+      destination_reference: destinationReference ?? null,
       status: "pending",
       created_at: new Date().toISOString(),
       updated_at: new Date().toISOString(),
@@ -1370,6 +1384,8 @@ async function createAndDispatchRide(
         origin,
         category: machineCategoryId || categoryLabel,
         payment_method: paymentMethod ?? "",
+        origin_reference: originReference ?? null,
+        destination_reference: destinationReference ?? null,
         ...(destination ? { destination } : {}),
       }),
     });
@@ -1644,6 +1660,8 @@ As mensagens do passageiro serao encaminhadas a partir de agora.`;
       let lat: number | null = null;
       let lng: number | null = null;
       let combinedDest: string | null = null;
+      let originReference: string | null = null;
+      let destinationReference: string | null = null;
 
       if (location) {
         lat = location.lat;
@@ -1671,8 +1689,10 @@ As mensagens do passageiro serao encaminhadas a partir de agora.`;
         if (llmResult && llmResult.endereco_origem) {
           addressText = llmResult.endereco_origem;
           combinedDest = llmResult.endereco_destino ?? null;
-          const parts = [`Embarque: ${llmResult.endereco_origem}`];
-          if (combinedDest) parts.push(`Destino: ${combinedDest}`);
+          originReference = llmResult.texto_embarque_motorista ?? llmResult.endereco_origem;
+          destinationReference = llmResult.texto_destino_motorista ?? null;
+          const parts = [`Embarque: ${originReference}`];
+          if (destinationReference) parts.push(`Destino: ${destinationReference}`);
           await sendBotMessage(companyId, cleanPhone, connectionId, `Entendi:\n${parts.join("\n")}\nValidando enderecos...`);
         } else {
           const combined = parseCombinedAddress(text.trim());
@@ -1692,7 +1712,9 @@ As mensagens do passageiro serao encaminhadas a partir de agora.`;
       }
 
       // Fuzzy match against local POI/suggestion table (accent-insensitive)
+      // Use the geocodable address (llmResult.endereco_origem) for matching, not the display text
       let suggestionMatch: { address_text: string; lat: number | null; lng: number | null } | null = null;
+      let geocodableAddress = addressText;
       if (connectionId) {
         suggestionMatch = await findAddressSuggestionFuzzy(connectionId, addressText);
       }
@@ -1765,31 +1787,29 @@ As mensagens do passageiro serao encaminhadas a partir de agora.`;
           address_lng: finalLng,
           address_formatted: finalAddress,
           address_is_fallback: isFallback,
+          origin_reference: originReference,
+          destination_reference: destinationReference,
           updated_at: new Date().toISOString(),
         })
         .eq("id", conv.id);
 
-      // If the passenger included a destination in the same message, geocode it
-      // now and skip straight to confirmation instead of asking again.
-      if (combinedDest) {
-        const companyLoc2 = await getCompanyLocationInfo(companyId, connectionId);
-        const destGeocoded = await geocodeAddress(combinedDest, companyLoc2.city ?? undefined, companyLoc2.state ?? undefined, companyLoc2.lat ?? undefined, companyLoc2.lng ?? undefined);
-        if (destGeocoded) {
-          await supabase.from("bot_conversas")
-            .update({
-              state: "aguardando_confirmacao",
-              destination_text: combinedDest,
-              destination_lat: destGeocoded.lat,
-              destination_lng: destGeocoded.lng,
-              destination_formatted: destGeocoded.formatted,
-              updated_at: new Date().toISOString(),
-            })
-            .eq("id", conv.id);
-          await sendBotMessage(companyId, cleanPhone, connectionId, msg("confirm_address", `\u2705 Confirma os dados da corrida?\n\n\u{1F4CD} Embarque: ${finalAddress}\n\u{1F3AF} Destino: ${destGeocoded.formatted}\n\nResponda SIM para confirmar ou NAO para corrigir.`));
-          break;
-        }
-        // If destination geocoding failed, fall through to ask_destination so the
-        // passenger can retry or choose "no destination"
+      // If the LLM already extracted a destination reference, skip destination
+      // geocoding entirely — the driver sees the text, and the Machine API
+      // calculates the fare by KM (taximeter) with no mapped destination.
+      if (destinationReference) {
+        await supabase.from("bot_conversas")
+          .update({
+            state: "aguardando_confirmacao",
+            destination_text: destinationReference,
+            destination_lat: null,
+            destination_lng: null,
+            destination_formatted: null,
+            destination_reference: destinationReference,
+            updated_at: new Date().toISOString(),
+          })
+          .eq("id", conv.id);
+        await sendBotMessage(companyId, cleanPhone, connectionId, msg("confirm_address", `\u2705 Confirma os dados da corrida?\n\n\u{1F4CD} Embarque: ${originReference ?? finalAddress}\n\u{1F3AF} Destino: ${destinationReference}\n\nResponda SIM para confirmar ou NAO para corrigir.`));
+        break;
       }
 
       await sendBotMessage(companyId, cleanPhone, connectionId, msg("ask_destination", "\u{1F3AF} Para onde voce vai?\n\n1 - Digitar o Endereco de Destino \u{1F4DD}\n2 - Nao informar Endereco \u{1F6AB}\n\nResponda com o numero da opcao."));
@@ -2097,6 +2117,8 @@ As mensagens do passageiro serao encaminhadas a partir de agora.`;
         lng: conv.address_lng!,
         address: conv.address_formatted || conv.address_text || "Endereco nao informado",
       };
+      const originReference = conv.origin_reference ?? null;
+      const destinationReference = conv.destination_reference ?? null;
 
       const destination = conv.destination_lat != null && conv.destination_lng != null
         ? { lat: conv.destination_lat, lng: conv.destination_lng, address: conv.destination_formatted || conv.destination_text || "" }
@@ -2112,6 +2134,8 @@ As mensagens do passageiro serao encaminhadas a partir de agora.`;
         machineCategoryId,
         paymentMethod,
         destination,
+        originReference,
+        destinationReference,
       );
 
       if (result.success) {
@@ -3937,3 +3961,4 @@ async function handleIncomingMessage(companyId: string, data: Record<string, unk
 // v9.0 NLU + fuzzy POI + Google geocoding + failure loop + machineMessage sanitize Fri Sep 25 17:45:00 UTC 2026
 // v9.1 NLU anti-error-loop prompt with dynamic city/state/totem context Fri Sep 25 18:00:00 UTC 2026
 // v9.2 NLU TOTEM_FIXO vs BOT_WHATSAPP instance type distinction Fri Sep 25 18:15:00 UTC 2026
+// force redeploy

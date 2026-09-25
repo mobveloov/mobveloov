@@ -79,6 +79,8 @@ interface DispatchBody {
   passenger_phone?: string;
   origin?: { lat: number; lng: number; address: string };
   destination?: { lat: number; lng: number; address: string };
+  origin_reference?: string | null;
+  destination_reference?: string | null;
   category?: string;
   price?: number;
   distance?: number;
@@ -254,6 +256,8 @@ Deno.serve(async (req: Request) => {
         passenger_phone: passenger_phone ?? "",
         origin,
         destination,
+        origin_reference: (body as Record<string, unknown>).origin_reference as string | null ?? null,
+        destination_reference: (body as Record<string, unknown>).destination_reference as string | null ?? null,
         category: category ?? "",
         price: price ?? 0,
         distance: distance ?? 0,
@@ -296,6 +300,8 @@ async function dispatchToMachine(
     passenger_phone: string;
     origin?: { lat: number; lng: number; address: string };
     destination?: { lat: number; lng: number; address: string };
+    origin_reference?: string | null;
+    destination_reference?: string | null;
     category: string;
     price: number;
     distance: number;
@@ -372,8 +378,17 @@ async function dispatchToMachine(
       bairro: extractBairro(data.origin?.address) || "Centro",
       ...(data.origin?.lat != null ? { lat: data.origin.lat } : {}),
       ...(data.origin?.lng != null ? { lng: data.origin.lng } : {}),
+      ...(data.origin_reference ? { referencia: data.origin_reference } : {}),
     },
   };
+
+  // Build driver-facing info note shown before the driver accepts the ride
+  const driverNotes: string[] = [];
+  if (data.origin_reference) driverNotes.push(`Embarque real: ${data.origin_reference}`);
+  if (data.destination_reference) driverNotes.push(`Destino informado pelo cliente: ${data.destination_reference}`);
+  if (driverNotes.length > 0) {
+    v2Payload.info_antes_aceite = driverNotes.join(" | ");
+  }
 
   if (data.destination?.address) {
     v2Payload.desejado = {
@@ -381,6 +396,14 @@ async function dispatchToMachine(
       bairro: extractBairro(data.destination.address) || "Centro",
       ...(data.destination.lat != null ? { lat: data.destination.lat } : {}),
       ...(data.destination.lng != null ? { lng: data.destination.lng } : {}),
+      ...(data.destination_reference ? { referencia: data.destination_reference } : {}),
+    };
+  } else if (data.destination_reference) {
+    // No geocoded destination — send only the reference text so the driver
+    // knows where the passenger wants to go, and the Machine API calculates
+    // the fare by KM (taximeter) instead of a fixed route.
+    v2Payload.desejado = {
+      referencia: data.destination_reference,
     };
   }
 
@@ -1617,3 +1640,4 @@ async function listMachineCategories(
   }
 }
 // v2-sync 1790314381
+// force redeploy
