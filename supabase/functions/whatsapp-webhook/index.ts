@@ -391,15 +391,18 @@ async function sendInteractiveWithProvider(
       headers: { "Content-Type": "application/json", apikey: token },
       body: JSON.stringify({
         number: cleanPhone,
-        title: bodyText.slice(0, 1024),
-        description: bodyText,
+        title: bodyText.slice(0, 60),
+        description: bodyText.length > 60 ? bodyText : "",
         footer: footerText ?? "",
-        type: "buttons",
-        buttons: buttons.map((b) => ({ buttonId: b.id, buttonText: { displayText: b.label }, type: 1 })),
+        buttons: buttons.map((b) => ({ type: "reply", displayText: b.label.slice(0, 20), id: b.id })),
         delay: 1200,
         presence: "available",
       }),
     });
+    if (!resp.ok) {
+      const errBody = await resp.text().catch(() => "");
+      console.error(`sendButtons failed (${resp.status}): ${errBody.slice(0, 300)}`);
+    }
     return resp.ok;
   }
 
@@ -490,14 +493,14 @@ async function sendInteractiveListWithProvider(
       headers: { "Content-Type": "application/json", apikey: token },
       body: JSON.stringify({
         number: cleanPhone,
-        title: bodyText.slice(0, 1024),
-        description: bodyText,
+        title: bodyText.slice(0, 60),
+        description: bodyText.length > 60 ? bodyText : "",
         footer: footerText ?? "",
         buttonText: buttonText,
         menuId: "menu_list",
         sections: sections.map((s) => ({
           title: s.title,
-          rows: s.rows.map((r) => ({ rowId: r.id, title: r.label, description: "" })),
+          rows: s.rows.map((r) => ({ rowId: r.id, title: r.label.slice(0, 24), description: "" })),
         })),
         delay: 1200,
         presence: "available",
