@@ -1,5 +1,6 @@
 // WhatsApp webhook: Evolution API events + bot ride-request flow — v8 with security hardening (token required)
 // v8.2: bot conversation resets on ride end (cancel/complete) so passengers can request again. Cancel ride on dispatch failure.
+// v8.3: fix "volta pro inicio" — reuse passenger's message when transitioning from corrida_solicitada; detect ride-details in menu_inicial.
 import { createClient } from "npm:@supabase/supabase-js@2.57.4";
 
 const corsHeaders = {
@@ -1604,14 +1605,21 @@ async function handleBotMessage(
         await sendBotMessage(companyId, cleanPhone, connectionId, msg("ask_address", "\u{1F4CD} Perfeito! Qual e o endereco de embarque? Voce pode digitar o endereco, enviar sua localizacao ou mandar um audio."));
         break;
       }
+      const looksLikeRideDetails = normalizedText.length > 3 &&
+        ["estou", "to ", "tô ", "vou ", "para ", "pra ", "em ", "na ", "no ", "origem", "destino", "embarque"].some((marker) => normalizedText.includes(marker));
       const requestedRide = ["1", "corrida", "sim", "sim.", "quero", "viagem", "sim!"].includes(normalizedText)
         || normalizedText.includes("corrida")
-        || normalizedText.includes("viagem");
+        || normalizedText.includes("viagem")
+        || looksLikeRideDetails;
       if (requestedRide) {
         await supabase.from("bot_conversas")
           .update({ state: "aguardando_endereco", updated_at: new Date().toISOString() })
           .eq("id", conv.id);
-        await sendBotMessage(companyId, cleanPhone, connectionId, msg("ask_address", "\u{1F4CD} Perfeito! Qual e o endereco de embarque? Voce pode digitar o endereco, enviar sua localizacao ou mandar um audio."));
+        if (looksLikeRideDetails) {
+          await handleBotMessage(companyId, cleanPhone, text, pushName, location, audio, connectionId);
+        } else {
+          await sendBotMessage(companyId, cleanPhone, connectionId, msg("ask_address", "\u{1F4CD} Perfeito! Qual e o endereco de embarque? Voce pode digitar o endereco, enviar sua localizacao ou mandar um audio."));
+        }
       } else if (["2", "suporte", "ajuda", "suport"].includes(normalizedText)) {
         // Fetch company support WhatsApp
         const { data: company } = await supabase
@@ -2240,10 +2248,32 @@ As mensagens do passageiro serao encaminhadas a partir de agora.`;
     }
 
     case "corrida_solicitada": {
+      const hasNewRequest = Boolean(text || location || audio);
       await supabase.from("bot_conversas")
-        .update({ state: "menu_inicial", ride_id: null, updated_at: new Date().toISOString() })
+        .update({
+          state: hasNewRequest ? "aguardando_endereco" : "menu_inicial",
+          ride_id: null,
+          address_text: null,
+          address_lat: null,
+          address_lng: null,
+          address_formatted: null,
+          destination_text: null,
+          destination_lat: null,
+          destination_lng: null,
+          destination_formatted: null,
+          origin_reference: null,
+          destination_reference: null,
+          selected_category_id: null,
+          selected_payment_method: null,
+          updated_at: new Date().toISOString(),
+        })
         .eq("id", conv.id);
-      await sendBotMessage(companyId, cleanPhone, connectionId, msg("welcome_back", "\u{1F44B} Ola! Como podemos ajudar?\n\n1 - Solicitar corrida \u{1F695}\n2 - Suporte \u{1F4AC}\n\nResponda com o numero da opcao."));
+
+      if (hasNewRequest) {
+        await handleBotMessage(companyId, cleanPhone, text, pushName, location, audio, connectionId);
+      } else {
+        await sendBotMessage(companyId, cleanPhone, connectionId, msg("welcome_back", "\u{1F44B} Ola! Como podemos ajudar?\n\n1 - Solicitar corrida \u{1F695}\n2 - Suporte \u{1F4AC}\n\nResponda com o numero da opcao."));
+      }
       break;
     }
   }
