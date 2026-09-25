@@ -519,7 +519,6 @@ function normalizeAudioMime(mimetype: string): string {
   if (mt.includes("audio/webm")) return "audio/webm";
   if (mt.includes("audio/wav") || mt.includes("audio/wave")) return "audio/wav";
   if (mt.includes("audio/flac")) return "audio/flac";
-  // application/octet-stream or unknown — WhatsApp audio is OGG/Opus
   return "audio/ogg";
 }
 
@@ -532,6 +531,154 @@ function normalizeAudioExt(mimetype: string): string {
   if (mt.includes("audio/wav") || mt.includes("audio/wave")) return "wav";
   if (mt.includes("audio/flac")) return "flac";
   return "ogg";
+}
+
+/**
+ * Decrypts WhatsApp encrypted media (audio) using HKDF-SHA256 + AES-CBC.
+ * WhatsApp encrypts media with a mediaKey derived via HKDF into a 112-byte
+ * key split: 16 bytes IV, 32 bytes cipher key, 32 bytes mac key, 32 bytes
+ * ref key. The last 10 bytes of the downloaded file are the HMAC-SHA256 mac.
+ */
+async function decryptWhatsAppAudio(
+  mediaUrl: string,
+  mediaKeyBase64: string,
+  companyId: string,
+): Promise<string | null> {
+  // Download encrypted media from CDN
+  const mediaResp = await fetch(mediaUrl, {
+    headers: { "User-Agent": "WhatsApp/2.0" },
+  });
+  if (!mediaResp.ok) {
+    await supabase.from("admin_logs").insert({
+      company_id: companyId,
+      source: "whatsapp_webhook",
+      level: "error",
+      message: `CDN audio download failed: HTTP ${mediaResp.status}`,
+    });
+    return null;
+  }
+  const encryptedBytes = new Uint8Array(await mediaResp.arrayBuffer());
+
+  // Decode mediaKey from base64
+  const mediaKeyBinary = atob(mediaKeyBase64);
+  const mediaKey = new Uint8Array(mediaKeyBinary.length);
+  for (let i = 0; i < mediaKeyBinary.length; i++) mediaKey[i] = mediaKeyBinary.charCodeAt(i);
+
+  // HKDF: expand mediaKey using WhatsApp's app-specific info
+  // WhatsApp uses: "WhatsApp Audio Keys" for audio, with no salt
+  const info = new TextEncoder().encode("WhatsApp Audio Keys");
+  const salt = new Uint8Array(32); // zero-filled salt
+
+  // Import mediaKey as raw HMAC key for HKDF extract step
+  const baseKey = await crypto.subtle.importKey(
+    "raw",
+    mediaKey as BufferSource,
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["sign"],
+  );
+
+  // HKDF-Extract: PRK = HMAC(salt, IKM)
+  const prk = await crypto.subtle.sign("HMAC", baseKey, salt as BufferSource);
+
+  // HKDF-Expand: expand PRK to 112 bytes using info
+  // L = 112, hashLen = 32, so N = ceil(112/32) = 4
+  const hashLen = 32;
+  const L = 112;
+  const N = Math.ceil(L / hashLen);
+  let okm = new Uint8Array(0);
+  let prev = new Uint8Array(0);
+  for (let i = 1; i <= N; i++) {
+    const input = new Uint8Array(prev.length + info.length + 1);
+    input.set(prev, 0);
+    input.set(info, prev.length);
+    input[prev.length + info.length] = i;
+    const prkKey = await crypto.subtle.importKey(
+      "raw",
+      prk as BufferSource,
+      { name: "HMAC", hash: "SHA-256" },
+      false,
+      ["sign"],
+    );
+    const t = await crypto.subtle.sign("HMAC", prkKey, input as BufferSource);
+    prev = new Uint8Array(t);
+    const newOkm = new Uint8Array(okm.length + prev.length);
+    newOkm.set(okm, 0);
+    newOkm.set(prev, okm.length);
+    okm = newOkm;
+  }
+  const expandedKey = okm.slice(0, L);
+
+  // Split: iv (16) + cipherKey (32) + macKey (32) + refKey (32)
+  const iv = expandedKey.slice(0, 16);
+  const cipherKey = expandedKey.slice(16, 48);
+  const macKey = expandedKey.slice(48, 80);
+
+  // Encrypted media: last 10 bytes are MAC, rest is ciphertext
+  const mac = encryptedBytes.slice(encryptedBytes.length - 10);
+  const ciphertext = encryptedBytes.slice(0, encryptedBytes.length - 10);
+
+  // Verify HMAC-SHA256 (first 10 bytes of HMAC match the mac)
+  const macKeyObj = await crypto.subtle.importKey(
+    "raw",
+    macKey as BufferSource,
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["sign"],
+  );
+  const computedMacFull = await crypto.subtle.sign("HMAC", macKeyObj, ciphertext as BufferSource);
+  const computedMac = new Uint8Array(computedMacFull).slice(0, 10);
+  let macValid = true;
+  for (let i = 0; i < 10; i++) {
+    if (computedMac[i] !== mac[i]) { macValid = false; break; }
+  }
+  if (!macValid) {
+    await supabase.from("admin_logs").insert({
+      company_id: companyId,
+      source: "whatsapp_webhook",
+      level: "error",
+      message: `WhatsApp audio MAC verification failed`,
+    });
+    return null;
+  }
+
+  // Decrypt with AES-CBC, no padding (raw decryption, strip padding manually)
+  const cipherKeyObj = await crypto.subtle.importKey(
+    "raw",
+    cipherKey as BufferSource,
+    { name: "AES-CBC", iv: iv as BufferSource },
+    false,
+    ["decrypt"],
+  );
+
+  try {
+    // Pad ciphertext to multiple of 16 if needed
+    const paddedLen = Math.ceil(ciphertext.length / 16) * 16;
+    const paddedCiphertext = new Uint8Array(paddedLen);
+    paddedCiphertext.set(ciphertext, 0);
+    if (paddedLen > ciphertext.length) {
+      paddedCiphertext.fill(0, ciphertext.length);
+    }
+
+    const decrypted = await crypto.subtle.decrypt(
+      { name: "AES-CBC", iv: iv as BufferSource },
+      cipherKeyObj,
+      paddedCiphertext as BufferSource,
+    );
+    const decryptedBytes = new Uint8Array(decrypted);
+    // Convert to base64
+    let binary = "";
+    for (let i = 0; i < decryptedBytes.length; i++) binary += String.fromCharCode(decryptedBytes[i]);
+    return btoa(binary);
+  } catch (err) {
+    await supabase.from("admin_logs").insert({
+      company_id: companyId,
+      source: "whatsapp_webhook",
+      level: "error",
+      message: `AES-CBC decrypt failed: ${err instanceof Error ? err.message : String(err)}`,
+    });
+    return null;
+  }
 }
 
 async function transcribeAudio(audioBase64OrUrl: string, mimetype: string, companyId?: string): Promise<string | null> {
@@ -2251,28 +2398,26 @@ async function handleIncomingMessage(companyId: string, data: Record<string, unk
   const audioMessage = message?.audioMessage as Record<string, unknown> | undefined;
   const genericAudio = message?.audio as Record<string, unknown> | undefined;
   const audioSource = audioMessage ?? genericAudio;
+
+  // Do NOT use url/mediaUrl from audioMessage — those are encrypted CDN URLs.
+  // Only use base64/data/buffer if present (already decrypted by provider).
   let audioData = audioSource?.base64
     ?? audioSource?.data
     ?? audioSource?.buffer
-    ?? audioSource?.url
-    ?? audioSource?.mediaUrl
-    ?? (data?.audio as Record<string, unknown> | undefined)?.base64
-    ?? data?.base64
     ?? null;
   let audioMimeType = String(audioSource?.mimetype ?? audioSource?.mimeType ?? data?.mimetype ?? "audio/ogg");
+  const audioUrl = audioSource?.url ?? audioSource?.mediaUrl ?? null;
+  const mediaKey = audioSource?.mediaKey ?? null;
 
-  // The base64 data embedded in the webhook is encrypted WhatsApp media, not
-  // playable audio. We must call getBase64FromMediaMessage to get decrypted,
-  // converted audio. A small delay helps Evolution register the message first.
   if (audioMessage && connectionId) {
-    // Log available keys for debugging media extraction
     await supabase.from("admin_logs").insert({
       company_id: companyId,
       source: "whatsapp_webhook",
       level: "info",
-      message: `AudioMessage keys: [${Object.keys(audioMessage).join(",")}], key.id=${key?.id ?? "none"}`,
+      message: `AudioMessage keys: [${Object.keys(audioMessage).join(",")}], key.id=${key?.id ?? "none"}, hasMediaKey=${!!mediaKey}, hasUrl=${!!audioUrl}`,
     });
 
+    // Strategy 1: Try Evolution getBase64FromMediaMessage (gives decrypted+converted audio)
     try {
       const botConfig = await getBotConnectionConfig(connectionId);
       if (botConfig && (botConfig.provider === "evolution" || botConfig.provider === "veloov")) {
@@ -2282,22 +2427,15 @@ async function handleIncomingMessage(companyId: string, data: Record<string, unk
         if (evoUrl && evoToken && evoInstance) {
           const msgKeyId = key?.id ? String(key.id) : (data?.message_id ? String(data.message_id) : "");
           if (msgKeyId) {
-            // Wait 500ms for Evolution to finish storing the message
             await new Promise((r) => setTimeout(r, 500));
-
-            // Attempt 1: minimal key format (official docs)
             let mediaResp = await fetch(`${evoUrl}/chat/getBase64FromMediaMessage/${evoInstance}`, {
               method: "POST",
               headers: { "Content-Type": "application/json", apikey: evoToken },
               body: JSON.stringify({
-                message: {
-                  key: { id: msgKeyId },
-                },
+                message: { key: { id: msgKeyId } },
                 convertToMp4: true,
               }),
             });
-
-            // Attempt 2: if first attempt fails, wait more and try with full key
             if (!mediaResp.ok) {
               await new Promise((r) => setTimeout(r, 1500));
               mediaResp = await fetch(`${evoUrl}/chat/getBase64FromMediaMessage/${evoInstance}`, {
@@ -2315,7 +2453,6 @@ async function handleIncomingMessage(companyId: string, data: Record<string, unk
                 }),
               });
             }
-
             if (mediaResp.ok) {
               const mediaData = await mediaResp.json() as Record<string, unknown>;
               const mp4Base64 = mediaData.base64 ?? mediaData.base64Media ?? null;
@@ -2343,12 +2480,51 @@ async function handleIncomingMessage(companyId: string, data: Record<string, unk
         message: `getBase64FromMediaMessage exception: ${err instanceof Error ? err.message : String(err)}`,
       });
     }
+
+    // Strategy 2: If Evolution failed and we have a mediaKey + url, decrypt locally
+    // WhatsApp encrypts media with AES-CBC using keys derived from mediaKey via HKDF.
+    if (!audioData && audioUrl && mediaKey) {
+      try {
+        const decrypted = await decryptWhatsAppAudio(
+          typeof audioUrl === "string" ? audioUrl : String(audioUrl),
+          typeof mediaKey === "string" ? mediaKey : String(mediaKey),
+          companyId,
+        );
+        if (decrypted) {
+          audioData = decrypted;
+          audioMimeType = "audio/ogg";
+          await supabase.from("admin_logs").insert({
+            company_id: companyId,
+            source: "whatsapp_webhook",
+            level: "info",
+            message: `Audio decifrado localmente com sucesso via HKDF+AES-CBC`,
+          });
+        }
+      } catch (err) {
+        await supabase.from("admin_logs").insert({
+          company_id: companyId,
+          source: "whatsapp_webhook",
+          level: "error",
+          message: `Decrypt audio exception: ${err instanceof Error ? err.message : String(err)}`,
+        });
+      }
+    }
   }
 
   if (audioData && (typeof audioData === "string" || audioData instanceof String)) {
     let audioDataStr = String(audioData);
-    // If it's a URL (not base64 and not a data: URI), download it with Evolution API auth
-    if (audioDataStr.startsWith("http") && !audioDataStr.startsWith("data:")) {
+    // If it's a data: URI, strip the prefix
+    if (audioDataStr.startsWith("data:")) {
+      audioDataStr = audioDataStr.split(",")[1] ?? audioDataStr;
+    } else if (audioDataStr.startsWith("http") && !audioDataStr.startsWith("data:")) {
+      // This branch should NOT be reached anymore — urls are encrypted and handled above.
+      // But keep it as a safety net with a warning.
+      await supabase.from("admin_logs").insert({
+        company_id: companyId,
+        source: "whatsapp_webhook",
+        level: "warn",
+        message: `audioData is a URL (possibly encrypted CDN) — attempting download`,
+      });
       try {
         const { provider, fields: f } = await getCompanyWhatsAppConfig(companyId);
         const headers: Record<string, string> = {};
@@ -2363,13 +2539,6 @@ async function handleIncomingMessage(companyId: string, data: Record<string, unk
           let binary = "";
           for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
           audioDataStr = btoa(binary);
-        } else {
-          await supabase.from("admin_logs").insert({
-            company_id: companyId,
-            source: "whatsapp_webhook",
-            level: "error",
-            message: `Audio URL download failed: HTTP ${audioResp.status}`,
-          });
         }
       } catch (err) {
         await supabase.from("admin_logs").insert({
