@@ -2245,7 +2245,14 @@ async function handleIncomingMessage(companyId: string, data: Record<string, unk
               method: "POST",
               headers: { "Content-Type": "application/json", apikey: evoToken },
               body: JSON.stringify({
-                message: { key: { id: msgKeyId } },
+                message: {
+                  key: {
+                    remoteJid: key?.remoteJid ? String(key.remoteJid) : undefined,
+                    fromMe: key?.fromMe === true,
+                    id: msgKeyId,
+                    ...(key?.participant ? { participant: String(key.participant) } : {}),
+                  },
+                },
                 convertToMp4: true,
               }),
             });
