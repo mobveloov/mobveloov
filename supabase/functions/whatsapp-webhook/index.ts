@@ -541,9 +541,56 @@ function normalizeAudioExt(mimetype: string): string {
  */
 async function decryptWhatsAppAudio(
   mediaUrl: string,
-  mediaKeyBase64: string,
+  mediaKeyRaw: unknown,
   companyId: string,
 ): Promise<string | null> {
+  // Convert mediaKey to Uint8Array regardless of input format
+  let mediaKey: Uint8Array;
+  if (typeof mediaKeyRaw === "string") {
+    // Could be base64 or base64url
+    let b64 = mediaKeyRaw.replace(/-/g, "+").replace(/_/g, "/").replace(/\s/g, "");
+    // Strip data: prefix if present
+    if (b64.startsWith("data:")) b64 = b64.split(",")[1] ?? b64;
+    try {
+      const binary = atob(b64);
+      mediaKey = new Uint8Array(binary.length);
+      for (let i = 0; i < binary.length; i++) mediaKey[i] = binary.charCodeAt(i);
+    } catch {
+      await supabase.from("admin_logs").insert({
+        company_id: companyId,
+        source: "whatsapp_webhook",
+        level: "error",
+        message: `mediaKey base64 decode failed, len=${mediaKeyRaw.length}, first20=${mediaKeyRaw.slice(0, 20)}`,
+      });
+      return null;
+    }
+  } else if (mediaKeyRaw instanceof Uint8Array || mediaKeyRaw instanceof ArrayBuffer) {
+    mediaKey = new Uint8Array(mediaKeyRaw);
+  } else if (Array.isArray(mediaKeyRaw)) {
+    mediaKey = new Uint8Array(mediaKeyRaw as number[]);
+  } else {
+    // Object with type/data (Buffer-like) — try to extract
+    const obj = mediaKeyRaw as Record<string, unknown>;
+    if (obj?.type === "Buffer" && Array.isArray(obj.data)) {
+      mediaKey = new Uint8Array(obj.data as number[]);
+    } else {
+      await supabase.from("admin_logs").insert({
+        company_id: companyId,
+        source: "whatsapp_webhook",
+        level: "error",
+        message: `mediaKey unknown format: ${typeof mediaKeyRaw}, keys=${obj ? Object.keys(obj).join(",") : "n/a"}`,
+      });
+      return null;
+    }
+  }
+
+  await supabase.from("admin_logs").insert({
+    company_id: companyId,
+    source: "whatsapp_webhook",
+    level: "info",
+    message: `mediaKey decoded: ${mediaKey.length} bytes`,
+  });
+
   // Download encrypted media from CDN
   const mediaResp = await fetch(mediaUrl, {
     headers: { "User-Agent": "WhatsApp/2.0" },
@@ -553,16 +600,18 @@ async function decryptWhatsAppAudio(
       company_id: companyId,
       source: "whatsapp_webhook",
       level: "error",
-      message: `CDN audio download failed: HTTP ${mediaResp.status}`,
+      message: `CDN audio download failed: HTTP ${mediaResp.status}, url=${mediaUrl.slice(0, 80)}`,
     });
     return null;
   }
   const encryptedBytes = new Uint8Array(await mediaResp.arrayBuffer());
 
-  // Decode mediaKey from base64
-  const mediaKeyBinary = atob(mediaKeyBase64);
-  const mediaKey = new Uint8Array(mediaKeyBinary.length);
-  for (let i = 0; i < mediaKeyBinary.length; i++) mediaKey[i] = mediaKeyBinary.charCodeAt(i);
+  await supabase.from("admin_logs").insert({
+    company_id: companyId,
+    source: "whatsapp_webhook",
+    level: "info",
+    message: `CDN download: ${encryptedBytes.length} bytes`,
+  });
 
   // HKDF: expand mediaKey using WhatsApp's app-specific info
   // WhatsApp uses: "WhatsApp Audio Keys" for audio, with no salt
@@ -2487,7 +2536,7 @@ async function handleIncomingMessage(companyId: string, data: Record<string, unk
       try {
         const decrypted = await decryptWhatsAppAudio(
           typeof audioUrl === "string" ? audioUrl : String(audioUrl),
-          typeof mediaKey === "string" ? mediaKey : String(mediaKey),
+          mediaKey,
           companyId,
         );
         if (decrypted) {
