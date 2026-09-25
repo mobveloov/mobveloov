@@ -2410,6 +2410,23 @@ Deno.serve(async (req: Request) => {
   }
 });
 
+async function sendAudioFailureReply(companyId: string, phone: string, message: string): Promise<void> {
+  try {
+    const { provider, fields } = await getCompanyWhatsAppConfig(companyId);
+    const recipient = phone.replace(/\D/g, "");
+    if (!recipient) return;
+    await sendWhatsAppMessageWithProvider(provider, fields, recipient, message);
+    await saveMessage(companyId, recipient, "outgoing", message);
+  } catch (err) {
+    await supabase.from("admin_logs").insert({
+      company_id: companyId,
+      source: "whatsapp_webhook",
+      level: "error",
+      message: `Falha ao enviar retorno de audio: ${err instanceof Error ? err.message : String(err)}`,
+    });
+  }
+}
+
 async function handleIncomingMessage(companyId: string, data: Record<string, unknown>, _instanceName?: string, connectionId?: string): Promise<void> {
   // Evolution API v1 sends: { key: { remoteJid: "5516999998888@s.whatsapp.net" }, message: { conversation: "cancelar" } }
   // Evolution API v2 sends: { message: { text: "cancelar" }, key: { remoteJid: "..." } }
@@ -2621,6 +2638,7 @@ async function handleIncomingMessage(companyId: string, data: Record<string, unk
         level: "warn",
         message: `Audio recebido mas sem dados extraiveis. connectionId=${connectionId ?? "none"}, keys=[${Object.keys(audioMessage).join(",")}]`,
       });
+      await sendAudioFailureReply(companyId, rawPhone, "Não consegui ouvir esse áudio agora. Pode enviar novamente ou escrever sua mensagem?");
     }
     return;
   }
@@ -2639,6 +2657,8 @@ async function handleIncomingMessage(companyId: string, data: Record<string, unk
         level: "warn",
         message: `Transcricao falhou para ${cleanPhone}. audio.data length=${audio.data.length}, mimetype=${audio.mimetype}`,
       });
+      await sendAudioFailureReply(companyId, cleanPhone, "Não consegui entender esse áudio agora. Pode enviar novamente ou escrever sua mensagem?");
+      return;
     }
   }
 
