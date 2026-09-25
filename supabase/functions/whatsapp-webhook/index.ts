@@ -2261,10 +2261,18 @@ async function handleIncomingMessage(companyId: string, data: Record<string, unk
     ?? null;
   let audioMimeType = String(audioSource?.mimetype ?? audioSource?.mimeType ?? data?.mimetype ?? "audio/ogg");
 
-  // Evolution API sends OGG/Opus audio which Groq/Whisper cannot process.
-  // Always fetch the audio via getBase64FromMediaMessage with convertToMp4=true
-  // to get MP4 format, even if base64 OGG data was already in the webhook.
+  // The base64 data embedded in the webhook is encrypted WhatsApp media, not
+  // playable audio. We must call getBase64FromMediaMessage to get decrypted,
+  // converted audio. A small delay helps Evolution register the message first.
   if (audioMessage && connectionId) {
+    // Log available keys for debugging media extraction
+    await supabase.from("admin_logs").insert({
+      company_id: companyId,
+      source: "whatsapp_webhook",
+      level: "info",
+      message: `AudioMessage keys: [${Object.keys(audioMessage).join(",")}], key.id=${key?.id ?? "none"}`,
+    });
+
     try {
       const botConfig = await getBotConnectionConfig(connectionId);
       if (botConfig && (botConfig.provider === "evolution" || botConfig.provider === "veloov")) {
@@ -2274,21 +2282,40 @@ async function handleIncomingMessage(companyId: string, data: Record<string, unk
         if (evoUrl && evoToken && evoInstance) {
           const msgKeyId = key?.id ? String(key.id) : (data?.message_id ? String(data.message_id) : "");
           if (msgKeyId) {
-            const mediaResp = await fetch(`${evoUrl}/chat/getBase64FromMediaMessage/${evoInstance}`, {
+            // Wait 500ms for Evolution to finish storing the message
+            await new Promise((r) => setTimeout(r, 500));
+
+            // Attempt 1: minimal key format (official docs)
+            let mediaResp = await fetch(`${evoUrl}/chat/getBase64FromMediaMessage/${evoInstance}`, {
               method: "POST",
               headers: { "Content-Type": "application/json", apikey: evoToken },
               body: JSON.stringify({
                 message: {
-                  key: {
-                    remoteJid: key?.remoteJid ? String(key.remoteJid) : undefined,
-                    fromMe: key?.fromMe === true,
-                    id: msgKeyId,
-                    ...(key?.participant ? { participant: String(key.participant) } : {}),
-                  },
+                  key: { id: msgKeyId },
                 },
                 convertToMp4: true,
               }),
             });
+
+            // Attempt 2: if first attempt fails, wait more and try with full key
+            if (!mediaResp.ok) {
+              await new Promise((r) => setTimeout(r, 1500));
+              mediaResp = await fetch(`${evoUrl}/chat/getBase64FromMediaMessage/${evoInstance}`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json", apikey: evoToken },
+                body: JSON.stringify({
+                  message: {
+                    key: {
+                      remoteJid: key?.remoteJid ? String(key.remoteJid) : undefined,
+                      fromMe: false,
+                      id: msgKeyId,
+                    },
+                  },
+                  convertToMp4: true,
+                }),
+              });
+            }
+
             if (mediaResp.ok) {
               const mediaData = await mediaResp.json() as Record<string, unknown>;
               const mp4Base64 = mediaData.base64 ?? mediaData.base64Media ?? null;
