@@ -434,12 +434,25 @@ async function geocodeAddress(address: string, city?: string, state?: string): P
 }
 
 async function reverseGeocode(lat: number, lng: number): Promise<string | null> {
-  const url = `https://nominatim.openstreetmap.org/reverse?lat=${lat}&lon=${lng}&format=json&addressdetails=1`;
+  const url = `https://nominatim.openstreetmap.org/reverse?lat=${encodeURIComponent(lat)}&lon=${encodeURIComponent(lng)}&format=json&addressdetails=1&zoom=18&accept-language=pt-BR`;
   try {
-    const resp = await fetch(url, { headers: { "User-Agent": "VeloovBot/1.0" } });
+    const resp = await fetch(url, {
+      headers: {
+        "User-Agent": "VeloovBot/1.0 (WhatsApp ride assistant)",
+        "Accept-Language": "pt-BR,pt;q=0.9",
+      },
+    });
     if (!resp.ok) return null;
     const data = await resp.json();
-    return data?.display_name ?? null;
+    if (typeof data?.display_name === "string" && data.display_name.trim()) return data.display_name.trim();
+    const address = data?.address as Record<string, unknown> | undefined;
+    if (!address) return null;
+    const street = address.road ?? address.pedestrian ?? address.residential ?? address.highway;
+    const number = address.house_number;
+    const neighborhood = address.neighbourhood ?? address.suburb ?? address.city_district;
+    const city = address.city ?? address.town ?? address.municipality;
+    const parts = [street && (number ? `${street}, ${number}` : street), neighborhood, city].filter(Boolean).map(String);
+    return parts.length > 0 ? parts.join(" - ") : null;
   } catch { /* ignore */ }
   return null;
 }
@@ -629,13 +642,28 @@ async function getCompanyLocationInfo(companyId: string): Promise<{ city: string
 }
 
 async function getCategoriesForConnection(companyId: string, connectionId?: string): Promise<{ id: string; label: string; machine_category_id: string | null }[]> {
+  let conn: { bot_category_ids: string[] | null; location_id: string | null } | null = null;
   if (connectionId) {
-    const { data: conn } = await supabase
+    const { data } = await supabase
       .from("bot_whatsapp_conexoes")
       .select("bot_category_ids, location_id")
       .eq("id", connectionId)
       .maybeSingle();
-    const catIds = conn?.bot_category_ids as string[] | null;
+    conn = data as typeof conn;
+  } else {
+    const { data } = await supabase
+      .from("bot_whatsapp_conexoes")
+      .select("bot_category_ids, location_id")
+      .eq("company_id", companyId)
+      .eq("connection_status", "connected")
+      .order("updated_at", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    conn = data as typeof conn;
+  }
+
+  if (conn) {
+    const catIds = conn.bot_category_ids as string[] | null;
     if (catIds && catIds.length > 0) {
       const isUuid = (s: string) => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(s);
       const uuidIds = catIds.filter(isUuid);
@@ -670,10 +698,12 @@ async function getCategoriesForConnection(companyId: string, connectionId?: stri
         seen.add(key);
         return true;
       });
-      if (deduped.length > 0) return deduped;
+      return deduped;
     }
+    return [];
   }
-  // Fallback: first active category (by location if available)
+
+  // Fallback only when no bot connection exists for the company.
   let query = supabase
     .from("vehicle_categories")
     .select("id, label, machine_category_id")
@@ -746,6 +776,7 @@ async function createAndDispatchRide(
         passenger_phone: passengerPhone,
         origin,
         category: machineCategoryId || categoryLabel,
+        payment_method: paymentMethod ?? "",
         ...(destination ? { destination } : {}),
       }),
     });
@@ -1974,7 +2005,19 @@ Deno.serve(async (req: Request) => {
         await saveMessage(waInstance.company_id, rawPhone, "incoming", text, body);
       }
 
-      await handleIncomingMessage(waInstance.company_id, data, instance);
+      // For non-bot instances, find the company's active bot connection to pass connectionId
+      let regularConnectionId: string | undefined;
+      const { data: activeBotConn } = await supabase
+        .from("bot_whatsapp_conexoes")
+        .select("id")
+        .eq("company_id", waInstance.company_id)
+        .eq("connection_status", "connected")
+        .order("updated_at", { ascending: false })
+        .limit(1)
+        .maybeSingle();
+      if (activeBotConn) regularConnectionId = activeBotConn.id;
+
+      await handleIncomingMessage(waInstance.company_id, data, instance, regularConnectionId);
     }
 
     // Handle ride status updates from Machine API
@@ -2089,17 +2132,20 @@ async function handleIncomingMessage(companyId: string, data: Record<string, unk
 
   // Extract audio data
   let audio: { data: string; mimetype: string } | null = null;
-  if (message?.audioMessage) {
-    const aud = message.audioMessage as Record<string, unknown>;
-    const audioData = aud.base64
-      ? String(aud.base64)
-      : aud.url
-        ? String(aud.url)
-        : aud.mediaUrl
-          ? String(aud.mediaUrl)
-          : null;
-    const mimetype = aud.mimetype ? String(aud.mimetype) : "audio/ogg";
-    if (audioData) audio = { data: audioData, mimetype };
+  const audioMessage = message?.audioMessage as Record<string, unknown> | undefined;
+  const genericAudio = message?.audio as Record<string, unknown> | undefined;
+  const audioSource = audioMessage ?? genericAudio;
+  const audioData = audioSource?.base64
+    ?? audioSource?.data
+    ?? audioSource?.buffer
+    ?? audioSource?.url
+    ?? audioSource?.mediaUrl
+    ?? (data?.audio as Record<string, unknown> | undefined)?.base64
+    ?? data?.base64
+    ?? null;
+  const mimetype = audioSource?.mimetype ?? audioSource?.mimeType ?? data?.mimetype ?? "audio/ogg";
+  if (audioData && (typeof audioData === "string" || audioData instanceof String)) {
+    audio = { data: String(audioData), mimetype: String(mimetype) };
   }
 
   if (!rawPhone) return;
@@ -2222,8 +2268,14 @@ async function handleIncomingMessage(companyId: string, data: Record<string, unk
         }
       }
 
+      // Driver cancelled — send ride back to pending so a new driver can accept
       await supabase.from("rides").update({
-        status: "canceled",
+        status: "pending",
+        driver_name: null,
+        driver_phone: null,
+        vehicle_plate: null,
+        vehicle_model: null,
+        vehicle_color: null,
         updated_at: new Date().toISOString(),
       }).eq("id", driverRide.id);
 
@@ -2231,15 +2283,15 @@ async function handleIncomingMessage(companyId: string, data: Record<string, unk
         company_id: companyId,
         source: "whatsapp_webhook",
         level: "info",
-        message: `Corrida ${driverRide.id.slice(0, 8)} cancelada via WhatsApp pelo motorista (${cleanPhone})`,
+        message: `Motorista (${cleanPhone}) cancelou corrida ${driverRide.id.slice(0, 8)} — voltou para pendente`,
         ride_id: driverRide.id,
       });
 
-      // Notify passenger
+      // Notify passenger that a new driver is being sought
       try {
         const passengerPhone = toBrazilianWhatsAppNumber(driverRide.passenger_phone);
         const { provider, fields: f } = await getCompanyWhatsAppConfig(companyId);
-        const cancelMsg = "O motorista cancelou a corrida. Por favor, solicite uma nova viagem.";
+        const cancelMsg = "O motorista cancelou a corrida. Estamos procurando um novo motorista para voce. Aguarde.";
         await sendWhatsAppMessageWithProvider(provider, f, passengerPhone, cancelMsg);
         await saveMessage(companyId, passengerPhone, "outgoing", cancelMsg);
       } catch { /* best-effort */ }

@@ -82,6 +82,7 @@ interface DispatchBody {
   category?: string;
   price?: number;
   distance?: number;
+  payment_method?: string;
   driverPhone?: string;
   driverName?: string;
   machineOrderId?: string;
@@ -256,6 +257,7 @@ Deno.serve(async (req: Request) => {
         category: category ?? "",
         price: price ?? 0,
         distance: distance ?? 0,
+        payment_method: body.payment_method ?? "",
       });
     }
 
@@ -297,6 +299,7 @@ async function dispatchToMachine(
     category: string;
     price: number;
     distance: number;
+    payment_method: string;
   },
 ): Promise<Response> {
   const { data: credentials } = await supabase
@@ -358,7 +361,7 @@ async function dispatchToMachine(
       telefone: telefone,
       nome: data.passenger_name || "Passageiro",
     },
-    forma_pagamento: "D",
+    forma_pagamento: data.payment_method === "Cartao" ? "C" : data.payment_method === "Pix" ? "P" : "D",
     partida: {
       endereco: data.origin?.address || "Endereço não informado",
       bairro: extractBairro(data.origin?.address) || "Centro",
