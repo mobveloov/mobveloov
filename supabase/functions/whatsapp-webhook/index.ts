@@ -2108,7 +2108,17 @@ async function handleBotMessage(
         }
 
         if (looksLikeRideDetails) {
-          await handleBotMessage(companyId, cleanPhone, text, pushName, location, audio, connectionId, image);
+          try {
+            await handleBotMessage(companyId, cleanPhone, text, pushName, location, audio, connectionId, image);
+          } catch (err) {
+            const errMsg = err instanceof Error ? `${err.message}\n${err.stack ?? ""}` : String(err);
+            await supabase.from("admin_logs").insert({
+              company_id: companyId,
+              source: "whatsapp_webhook",
+              level: "error",
+              message: `handleBotMessage recursive CRASH (menu_inicial) for ${cleanPhone}: ${errMsg.slice(0, 1000)}`,
+            });
+          }
         } else {
           await sendBotMessage(companyId, cleanPhone, connectionId, msg("ask_address", "\u{1F4CD} Perfeito! Qual e o endereco de embarque? Voce pode digitar o endereco, enviar sua localizacao ou mandar um audio."));
         }
@@ -2906,7 +2916,17 @@ As mensagens do passageiro serao encaminhadas a partir de agora.`;
         .eq("id", conv.id);
 
       if (hasNewRequest) {
-        await handleBotMessage(companyId, cleanPhone, text, pushName, location, audio, connectionId, image);
+        try {
+          await handleBotMessage(companyId, cleanPhone, text, pushName, location, audio, connectionId, image);
+        } catch (err) {
+          const errMsg = err instanceof Error ? `${err.message}\n${err.stack ?? ""}` : String(err);
+          await supabase.from("admin_logs").insert({
+            company_id: companyId,
+            source: "whatsapp_webhook",
+            level: "error",
+            message: `handleBotMessage recursive CRASH (corrida_solicitada) for ${cleanPhone}: ${errMsg.slice(0, 1000)}`,
+          });
+        }
       } else {
         await sendInteractiveButtons(companyId, cleanPhone, connectionId, msg("welcome_back", "\u{1F44B} Ola! Como podemos ajudar?"), [{ id: "menu_corrida", label: "Solicitar corrida \u{1F695}" }, { id: "menu_suporte", label: "Suporte \u{1F4AC}" }]);
       }
@@ -4590,7 +4610,17 @@ async function handleIncomingMessage(companyId: string, data: Record<string, unk
     }
 
     if (botAllowed) {
-      await handleBotMessage(companyId, cleanPhone, text, pushName, location, audio, connectionId, image);
+      try {
+        await handleBotMessage(companyId, cleanPhone, text, pushName, location, audio, connectionId, image);
+      } catch (err) {
+        const errMsg = err instanceof Error ? `${err.message}\n${err.stack ?? ""}` : String(err);
+        await supabase.from("admin_logs").insert({
+          company_id: companyId,
+          source: "whatsapp_webhook",
+          level: "error",
+          message: `handleBotMessage CRASH for ${cleanPhone}: ${errMsg.slice(0, 1000)}`,
+        });
+      }
     }
     return;
   }
