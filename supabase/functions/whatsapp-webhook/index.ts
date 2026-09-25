@@ -2789,6 +2789,7 @@ async function handleIncomingMessage(companyId: string, data: Record<string, unk
   const normalizedText = (text ?? "").trim().toLowerCase();
 
   // Check if sender is the support number replying to a passenger in suporte mode
+  const supportExitWords = ["sair", "voltar", "corrida", "1", "menu", "fim", "encerrar", "encerra", "finalizar", "finaliza", "terminar", "termina", "encerrar suporte", "finalizar suporte"];
   const { data: companyForSupport } = await supabase
     .from("companies")
     .select("support_whatsapp")
@@ -2799,19 +2800,55 @@ async function handleIncomingMessage(companyId: string, data: Record<string, unk
     if (cleanPhone === supportPhone) {
       const { data: supportConv } = await supabase
         .from("bot_conversas")
-        .select("id, phone, passenger_name")
+        .select("id, phone, passenger_name, updated_at")
         .eq("company_id", companyId)
         .eq("state", "suporte")
         .order("updated_at", { ascending: false })
         .limit(1)
         .maybeSingle();
       if (supportConv) {
+        // Check if support agent wants to end the chat
+        if (supportExitWords.includes(normalizedText)) {
+          await supabase.from("bot_conversas")
+            .update({ state: "menu_inicial", updated_at: new Date().toISOString() })
+            .eq("id", supportConv.id);
+          try {
+            const { provider, fields: f } = await getCompanyWhatsAppConfig(companyId);
+            const closeMsg = "\u{1F44B} Suporte encerrado.\n\n1 - Solicitar corrida \u{1F695}\n2 - Suporte \u{1F4AC}\n\nResponda com o numero da opcao.";
+            await sendWhatsAppMessageWithProvider(provider, f, supportConv.phone, closeMsg);
+            await saveMessage(companyId, supportConv.phone, "outgoing", closeMsg);
+          } catch { /* best-effort */ }
+          return;
+        }
+
+        // Auto-close after 5 minutes of inactivity (from either side)
+        if (supportConv.updated_at) {
+          const lastActivity = new Date(supportConv.updated_at).getTime();
+          const idleMs = Date.now() - lastActivity;
+          if (idleMs > 5 * 60 * 1000) {
+            await supabase.from("bot_conversas")
+              .update({ state: "menu_inicial", updated_at: new Date().toISOString() })
+              .eq("id", supportConv.id);
+            try {
+              const { provider, fields: f } = await getCompanyWhatsAppConfig(companyId);
+              const timeoutMsg = "\u23F1\uFE0F O atendimento de suporte foi encerrado por inatividade.\n\n1 - Solicitar corrida \u{1F695}\n2 - Suporte \u{1F4AC}\n\nResponda com o numero da opcao.";
+              await sendWhatsAppMessageWithProvider(provider, f, supportConv.phone, timeoutMsg);
+              await saveMessage(companyId, supportConv.phone, "outgoing", timeoutMsg);
+            } catch { /* best-effort */ }
+            return;
+          }
+        }
+
+        // Forward message to passenger and refresh activity timestamp
         const replyMsg = `Mensagem do Suporte: ${text.trim()}`;
         try {
           const { provider, fields: f } = await getCompanyWhatsAppConfig(companyId);
           await sendWhatsAppMessageWithProvider(provider, f, supportConv.phone, replyMsg);
           await saveMessage(companyId, supportConv.phone, "outgoing", replyMsg);
         } catch { /* best-effort */ }
+        await supabase.from("bot_conversas")
+          .update({ updated_at: new Date().toISOString() })
+          .eq("id", supportConv.id);
       }
       return;
     }
