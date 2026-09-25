@@ -517,7 +517,7 @@ async function sendPassengerInfoToDriver(
   if (paymentMethod) {
     message += `\nPagamento: ${paymentMethod}`;
   }
-  message += `\n\nChat com Passageiro esta ativo\n\nPara cancelar, responda "cancelar".`;
+  message += `\n\nChat com Passageiro esta ativo\n\nPara cancelar, responda "cancelar" e confirme.`;
 
   const { provider, fields: f } = await getCompanyWhatsAppConfig(companyId);
 
@@ -917,7 +917,7 @@ async function sendWhatsAppNotification(
       }
     }
 
-    message += `\n\n\u{1F4AC} Chat com Motorista esta ativo\n\nPara cancelar, responda "cancelar".`;
+    message += `\n\n\u{1F4AC} Chat com Motorista esta ativo\n\nPara cancelar, responda "cancelar" e confirme.`;
   }
 
   const { provider, fields: f } = await getCompanyWhatsAppConfig(companyId);
