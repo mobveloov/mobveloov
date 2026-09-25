@@ -1,4 +1,4 @@
-// WhatsApp webhook: Evolution API events + bot ride-request flow — v9 with image/vision support (token required)
+// WhatsApp webhook: Evolution API events + bot ride-request flow — v9.1 with faster audio retries + LLM timeout
 // v8.2: bot conversation resets on ride end (cancel/complete) so passengers can request again. Cancel ride on dispatch failure.
 // v8.3: fix "volta pro inicio" — reuse passenger's message when transitioning from corrida_solicitada; detect ride-details in menu_inicial.
 import { createClient } from "npm:@supabase/supabase-js@2.57.4";
@@ -816,6 +816,8 @@ Output: {"quer_corrida":true,"tipo_veiculo":null,"eh_rua_oficial":false,"enderec
 ` : ""}`;
 
   try {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 15000);
     const resp = await fetch(apiUrl, {
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}` },
@@ -829,8 +831,14 @@ Output: {"quer_corrida":true,"tipo_veiculo":null,"eh_rua_oficial":false,"enderec
         max_tokens: 200,
         response_format: { type: "json_object" },
       }),
+      signal: controller.signal,
     });
-    if (!resp.ok) return null;
+    clearTimeout(timeout);
+    if (!resp.ok) {
+      const errBody = await resp.text().catch(() => "");
+      console.error(`[interpretMessageWithLLM] ${provider} HTTP ${resp.status}: ${errBody.slice(0, 300)}`);
+      return null;
+    }
     const data = await resp.json();
     const content = data?.choices?.[0]?.message?.content as string | undefined;
     if (!content) return null;
@@ -844,7 +852,8 @@ Output: {"quer_corrida":true,"tipo_veiculo":null,"eh_rua_oficial":false,"enderec
       endereco_destino: parsed.endereco_destino ?? null,
       texto_destino_motorista: parsed.texto_destino_motorista ?? null,
     };
-  } catch {
+  } catch (err) {
+    console.error(`[interpretMessageWithLLM] exception: ${err instanceof Error ? err.message : String(err)}`);
     return null;
   }
 }
@@ -3609,7 +3618,7 @@ async function handleIncomingMessage(companyId: string, data: Record<string, unk
               },
               convertToMp4: true,
             };
-            const delays = [1000, 3000, 5000];
+            const delays = [500, 1000];
             let mediaResp: Response | null = null;
             for (let attempt = 0; attempt <= delays.length; attempt++) {
               if (attempt > 0) await new Promise((r) => setTimeout(r, delays[attempt - 1]));
@@ -3748,7 +3757,7 @@ async function handleIncomingMessage(companyId: string, data: Record<string, unk
                 },
               },
             };
-            const delays = [1000, 3000, 5000];
+            const delays = [500, 1000];
             let mediaResp: Response | null = null;
             for (let attempt = 0; attempt <= delays.length; attempt++) {
               if (attempt > 0) await new Promise((r) => setTimeout(r, delays[attempt - 1]));
