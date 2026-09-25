@@ -2218,7 +2218,7 @@ async function handleIncomingMessage(companyId: string, data: Record<string, unk
   const audioMessage = message?.audioMessage as Record<string, unknown> | undefined;
   const genericAudio = message?.audio as Record<string, unknown> | undefined;
   const audioSource = audioMessage ?? genericAudio;
-  const audioData = audioSource?.base64
+  let audioData = audioSource?.base64
     ?? audioSource?.data
     ?? audioSource?.buffer
     ?? audioSource?.url
@@ -2227,6 +2227,52 @@ async function handleIncomingMessage(companyId: string, data: Record<string, unk
     ?? data?.base64
     ?? null;
   const mimetype = audioSource?.mimetype ?? audioSource?.mimeType ?? data?.mimetype ?? "audio/ogg";
+
+  // Evolution API often sends audioMessage with NO audio data in the webhook payload.
+  // We must call the getBase64FromMediaMessage endpoint to fetch the actual base64 audio.
+  if (!audioData && audioMessage && connectionId) {
+    try {
+      const botConfig = await getBotConnectionConfig(connectionId);
+      if (botConfig && (botConfig.provider === "evolution" || botConfig.provider === "veloov")) {
+        const evoUrl = botConfig.fields["evo_url"];
+        const evoToken = botConfig.fields["evo_token"];
+        const evoInstance = botConfig.fields["evo_instance"];
+        if (evoUrl && evoToken && evoInstance) {
+          const msgKeyId = key?.id ? String(key.id) : (data?.message_id ? String(data.message_id) : "");
+          if (msgKeyId) {
+            const mediaResp = await fetch(`${evoUrl}/chat/getBase64FromMediaMessage/${evoInstance}`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json", apikey: evoToken },
+              body: JSON.stringify({
+                message: { key: { id: msgKeyId } },
+                convertToMp4: false,
+              }),
+            });
+            if (mediaResp.ok) {
+              const mediaData = await mediaResp.json() as Record<string, unknown>;
+              audioData = mediaData.base64 ?? mediaData.base64Media ?? null;
+            } else {
+              const errBody = await mediaResp.text().catch(() => "");
+              await supabase.from("admin_logs").insert({
+                company_id: companyId,
+                source: "whatsapp_webhook",
+                level: "error",
+                message: `getBase64FromMediaMessage failed: HTTP ${mediaResp.status} — ${errBody.slice(0, 200)}`,
+              });
+            }
+          }
+        }
+      }
+    } catch (err) {
+      await supabase.from("admin_logs").insert({
+        company_id: companyId,
+        source: "whatsapp_webhook",
+        level: "error",
+        message: `getBase64FromMediaMessage exception: ${err instanceof Error ? err.message : String(err)}`,
+      });
+    }
+  }
+
   if (audioData && (typeof audioData === "string" || audioData instanceof String)) {
     let audioDataStr = String(audioData);
     // If it's a URL (not base64 and not a data: URI), download it with Evolution API auth
@@ -2246,17 +2292,38 @@ async function handleIncomingMessage(companyId: string, data: Record<string, unk
           for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
           audioDataStr = btoa(binary);
         } else {
-          console.error(`[handleIncomingMessage] Failed to download audio URL: HTTP ${audioResp.status}`);
+          await supabase.from("admin_logs").insert({
+            company_id: companyId,
+            source: "whatsapp_webhook",
+            level: "error",
+            message: `Audio URL download failed: HTTP ${audioResp.status}`,
+          });
         }
       } catch (err) {
-        console.error(`[handleIncomingMessage] Audio download exception: ${err instanceof Error ? err.message : String(err)}`);
+        await supabase.from("admin_logs").insert({
+          company_id: companyId,
+          source: "whatsapp_webhook",
+          level: "error",
+          message: `Audio URL download exception: ${err instanceof Error ? err.message : String(err)}`,
+        });
       }
     }
     audio = { data: audioDataStr, mimetype: String(mimetype) };
   }
 
   if (!rawPhone) return;
-  if (!text && !location && !audio) return;
+  if (!text && !location && !audio) {
+    // Log when we receive an audioMessage but couldn't extract any audio data
+    if (audioMessage && !audio) {
+      await supabase.from("admin_logs").insert({
+        company_id: companyId,
+        source: "whatsapp_webhook",
+        level: "warn",
+        message: `Audio recebido mas sem dados extraiveis. connectionId=${connectionId ?? "none"}, keys=[${Object.keys(audioMessage).join(",")}]`,
+      });
+    }
+    return;
+  }
 
   const cleanPhone = rawPhone.replace(/\D/g, "");
 
@@ -2265,6 +2332,13 @@ async function handleIncomingMessage(companyId: string, data: Record<string, unk
     if (transcribed?.trim()) {
       text = transcribed.trim();
       audio = null;
+    } else {
+      await supabase.from("admin_logs").insert({
+        company_id: companyId,
+        source: "whatsapp_webhook",
+        level: "warn",
+        message: `Transcricao falhou para ${cleanPhone}. audio.data length=${audio.data.length}, mimetype=${audio.mimetype}`,
+      });
     }
   }
 
