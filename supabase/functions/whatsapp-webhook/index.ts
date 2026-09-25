@@ -1790,18 +1790,18 @@ As mensagens do passageiro serao encaminhadas a partir de agora.`;
           isTotemFixo: !!llmCtx.pickupAddress,
         });
         if (llmResult && llmResult.endereco_origem) {
-          addressText = llmResult.endereco_origem;
-          combinedDest = llmResult.endereco_destino ?? null;
-          originReference = (llmResult.texto_embarque_motorista ?? llmResult.endereco_origem).toUpperCase();
-          destinationReference = (llmResult.texto_destino_motorista ?? null) ? (llmResult.texto_destino_motorista as string).toUpperCase() : null;
+          addressText = normalizePlaceText(llmResult.endereco_origem);
+          combinedDest = normalizePlaceText(llmResult.endereco_destino);
+          originReference = normalizePlaceText(llmResult.texto_embarque_motorista ?? llmResult.endereco_origem);
+          destinationReference = normalizePlaceText(llmResult.texto_destino_motorista);
           llmIsRuaOficial = !!llmResult.eh_rua_oficial;
         } else {
           const combined = parseCombinedAddress(text.trim());
           if (combined) {
-            addressText = combined.pickup;
-            combinedDest = combined.destination;
-            originReference = combined.pickup.toUpperCase();
-            destinationReference = combined.destination.toUpperCase();
+            addressText = normalizePlaceText(combined.pickup);
+            combinedDest = normalizePlaceText(combined.destination);
+            originReference = normalizePlaceText(combined.pickup);
+            destinationReference = normalizePlaceText(combined.destination);
           } else {
             addressText = normalizePlaceText(text);
           }
