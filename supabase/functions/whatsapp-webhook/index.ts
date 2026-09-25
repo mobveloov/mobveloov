@@ -623,50 +623,25 @@ async function decryptWhatsAppAudio(
     message: `CDN download: ${encryptedBytes.length} bytes`,
   });
 
-  // HKDF: expand mediaKey using WhatsApp's app-specific info
-  // WhatsApp uses: "WhatsApp Audio Keys" for audio, with no salt
+  // HKDF: derive 112 bytes from mediaKey using WhatsApp's app-specific info
+  // WhatsApp uses: "WhatsApp Audio Keys" for audio, with zero salt
   const info = new TextEncoder().encode("WhatsApp Audio Keys");
-  const salt = new Uint8Array(32); // zero-filled salt
+  const salt = new Uint8Array(32);
 
-  // Import mediaKey as raw HMAC key for HKDF extract step
-  const baseKey = await crypto.subtle.importKey(
+  const hkdfKey = await crypto.subtle.importKey(
     "raw",
     mediaKey as BufferSource,
-    { name: "HMAC", hash: "SHA-256" },
+    "HKDF",
     false,
-    ["sign"],
+    ["deriveBits"],
   );
-
-  // HKDF-Extract: PRK = HMAC(salt, IKM)
-  const prk = await crypto.subtle.sign("HMAC", baseKey, salt as BufferSource);
-
-  // HKDF-Expand: expand PRK to 112 bytes using info
-  // L = 112, hashLen = 32, so N = ceil(112/32) = 4
-  const hashLen = 32;
-  const L = 112;
-  const N = Math.ceil(L / hashLen);
-  let okm = new Uint8Array(0);
-  let prev = new Uint8Array(0);
-  for (let i = 1; i <= N; i++) {
-    const input = new Uint8Array(prev.length + info.length + 1);
-    input.set(prev, 0);
-    input.set(info, prev.length);
-    input[prev.length + info.length] = i;
-    const prkKey = await crypto.subtle.importKey(
-      "raw",
-      prk as BufferSource,
-      { name: "HMAC", hash: "SHA-256" },
-      false,
-      ["sign"],
-    );
-    const t = await crypto.subtle.sign("HMAC", prkKey, input as BufferSource);
-    prev = new Uint8Array(t);
-    const newOkm = new Uint8Array(okm.length + prev.length);
-    newOkm.set(okm, 0);
-    newOkm.set(prev, okm.length);
-    okm = newOkm;
-  }
-  const expandedKey = okm.slice(0, L);
+  const expandedKey = new Uint8Array(
+    await crypto.subtle.deriveBits(
+      { name: "HKDF", hash: "SHA-256", salt: salt as BufferSource, info: info as BufferSource },
+      hkdfKey,
+      112 * 8,
+    ),
+  );
 
   // Split: iv (16) + cipherKey (32) + macKey (32) + refKey (32)
   const iv = expandedKey.slice(0, 16);
@@ -2503,46 +2478,41 @@ async function handleIncomingMessage(companyId: string, data: Record<string, unk
         if (evoUrl && evoToken && evoInstance) {
           const msgKeyId = key?.id ? String(key.id) : (data?.message_id ? String(data.message_id) : "");
           if (msgKeyId) {
-            await new Promise((r) => setTimeout(r, 500));
-            let mediaResp = await fetch(`${evoUrl}/chat/getBase64FromMediaMessage/${evoInstance}`, {
-              method: "POST",
-              headers: { "Content-Type": "application/json", apikey: evoToken },
-              body: JSON.stringify({
-                message: { key: { id: msgKeyId } },
-                convertToMp4: true,
-              }),
-            });
-            if (!mediaResp.ok) {
-              await new Promise((r) => setTimeout(r, 1500));
+            const requestBody = {
+              message: {
+                key: {
+                  remoteJid: key?.remoteJid ? String(key.remoteJid) : undefined,
+                  fromMe: false,
+                  id: msgKeyId,
+                },
+              },
+              convertToMp4: true,
+            };
+            const delays = [1000, 3000, 5000];
+            let mediaResp: Response | null = null;
+            for (let attempt = 0; attempt <= delays.length; attempt++) {
+              if (attempt > 0) await new Promise((r) => setTimeout(r, delays[attempt - 1]));
               mediaResp = await fetch(`${evoUrl}/chat/getBase64FromMediaMessage/${evoInstance}`, {
                 method: "POST",
                 headers: { "Content-Type": "application/json", apikey: evoToken },
-                body: JSON.stringify({
-                  message: {
-                    key: {
-                      remoteJid: key?.remoteJid ? String(key.remoteJid) : undefined,
-                      fromMe: false,
-                      id: msgKeyId,
-                    },
-                  },
-                  convertToMp4: true,
-                }),
+                body: JSON.stringify(requestBody),
               });
+              if (mediaResp.ok) break;
             }
-            if (mediaResp.ok) {
+            if (mediaResp && mediaResp.ok) {
               const mediaData = await mediaResp.json() as Record<string, unknown>;
               const mp4Base64 = mediaData.base64 ?? mediaData.base64Media ?? null;
               if (mp4Base64) {
                 audioData = mp4Base64;
                 audioMimeType = "audio/mp4";
               }
-            } else {
+            } else if (mediaResp) {
               const errBody = await mediaResp.text().catch(() => "");
               await supabase.from("admin_logs").insert({
                 company_id: companyId,
                 source: "whatsapp_webhook",
                 level: "error",
-                message: `getBase64FromMediaMessage failed: HTTP ${mediaResp.status} — ${errBody.slice(0, 200)}`,
+                message: `getBase64FromMediaMessage failed after retries: HTTP ${mediaResp.status} — ${errBody.slice(0, 200)}`,
               });
             }
           }
