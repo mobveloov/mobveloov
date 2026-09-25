@@ -918,7 +918,37 @@ function blobToBase64(blob: Blob): Promise<string> {
   });
 }
 
-async function getCompanyLocationInfo(companyId: string): Promise<{ city: string | null; state: string | null; lat: number | null; lng: number | null; slug: string | null }> {
+async function getCompanyLocationInfo(companyId: string, connectionId?: string): Promise<{ city: string | null; state: string | null; lat: number | null; lng: number | null; slug: string | null }> {
+  // If a bot connection is provided, try its linked location first (per-totem city)
+  if (connectionId) {
+    const { data: conn } = await supabase
+      .from("bot_whatsapp_conexoes")
+      .select("location_id")
+      .eq("id", connectionId)
+      .maybeSingle();
+    if (conn?.location_id) {
+      const { data: loc } = await supabase
+        .from("company_locations")
+        .select("city, state, lat, lng")
+        .eq("id", conn.location_id)
+        .maybeSingle();
+      if (loc) {
+        const { data: company } = await supabase
+          .from("companies")
+          .select("slug")
+          .eq("id", companyId)
+          .maybeSingle();
+        return {
+          city: loc.city ?? null,
+          state: loc.state ?? null,
+          lat: loc.lat ?? null,
+          lng: loc.lng ?? null,
+          slug: company?.slug ?? null,
+        };
+      }
+    }
+  }
+
   const { data: cred } = await supabase
     .from("company_credentials")
     .select("city, state, lat, lng")
@@ -1194,6 +1224,75 @@ async function handleBotMessage(
 
   const normalizedText = (text ?? "").trim().toLowerCase();
 
+  // Global cancel handler — works in any bot state. Cancels active ride and resets conversation.
+  if (normalizedText.includes("cancel") || normalizedText === "cancelar" || normalizedText === "cancela") {
+    // Find active ride for this passenger
+    const { data: activeRide } = await supabase
+      .from("rides")
+      .select("id, status, machine_order_id, passenger_name, company_id")
+      .eq("company_id", companyId)
+      .in("status", ["pending", "accepted", "en_route", "in_progress"])
+      .order("created_at", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+
+    if (activeRide) {
+      // Cancel in Machine API if applicable
+      if (activeRide.machine_order_id) {
+        const { data: credentials } = await supabase
+          .from("company_credentials")
+          .select("machine_api_url, machine_api_key, taximetro_username, taximetro_password")
+          .eq("company_id", companyId)
+          .maybeSingle();
+        const { data: tenantRows } = await supabase
+          .from("tenant_secrets")
+          .select("secret_name, secret_value")
+          .eq("tenant_id", companyId);
+        const tenantMap = new Map(
+          (tenantRows ?? []).map((r: { secret_name: string; secret_value: string }) => [r.secret_name, r.secret_value])
+        );
+        const baseUrl = (credentials?.machine_api_url || "https://api.taximachine.com.br").replace(/\/+$/, "");
+        const apiKey = tenantMap.get("MACHINE_API_KEY") || credentials?.machine_api_key || "";
+        const user = tenantMap.get("TAXIMETRO_USER") || credentials?.taximetro_username || "";
+        const pass = tenantMap.get("TAXIMETRO_PASSWORD") || credentials?.taximetro_password || "";
+        if (apiKey && user && pass) {
+          try {
+            await fetch(`${baseUrl}/api/v2/integracao/corridas/${activeRide.machine_order_id}/cancelar`, {
+              method: "POST",
+              headers: {
+                "Content-Type": "application/json",
+                "api-key": apiKey,
+                "Authorization": `Basic ${btoa(`${user}:${pass}`)}`,
+              },
+              body: JSON.stringify({ motivo_id: 1 }),
+            });
+          } catch { /* best-effort */ }
+        }
+      }
+
+      await supabase.from("rides").update({
+        status: "canceled",
+        updated_at: new Date().toISOString(),
+      }).eq("id", activeRide.id);
+
+      await supabase.from("admin_logs").insert({
+        company_id: companyId,
+        source: "whatsapp_bot",
+        level: "info",
+        message: `Corrida ${activeRide.id.slice(0, 8)} cancelada via bot por ${activeRide.passenger_name} (${cleanPhone})`,
+        ride_id: activeRide.id,
+      });
+    }
+
+    // Reset bot conversation so passenger can request a new ride
+    await supabase.from("bot_conversas")
+      .update({ state: "menu_inicial", ride_id: null, address_text: null, address_lat: null, address_lng: null, address_formatted: null, destination_text: null, destination_lat: null, destination_lng: null, destination_formatted: null, selected_category_id: null, selected_payment_method: null, updated_at: new Date().toISOString() })
+      .eq("id", conv.id);
+
+    await sendBotMessage(companyId, cleanPhone, connectionId, "\u2705 Sua corrida foi cancelada com sucesso. Para solicitar uma nova viagem, envie uma mensagem.");
+    return;
+  }
+
   switch (conv.state) {
     case "menu_inicial":
     case "inicio": {
@@ -1334,7 +1433,7 @@ As mensagens do passageiro serao encaminhadas a partir de agora.`;
           finalLng = suggestionMatch.lng;
         } else {
           // Geocode the suggestion's real address
-          const companyLoc = await getCompanyLocationInfo(companyId);
+          const companyLoc = await getCompanyLocationInfo(companyId, connectionId);
           const geocoded = await geocodeAddress(suggestionMatch.address_text, companyLoc.city ?? undefined, companyLoc.state ?? undefined);
           if (geocoded) {
             finalLat = geocoded.lat;
@@ -1356,7 +1455,7 @@ As mensagens do passageiro serao encaminhadas a partir de agora.`;
         finalAddress = addressText;
       } else {
         // Geocode the text address
-        const companyLoc = await getCompanyLocationInfo(companyId);
+        const companyLoc = await getCompanyLocationInfo(companyId, connectionId);
         const geocoded = await geocodeAddress(addressText, companyLoc.city ?? undefined, companyLoc.state ?? undefined);
 
         if (geocoded) {
@@ -1469,7 +1568,7 @@ As mensagens do passageiro serao encaminhadas a partir de agora.`;
               finalDestLat = destSuggestionMatch.lat;
               finalDestLng = destSuggestionMatch.lng;
             } else {
-              const companyLoc = await getCompanyLocationInfo(companyId);
+              const companyLoc = await getCompanyLocationInfo(companyId, connectionId);
               const geocoded = await geocodeAddress(destSuggestionMatch.address_text, companyLoc.city ?? undefined, companyLoc.state ?? undefined);
               if (geocoded) {
                 finalDestLat = geocoded.lat;
@@ -1485,7 +1584,7 @@ As mensagens do passageiro serao encaminhadas a partir de agora.`;
             finalDestLng = destLng!;
             finalDestAddress = destText;
           } else {
-            const companyLoc = await getCompanyLocationInfo(companyId);
+            const companyLoc = await getCompanyLocationInfo(companyId, connectionId);
             const geocoded = await geocodeAddress(destText, companyLoc.city ?? undefined, companyLoc.state ?? undefined);
             if (geocoded) {
               finalDestLat = geocoded.lat;
@@ -1572,7 +1671,7 @@ As mensagens do passageiro serao encaminhadas a partir de agora.`;
           finalDestLat = destSuggestionMatch.lat;
           finalDestLng = destSuggestionMatch.lng;
         } else {
-          const companyLoc = await getCompanyLocationInfo(companyId);
+          const companyLoc = await getCompanyLocationInfo(companyId, connectionId);
           const geocoded = await geocodeAddress(destSuggestionMatch.address_text, companyLoc.city ?? undefined, companyLoc.state ?? undefined);
           if (geocoded) {
             finalDestLat = geocoded.lat;
@@ -1588,7 +1687,7 @@ As mensagens do passageiro serao encaminhadas a partir de agora.`;
         finalDestLng = destLng!;
         finalDestAddress = destText;
       } else {
-        const companyLoc = await getCompanyLocationInfo(companyId);
+        const companyLoc = await getCompanyLocationInfo(companyId, connectionId);
         const geocoded = await geocodeAddress(destText, companyLoc.city ?? undefined, companyLoc.state ?? undefined);
         if (geocoded) {
           finalDestLat = geocoded.lat;
@@ -1617,7 +1716,7 @@ As mensagens do passageiro serao encaminhadas a partir de agora.`;
 
     case "aguardando_confirmacao": {
       if (["sim", "sim.", "s", "confirmo", "confirmar", "sim!"].includes(normalizedText)) {
-        const companyLoc = await getCompanyLocationInfo(companyId);
+        const companyLoc = await getCompanyLocationInfo(companyId, connectionId);
         if (!companyLoc.slug) {
           await sendBotMessage(companyId, cleanPhone, connectionId, "Erro: empresa nao configurada corretamente. Tente novamente mais tarde.");
           return;
@@ -1690,7 +1789,7 @@ As mensagens do passageiro serao encaminhadas a partir de agora.`;
         return;
       }
 
-      const companyLoc = await getCompanyLocationInfo(companyId);
+      const companyLoc = await getCompanyLocationInfo(companyId, connectionId);
       if (!companyLoc.slug) {
         await sendBotMessage(companyId, cleanPhone, connectionId, "Erro: empresa nao configurada corretamente. Tente novamente mais tarde.");
         return;
@@ -2637,8 +2736,20 @@ async function handleIncomingMessage(companyId: string, data: Record<string, unk
   const cleanPhone = rawPhone.replace(/\D/g, "");
 
   if (!text && audio) {
+    await supabase.from("admin_logs").insert({
+      company_id: companyId,
+      source: "whatsapp_webhook",
+      level: "info",
+      message: `Iniciando transcricao: audio.data length=${audio.data.length}, mimetype=${audio.mimetype}`,
+    });
     const transcribed = await transcribeAudio(audio.data, audio.mimetype, companyId);
     if (transcribed?.trim()) {
+      await supabase.from("admin_logs").insert({
+        company_id: companyId,
+        source: "whatsapp_webhook",
+        level: "info",
+        message: `Transcricao OK: "${transcribed.trim().slice(0, 100)}"`,
+      });
       text = transcribed.trim();
       audio = null;
     } else {
@@ -3021,10 +3132,16 @@ async function handleIncomingMessage(companyId: string, data: Record<string, unk
     ride_id: ride.id,
   });
 
+  // Reset bot conversation so passenger can request a new ride
+  await supabase.from("bot_conversas")
+    .update({ state: "menu_inicial", ride_id: null, address_text: null, address_lat: null, address_lng: null, address_formatted: null, destination_text: null, destination_lat: null, destination_lng: null, destination_formatted: null, selected_category_id: null, selected_payment_method: null, updated_at: new Date().toISOString() })
+    .eq("phone", cleanPhone)
+    .eq("company_id", companyId);
+
   // Send confirmation message back to passenger via global WhatsApp provider
   try {
     const { provider, fields: f } = await getCompanyWhatsAppConfig(companyId);
-    const confirmMsg = "Sua corrida foi cancelada com sucesso. Para solicitar uma nova viagem, use o totem.";
+    const confirmMsg = "Sua corrida foi cancelada com sucesso. Para solicitar uma nova viagem, envie uma mensagem.";
     await sendWhatsAppMessageWithProvider(provider, f, cleanPhone, confirmMsg);
     await saveMessage(companyId, cleanPhone, "outgoing", confirmMsg);
   } catch {
@@ -3035,3 +3152,5 @@ async function handleIncomingMessage(companyId: string, data: Record<string, unk
 
 // v2-sync 1790314381
 // force redeploy Fri Sep 25 13:21:45 UTC 2026
+// v8.3 cancel+autocomplete fix Fri Sep 25 13:32:15 UTC 2026
+// v8.4 regex fix Fri Sep 25 13:33:11 UTC 2026
