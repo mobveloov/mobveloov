@@ -586,8 +586,10 @@ async function transcribeAudio(audioBase64OrUrl: string, mimetype: string, compa
       // Derive a valid file extension from the mimetype so Groq accepts the payload
       const ext = normalizeAudioExt(mimetype);
       const fileName = `audio.${ext}`;
+      const audioBytes = new Uint8Array(await audioBlob.arrayBuffer());
+      const signature = Array.from(audioBytes.slice(0, 4)).map((byte) => String.fromCharCode(byte)).join("");
       const formData = new FormData();
-      formData.append("file", audioBlob, fileName);
+      formData.append("file", new Blob([audioBytes], { type: normalizeAudioMime(mimetype) }), fileName);
       formData.append("model", provider === "openai" ? "whisper-1" : "whisper-large-v3");
       formData.append("language", "pt");
       const resp = await fetch(apiUrl, {
@@ -598,6 +600,14 @@ async function transcribeAudio(audioBase64OrUrl: string, mimetype: string, compa
       if (!resp.ok) {
         const errBody = await resp.text().catch(() => "");
         console.error(`[transcribeAudio] ${provider} HTTP ${resp.status}: ${errBody.slice(0, 500)}`);
+        if (companyId) {
+          await supabase.from("admin_logs").insert({
+            company_id: companyId,
+            source: "whatsapp_webhook",
+            level: "error",
+            message: `Falha na transcricao: HTTP ${resp.status}, arquivo=${fileName}, bytes=${audioBytes.length}, assinatura=${JSON.stringify(signature)}, resposta=${errBody.slice(0, 300)}`,
+          });
+        }
         return null;
       }
       const data = await resp.json();
