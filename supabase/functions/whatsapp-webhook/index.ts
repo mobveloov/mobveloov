@@ -415,9 +415,20 @@ async function sendBotMessage(companyId: string, phone: string, connectionId: st
   }
 }
 
-async function geocodeAddress(address: string, city?: string, state?: string): Promise<{ lat: number; lng: number; formatted: string } | null> {
+async function geocodeAddress(address: string, city?: string, state?: string, biasLat?: number, biasLng?: number): Promise<{ lat: number; lng: number; formatted: string } | null> {
   const q = city ? `${address}, ${city}` : address;
-  const url = `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(q)}&format=json&limit=1&countrycodes=br&addressdetails=1`;
+  let url = `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(q)}&format=json&limit=1&countrycodes=br&addressdetails=1`;
+  // Add viewbox (proximity bias) when company coordinates are available — restricts
+  // search to ~50km around the company's city so informal/local addresses resolve
+  // correctly instead of matching random global results.
+  if (biasLat != null && biasLng != null) {
+    const delta = 0.45; // ~50km
+    const left = biasLng - delta;
+    const right = biasLng + delta;
+    const top = biasLat + delta;
+    const bottom = biasLat - delta;
+    url += `&viewbox=${left},${top},${right},${bottom}&bounded=1`;
+  }
   for (let attempt = 0; attempt < 2; attempt++) {
     try {
       const resp = await fetch(url, { headers: { "User-Agent": "VeloovBot/1.0 (contato@veloov.com.br)" } });
@@ -919,6 +930,41 @@ function blobToBase64(blob: Blob): Promise<string> {
   });
 }
 
+// Splits a combined message like "Quero um carro na rua Arthur mesquita 57 vou para amarelinha do centro"
+// into { pickup: "rua Arthur mesquita 57", destination: "amarelinha do centro" }
+// Returns null if no destination separator is found.
+function parseCombinedAddress(rawText: string): { pickup: string; destination: string } | null {
+  const deaccented = rawText.normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+  // Common separators passengers use to split pickup from destination
+  const separators = [
+    /\bvou para\b/i,
+    /\bquero ir para\b/i,
+    /\bquero ir pra\b/i,
+    /\bir para\b/i,
+    /\bir pra\b/i,
+    /\bdestino\b/i,
+    /\bpara a\b/i,
+    /\bpara o\b/i,
+    /\bpra\b/i,
+  ];
+  for (const sep of separators) {
+    const match = deaccented.match(sep);
+    if (match && match.index != null) {
+      const sepEnd = match.index + match[0].length;
+      let pickup = deaccented.slice(0, match.index).trim();
+      let destination = deaccented.slice(sepEnd).trim();
+      // Remove leading "quero um carro", "quero uma corrida", "preciso de carro" etc. from pickup
+      pickup = pickup.replace(/^(quero (um carro|uma corrida)|preciso (de|de um) carro|gostaria de (um|uma) (corrida|carro))\b/i, "").trim();
+      // Remove leading "na" / "no" / "em" from pickup (e.g. "na rua Arthur" -> "rua Arthur")
+      pickup = pickup.replace(/^(na|no|em)\s+/i, "").trim();
+      if (pickup && destination) {
+        return { pickup, destination };
+      }
+    }
+  }
+  return null;
+}
+
 async function getCompanyLocationInfo(companyId: string, connectionId?: string): Promise<{ city: string | null; state: string | null; lat: number | null; lng: number | null; slug: string | null }> {
   // If a bot connection is provided, try its linked location first (per-totem city)
   if (connectionId) {
@@ -1379,6 +1425,7 @@ As mensagens do passageiro serao encaminhadas a partir de agora.`;
       let addressText: string | null = null;
       let lat: number | null = null;
       let lng: number | null = null;
+      let combinedDest: string | null = null;
 
       if (location) {
         lat = location.lat;
@@ -1395,7 +1442,15 @@ As mensagens do passageiro serao encaminhadas a partir de agora.`;
           return;
         }
       } else if (text) {
-        addressText = text.trim();
+        // Check if the message contains both pickup AND destination (e.g. "na rua X vou para Y")
+        const combined = parseCombinedAddress(text.trim());
+        if (combined) {
+          addressText = combined.pickup;
+          combinedDest = combined.destination;
+          await sendBotMessage(companyId, cleanPhone, connectionId, `Entendi:\nEmbarque: ${combined.pickup}\nDestino: ${combined.destination}\nValidando enderecos...`);
+        } else {
+          addressText = text.trim();
+        }
       }
 
       if (!addressText) {
@@ -1435,7 +1490,7 @@ As mensagens do passageiro serao encaminhadas a partir de agora.`;
         } else {
           // Geocode the suggestion's real address
           const companyLoc = await getCompanyLocationInfo(companyId, connectionId);
-          const geocoded = await geocodeAddress(suggestionMatch.address_text, companyLoc.city ?? undefined, companyLoc.state ?? undefined);
+          const geocoded = await geocodeAddress(suggestionMatch.address_text, companyLoc.city ?? undefined, companyLoc.state ?? undefined, companyLoc.lat ?? undefined, companyLoc.lng ?? undefined);
           if (geocoded) {
             finalLat = geocoded.lat;
             finalLng = geocoded.lng;
@@ -1457,7 +1512,7 @@ As mensagens do passageiro serao encaminhadas a partir de agora.`;
       } else {
         // Geocode the text address
         const companyLoc = await getCompanyLocationInfo(companyId, connectionId);
-        const geocoded = await geocodeAddress(addressText, companyLoc.city ?? undefined, companyLoc.state ?? undefined);
+        const geocoded = await geocodeAddress(addressText, companyLoc.city ?? undefined, companyLoc.state ?? undefined, companyLoc.lat ?? undefined, companyLoc.lng ?? undefined);
 
         if (geocoded) {
           finalLat = geocoded.lat;
@@ -1488,12 +1543,37 @@ As mensagens do passageiro serao encaminhadas a partir de agora.`;
         })
         .eq("id", conv.id);
 
+      // If the passenger included a destination in the same message, geocode it
+      // now and skip straight to confirmation instead of asking again.
+      if (combinedDest) {
+        const companyLoc2 = await getCompanyLocationInfo(companyId, connectionId);
+        const destGeocoded = await geocodeAddress(combinedDest, companyLoc2.city ?? undefined, companyLoc2.state ?? undefined, companyLoc2.lat ?? undefined, companyLoc2.lng ?? undefined);
+        if (destGeocoded) {
+          await supabase.from("bot_conversas")
+            .update({
+              state: "aguardando_confirmacao",
+              destination_text: combinedDest,
+              destination_lat: destGeocoded.lat,
+              destination_lng: destGeocoded.lng,
+              destination_formatted: destGeocoded.formatted,
+              updated_at: new Date().toISOString(),
+            })
+            .eq("id", conv.id);
+          await sendBotMessage(companyId, cleanPhone, connectionId, msg("confirm_address", `\u2705 Confirma os dados da corrida?\n\n\u{1F4CD} Embarque: ${finalAddress}\n\u{1F3AF} Destino: ${destGeocoded.formatted}\n\nResponda SIM para confirmar ou NAO para corrigir.`));
+          break;
+        }
+        // If destination geocoding failed, fall through to ask_destination so the
+        // passenger can retry or choose "no destination"
+      }
+
       await sendBotMessage(companyId, cleanPhone, connectionId, msg("ask_destination", "\u{1F3AF} Para onde voce vai?\n\n1 - Digitar o Endereco de Destino \u{1F4DD}\n2 - Nao informar Endereco \u{1F6AB}\n\nResponda com o numero da opcao."));
       break;
     }
 
     case "aguardando_destino": {
-      if (normalizedText === "2" || normalizedText === "nao" || normalizedText === "nao informar") {
+      const noDestPhrases = ["2", "nao", "nao informar", "nao informar destino", "nao quero informar", "sem destino"];
+      const deaccented = normalizedText.normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+      if (noDestPhrases.includes(deaccented) || noDestPhrases.includes(normalizedText)) {
         await supabase.from("bot_conversas")
           .update({
             state: "aguardando_confirmacao",
@@ -1570,7 +1650,7 @@ As mensagens do passageiro serao encaminhadas a partir de agora.`;
               finalDestLng = destSuggestionMatch.lng;
             } else {
               const companyLoc = await getCompanyLocationInfo(companyId, connectionId);
-              const geocoded = await geocodeAddress(destSuggestionMatch.address_text, companyLoc.city ?? undefined, companyLoc.state ?? undefined);
+              const geocoded = await geocodeAddress(destSuggestionMatch.address_text, companyLoc.city ?? undefined, companyLoc.state ?? undefined, companyLoc.lat ?? undefined, companyLoc.lng ?? undefined);
               if (geocoded) {
                 finalDestLat = geocoded.lat;
                 finalDestLng = geocoded.lng;
@@ -1586,7 +1666,7 @@ As mensagens do passageiro serao encaminhadas a partir de agora.`;
             finalDestAddress = destText;
           } else {
             const companyLoc = await getCompanyLocationInfo(companyId, connectionId);
-            const geocoded = await geocodeAddress(destText, companyLoc.city ?? undefined, companyLoc.state ?? undefined);
+            const geocoded = await geocodeAddress(destText, companyLoc.city ?? undefined, companyLoc.state ?? undefined, companyLoc.lat ?? undefined, companyLoc.lng ?? undefined);
             if (geocoded) {
               finalDestLat = geocoded.lat;
               finalDestLng = geocoded.lng;
@@ -1673,7 +1753,7 @@ As mensagens do passageiro serao encaminhadas a partir de agora.`;
           finalDestLng = destSuggestionMatch.lng;
         } else {
           const companyLoc = await getCompanyLocationInfo(companyId, connectionId);
-          const geocoded = await geocodeAddress(destSuggestionMatch.address_text, companyLoc.city ?? undefined, companyLoc.state ?? undefined);
+          const geocoded = await geocodeAddress(destSuggestionMatch.address_text, companyLoc.city ?? undefined, companyLoc.state ?? undefined, companyLoc.lat ?? undefined, companyLoc.lng ?? undefined);
           if (geocoded) {
             finalDestLat = geocoded.lat;
             finalDestLng = geocoded.lng;
@@ -1689,7 +1769,7 @@ As mensagens do passageiro serao encaminhadas a partir de agora.`;
         finalDestAddress = destText;
       } else {
         const companyLoc = await getCompanyLocationInfo(companyId, connectionId);
-        const geocoded = await geocodeAddress(destText, companyLoc.city ?? undefined, companyLoc.state ?? undefined);
+        const geocoded = await geocodeAddress(destText, companyLoc.city ?? undefined, companyLoc.state ?? undefined, companyLoc.lat ?? undefined, companyLoc.lng ?? undefined);
         if (geocoded) {
           finalDestLat = geocoded.lat;
           finalDestLng = geocoded.lng;
@@ -2874,7 +2954,7 @@ async function handleIncomingMessage(companyId: string, data: Record<string, unk
 
         // Geocode the pickup address
         const companyLoc = await getCompanyLocationInfo(companyId, connectionId);
-        const pickupGeocoded = await geocodeAddress(pickupAddress, companyLoc.city ?? undefined, companyLoc.state ?? undefined);
+        const pickupGeocoded = await geocodeAddress(pickupAddress, companyLoc.city ?? undefined, companyLoc.state ?? undefined, companyLoc.lat ?? undefined, companyLoc.lng ?? undefined);
         let originLat: number;
         let originLng: number;
         let originAddress: string;
@@ -2899,7 +2979,7 @@ async function handleIncomingMessage(companyId: string, data: Record<string, unk
         // Geocode destination if provided
         let destination: { lat: number; lng: number; address: string } | null = null;
         if (destAddress) {
-          const destGeocoded = await geocodeAddress(destAddress, companyLoc.city ?? undefined, companyLoc.state ?? undefined);
+          const destGeocoded = await geocodeAddress(destAddress, companyLoc.city ?? undefined, companyLoc.state ?? undefined, companyLoc.lat ?? undefined, companyLoc.lng ?? undefined);
           if (destGeocoded) {
             destination = { lat: destGeocoded.lat, lng: destGeocoded.lng, address: destGeocoded.formatted };
           } else {
@@ -3119,7 +3199,7 @@ async function handleIncomingMessage(companyId: string, data: Record<string, unk
 
         // Geocode the pickup address
         const companyLoc = await getCompanyLocationInfo(companyId, connectionId);
-        const pickupGeocoded = await geocodeAddress(pickupAddress, companyLoc.city ?? undefined, companyLoc.state ?? undefined);
+        const pickupGeocoded = await geocodeAddress(pickupAddress, companyLoc.city ?? undefined, companyLoc.state ?? undefined, companyLoc.lat ?? undefined, companyLoc.lng ?? undefined);
         let originLat: number;
         let originLng: number;
         let originAddress: string;
@@ -3144,7 +3224,7 @@ async function handleIncomingMessage(companyId: string, data: Record<string, unk
         // Geocode destination if provided
         let destination: { lat: number; lng: number; address: string } | null = null;
         if (destAddress) {
-          const destGeocoded = await geocodeAddress(destAddress, companyLoc.city ?? undefined, companyLoc.state ?? undefined);
+          const destGeocoded = await geocodeAddress(destAddress, companyLoc.city ?? undefined, companyLoc.state ?? undefined, companyLoc.lat ?? undefined, companyLoc.lng ?? undefined);
           if (destGeocoded) {
             destination = { lat: destGeocoded.lat, lng: destGeocoded.lng, address: destGeocoded.formatted };
           } else {
@@ -3369,7 +3449,7 @@ async function handleIncomingMessage(companyId: string, data: Record<string, unk
       try {
         const { data: rideData } = await supabase
           .from("rides")
-          .select("origin_lat, origin_lng, origin_label, destination_lat, destination_lng, destination_label, passenger_name, passenger_phone, payment_method, company_id")
+          .select("origin_lat, origin_lng, origin_label, destination_lat, destination_lng, destination_label, passenger_name, passenger_phone, payment_method, category_label, company_id")
           .eq("id", driverRide.id)
           .maybeSingle();
 
@@ -3387,6 +3467,19 @@ async function handleIncomingMessage(companyId: string, data: Record<string, unk
             .maybeSingle();
 
           const integrationMode = settings?.integration_mode ?? "machine";
+
+          // Look up the machine_category_id for the ride's category_label so the
+          // re-dispatch sends the exact same category the passenger originally chose.
+          let machineCategoryId: string | null = null;
+          if (rideData.category_label) {
+            const { data: catRow } = await supabase
+              .from("vehicle_categories")
+              .select("machine_category_id")
+              .eq("company_id", companyId)
+              .eq("label", rideData.category_label)
+              .maybeSingle();
+            machineCategoryId = catRow?.machine_category_id ?? null;
+          }
 
           await fetch(`${supabaseUrl}/functions/v1/dispatch-ride`, {
             method: "POST",
@@ -3413,6 +3506,7 @@ async function handleIncomingMessage(companyId: string, data: Record<string, unk
                   address: rideData.destination_label ?? "",
                 },
               } : {}),
+              category: machineCategoryId || rideData.category_label || "",
               payment_method: rideData.payment_method ?? "",
             }),
           });
