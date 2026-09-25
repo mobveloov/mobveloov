@@ -849,8 +849,10 @@ async function handleBotMessage(
       .single();
     conv = newConv as BotConversation;
 
-    await sendBotMessage(companyId, cleanPhone, connectionId, msg("welcome_menu", "Ola! Como podemos ajudar?\n\n1 - Solicitar corrida\n2 - Suporte\n\nResponda com o numero da opcao."));
-    return;
+    if (!text && !location && !audio) {
+      await sendBotMessage(companyId, cleanPhone, connectionId, msg("welcome_menu", "Ola! Como podemos ajudar?\n\n1 - Solicitar corrida\n2 - Suporte\n\nResponda com o numero da opcao."));
+      return;
+    }
   }
 
   if (!conv.passenger_name && pushName) {
@@ -865,7 +867,10 @@ async function handleBotMessage(
   switch (conv.state) {
     case "menu_inicial":
     case "inicio": {
-      if (["1", "corrida", "sim", "sim.", "quero", "viagem", "sim!"].includes(normalizedText)) {
+      const requestedRide = ["1", "corrida", "sim", "sim.", "quero", "viagem", "sim!"].includes(normalizedText)
+        || normalizedText.includes("corrida")
+        || normalizedText.includes("viagem");
+      if (requestedRide) {
         await supabase.from("bot_conversas")
           .update({ state: "aguardando_endereco", updated_at: new Date().toISOString() })
           .eq("id", conv.id);
@@ -2052,7 +2057,13 @@ async function handleIncomingMessage(companyId: string, data: Record<string, unk
   let audio: { data: string; mimetype: string } | null = null;
   if (message?.audioMessage) {
     const aud = message.audioMessage as Record<string, unknown>;
-    const audioData = aud.base64 ? String(aud.base64) : (aud.url ? String(aud.url) : null);
+    const audioData = aud.base64
+      ? String(aud.base64)
+      : aud.url
+        ? String(aud.url)
+        : aud.mediaUrl
+          ? String(aud.mediaUrl)
+          : null;
     const mimetype = aud.mimetype ? String(aud.mimetype) : "audio/ogg";
     if (audioData) audio = { data: audioData, mimetype };
   }
@@ -2061,6 +2072,15 @@ async function handleIncomingMessage(companyId: string, data: Record<string, unk
   if (!text && !location && !audio) return;
 
   const cleanPhone = rawPhone.replace(/\D/g, "");
+
+  if (!text && audio) {
+    const transcribed = await transcribeAudio(audio.data, audio.mimetype, companyId);
+    if (transcribed?.trim()) {
+      text = transcribed.trim();
+      audio = null;
+    }
+  }
+
   const normalizedText = (text ?? "").trim().toLowerCase();
 
   // Check if sender is the support number replying to a passenger in suporte mode
