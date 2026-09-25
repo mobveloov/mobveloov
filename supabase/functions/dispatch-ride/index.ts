@@ -347,9 +347,13 @@ async function dispatchToMachine(
   const codigoArea = cleanPhone.length >= 10 ? parseInt(cleanPhone.slice(0, 2)) : 16;
   const telefone = cleanPhone.length >= 10 ? cleanPhone.slice(2) : cleanPhone;
 
+  // Use a unique id_externo on every dispatch so re-dispatches after driver cancellation
+  // are not rejected as "ID Externo já utilizado" by the Machine API.
+  const externalId = `${rideId}-${Date.now()}`;
+
   // Build the v2 API payload per docs.machine.global spec
   const v2Payload: Record<string, unknown> = {
-    id_externo: rideId,
+    id_externo: externalId,
     dados_cadastro: {
       codigo_pais: codigoPais,
       codigo_area: codigoArea,
