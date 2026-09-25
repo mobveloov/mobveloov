@@ -2319,6 +2319,8 @@ async function handleIncomingMessage(companyId: string, data: Record<string, unk
         vehicle_plate: null,
         vehicle_model: null,
         vehicle_color: null,
+        machine_driver_id: null,
+        machine_order_id: null,
         updated_at: new Date().toISOString(),
       }).eq("id", driverRide.id);
 
@@ -2329,6 +2331,60 @@ async function handleIncomingMessage(companyId: string, data: Record<string, unk
         message: `Motorista (${cleanPhone}) cancelou corrida ${driverRide.id.slice(0, 8)} — voltou para pendente`,
         ride_id: driverRide.id,
       });
+
+      // Re-dispatch to Machine API so a new driver can accept
+      try {
+        const { data: rideData } = await supabase
+          .from("rides")
+          .select("origin_lat, origin_lng, origin_label, destination_lat, destination_lng, destination_label, passenger_name, passenger_phone, payment_method, company_id")
+          .eq("id", driverRide.id)
+          .maybeSingle();
+
+        if (rideData) {
+          const { data: companyRow } = await supabase
+            .from("companies")
+            .select("slug")
+            .eq("id", companyId)
+            .maybeSingle();
+
+          const { data: settings } = await supabase
+            .from("company_settings")
+            .select("integration_mode")
+            .eq("company_id", companyId)
+            .maybeSingle();
+
+          const integrationMode = settings?.integration_mode ?? "machine";
+
+          await fetch(`${supabaseUrl}/functions/v1/dispatch-ride`, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              "Authorization": `Bearer ${supabaseServiceKey}`,
+            },
+            body: JSON.stringify({
+              companySlug: companyRow?.slug,
+              companyId,
+              integrationMode,
+              rideId: driverRide.id,
+              passenger_name: rideData.passenger_name ?? "",
+              passenger_phone: rideData.passenger_phone ?? "",
+              origin: {
+                lat: rideData.origin_lat,
+                lng: rideData.origin_lng,
+                address: rideData.origin_label ?? "",
+              },
+              ...(rideData.destination_lat != null && rideData.destination_lng != null ? {
+                destination: {
+                  lat: rideData.destination_lat,
+                  lng: rideData.destination_lng,
+                  address: rideData.destination_label ?? "",
+                },
+              } : {}),
+              payment_method: rideData.payment_method ?? "",
+            }),
+          });
+        }
+      } catch { /* best-effort re-dispatch */ }
 
       // Notify passenger that a new driver is being sought
       try {
@@ -2342,7 +2398,7 @@ async function handleIncomingMessage(companyId: string, data: Record<string, unk
       // Confirm to driver
       try {
         const { provider, fields: f } = await getCompanyWhatsAppConfig(companyId);
-        const driverConfirm = "Corrida cancelada com sucesso.";
+        const driverConfirm = "Corrida cancelada com sucesso. Um novo motorista sera procurado para o passageiro.";
         await sendWhatsAppMessageWithProvider(provider, f, cleanPhone, driverConfirm);
         await saveMessage(companyId, cleanPhone, "outgoing", driverConfirm);
       } catch { /* best-effort */ }

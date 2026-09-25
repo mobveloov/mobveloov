@@ -252,6 +252,50 @@ async function processWebhook(body: Record<string, unknown>): Promise<void> {
 
     if (!ride) return;
 
+    // Driver cancellation from the Machine API (status C or N):
+    // Instead of marking the ride as fully canceled, send it back to pending
+    // so a new driver can accept it. The passenger should not need to re-request.
+    // Exception: if the passenger already canceled from their side (status is "canceled"),
+    // respect that and don't override.
+    if (internalStatus === "canceled" && ride.status !== "canceled") {
+      const resetUpdate: Record<string, unknown> = {
+        status: "pending",
+        driver_name: null,
+        driver_phone: null,
+        vehicle_plate: null,
+        vehicle_model: null,
+        vehicle_color: null,
+        machine_driver_id: null,
+        updated_at: new Date().toISOString(),
+      };
+      await supabase.from("rides").update(resetUpdate).eq("id", ride.id);
+
+      await supabase.from("admin_logs").insert({
+        company_id: ride.company_id,
+        source: "machine_webhook",
+        level: "info",
+        message: `Motorista cancelou corrida ${machineOrderId} via Machine API — voltou para pendente para novo motorista`,
+        ride_id: ride.id,
+        payload: body,
+      });
+
+      // Notify passenger that a new driver is being sought
+      try {
+        const passengerPhone = toBrazilianWhatsAppNumber(ride.passenger_phone);
+        if (passengerPhone) {
+          const { provider, fields: f } = await getCompanyWhatsAppConfig(ride.company_id);
+          const cancelMsg = "O motorista cancelou a corrida. Estamos procurando um novo motorista para voce. Aguarde.";
+          await sendWhatsAppMessage(provider, f, passengerPhone, cancelMsg);
+          await saveChatMessage(ride.company_id, passengerPhone, "outgoing", cancelMsg);
+        }
+      } catch { /* best-effort */ }
+
+      return;
+    }
+
+    // Ignore status updates for rides that were already reset to pending by the driver-cancel flow
+    if (ride.status === "pending" && internalStatus === "canceled") return;
+
     if (ride.status === internalStatus && internalStatus !== "accepted") return;
 
     // Update status immediately so the totem sees it via realtime
