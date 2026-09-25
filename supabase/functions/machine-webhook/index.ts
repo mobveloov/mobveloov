@@ -135,12 +135,12 @@ const STATUS_MAP: Record<string, string> = {
 };
 
 const STATUS_MESSAGES_PT: Record<string, string> = {
-  accepted: "Corrida confirmada! Seu motorista esta a caminho.",
-  en_route: "Seu motorista chegou ao local de embarque! Procure pelo veiculo.",
-  in_progress: "Sua viagem esta em andamento.",
-  completed: "Sua viagem foi concluida. Obrigado pela preferencia!",
-  canceled: "Sua corrida foi cancelada.",
-  pending: "Seu motorista cancelou. Estamos procurando um novo motorista para sua corrida. Aguarde."
+  accepted: "\u2705 Corrida confirmada! Seu motorista esta a caminho.",
+  en_route: "\U0001F697 Seu motorista chegou ao local de embarque! Procure pelo veiculo.",
+  in_progress: "\U0001F697 Sua viagem esta em andamento.",
+  completed: "\U0001F3C1 Sua viagem foi concluida. Obrigado pela preferencia!",
+  canceled: "\u274C Sua corrida foi cancelada.",
+  pending: "\U0001F501 Seu motorista cancelou. Estamos procurando um novo motorista para sua corrida. Aguarde."
 };
 
 Deno.serve(async (req: Request) => {
@@ -364,25 +364,56 @@ async function processWebhook(body: Record<string, unknown>): Promise<void> {
 
     let driverDistanceKm: number | null = null;
     let etaMinutes: number | null = null;
+    let driverGender: string | null = null;
     try {
-      const { data: pos } = await supabase
-        .from("ride_driver_positions")
-        .select("lat, lng")
-        .eq("ride_id", ride.id)
-        .maybeSingle();
-      if (pos) {
-        const { data: rideCoords } = await supabase
-          .from("rides")
-          .select("origin_lat, origin_lng")
-          .eq("id", ride.id)
-          .single();
-        if (rideCoords) {
-          const R = 6371;
-          const dLat = ((pos.lat - rideCoords.origin_lat) * Math.PI) / 180;
-          const dLng = ((pos.lng - rideCoords.origin_lng) * Math.PI) / 180;
-          const a = Math.sin(dLat/2)**2 + Math.cos(rideCoords.origin_lat * Math.PI/180) * Math.cos(pos.lat * Math.PI/180) * Math.sin(dLng/2)**2;
-          driverDistanceKm = R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
-          etaMinutes = Math.max(1, Math.round(driverDistanceKm * 2.5));
+      // Fetch ride details from Machine API — use distancia_coleta_km (route distance) instead of haversine
+      const rideDetails = await fetchRideDetails(ride.company_id, machineOrderId);
+      if (rideDetails) {
+        const str = (v: unknown): string | null => { const s = v != null ? String(v).trim() : ""; return s || null; };
+        const parseNum = (v: unknown): number | null => {
+          if (v == null) return null;
+          const n = parseFloat(String(v).replace(",", "."));
+          return isNaN(n) ? null : n;
+        };
+        const routeKm = parseNum(rideDetails.distancia_coleta_km);
+        if (routeKm != null && routeKm > 0) {
+          driverDistanceKm = routeKm;
+          etaMinutes = Math.max(1, Math.round(routeKm * 2.5));
+        }
+        // Fetch driver gender from condutores endpoint
+        const machineDriverId = str(rideDetails.condutor_id) ?? str((rideDetails.driver as Record<string, unknown>)?.id);
+        if (machineDriverId) {
+          driverGender = await fetchDriverGender(ride.company_id, machineDriverId);
+        }
+      }
+      // Fallback to OSRM route API if Machine API didn't return distance
+      if (driverDistanceKm == null) {
+        const { data: pos } = await supabase
+          .from("ride_driver_positions")
+          .select("lat, lng")
+          .eq("ride_id", ride.id)
+          .maybeSingle();
+        if (pos) {
+          const { data: rideCoords } = await supabase
+            .from("rides")
+            .select("origin_lat, origin_lng")
+            .eq("id", ride.id)
+            .single();
+          if (rideCoords) {
+            const routeInfo = await fetchOSRMRoute(pos.lat, pos.lng, rideCoords.origin_lat, rideCoords.origin_lng);
+            if (routeInfo) {
+              driverDistanceKm = routeInfo.distanceKm;
+              etaMinutes = Math.max(1, Math.round(routeInfo.durationMin));
+            } else {
+              // Last resort: haversine with approximation factor 1.3 for urban routes
+              const R = 6371;
+              const dLat = ((pos.lat - rideCoords.origin_lat) * Math.PI) / 180;
+              const dLng = ((pos.lng - rideCoords.origin_lng) * Math.PI) / 180;
+              const a = Math.sin(dLat/2)**2 + Math.cos(rideCoords.origin_lat * Math.PI/180) * Math.cos(pos.lat * Math.PI/180) * Math.sin(dLng/2)**2;
+              driverDistanceKm = R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a)) * 1.3;
+              etaMinutes = Math.max(1, Math.round(driverDistanceKm * 2.5));
+            }
+          }
         }
       }
     } catch { /* best-effort */ }
@@ -400,6 +431,7 @@ async function processWebhook(body: Record<string, unknown>): Promise<void> {
       ride.status,
       driverChanged,
       vehicleColor,
+      driverGender,
     );
 
     // When ride is first accepted (not a driver change), send passenger info to the driver's WhatsApp
@@ -629,6 +661,70 @@ async function fetchRideReceipt(companyId: string, machineOrderId: string): Prom
   }
 }
 
+async function fetchOSRMRoute(lat1: number, lng1: number, lat2: number, lng2: number): Promise<{ distanceKm: number; durationMin: number } | null> {
+  try {
+    const url = `https://router.project-osrm.org/route/v1/driving/${lng1},${lat1};${lng2},${lat2}?overview=false`;
+    const resp = await fetch(url);
+    if (!resp.ok) return null;
+    const json = await resp.json();
+    const route = json?.routes?.[0];
+    if (!route) return null;
+    return {
+      distanceKm: route.distance / 1000,
+      durationMin: route.duration / 60,
+    };
+  } catch { return null; }
+}
+
+async function fetchDriverGender(companyId: string, driverId: string): Promise<string | null> {
+  const { data: credentials } = await supabase
+    .from("company_credentials")
+    .select("machine_api_url, machine_api_key, taximetro_username, taximetro_password")
+    .eq("company_id", companyId)
+    .maybeSingle();
+
+  const { data: tenantRows } = await supabase
+    .from("tenant_secrets")
+    .select("secret_name, secret_value")
+    .eq("tenant_id", companyId);
+  const tenantMap = new Map(
+    (tenantRows ?? []).map((r: { secret_name: string; secret_value: string }) => [r.secret_name, r.secret_value])
+  );
+
+  const baseUrl = (credentials?.machine_api_url || "https://api.taximachine.com.br").replace(/\/+$/, "");
+  const apiKey = tenantMap.get("MACHINE_API_KEY") || credentials?.machine_api_key || "";
+  const user = tenantMap.get("TAXIMETRO_USER") || credentials?.taximetro_username || "";
+  const pass = tenantMap.get("TAXIMETRO_PASSWORD") || credentials?.taximetro_password || "";
+
+  if (!apiKey || !user || !pass) return null;
+
+  try {
+    const resp = await fetch(`${baseUrl}/api/v2/integracao/condutores/${driverId}`, {
+      method: "GET",
+      headers: {
+        "Content-Type": "application/json",
+        "api-key": apiKey,
+        "Authorization": `Basic ${btoa(`${user}:${pass}`)}`,
+      },
+    });
+    if (!resp.ok) return null;
+    const json = await resp.json();
+    const driver = Array.isArray(json?.data) ? json.data[0] : json?.data;
+    if (!driver) return null;
+    // Try dados_extras (JSON string that may contain sexo)
+    const extrasStr = driver.dados_extras;
+    if (extrasStr) {
+      try {
+        const extras = JSON.parse(extrasStr);
+        if (extras.sexo) return String(extras.sexo).toUpperCase().startsWith("F") ? "F" : "M";
+      } catch { /* not JSON */ }
+    }
+    // Try direct sexo field
+    if (driver.sexo) return String(driver.sexo).toUpperCase().startsWith("F") ? "F" : "M";
+    return null;
+  } catch { return null; }
+}
+
 async function fetchRideDetails(companyId: string, machineOrderId: string): Promise<Record<string, unknown> | null> {
   const { data: credentials } = await supabase
     .from("company_credentials")
@@ -745,6 +841,7 @@ async function sendWhatsAppNotification(
   previousStatus: string | null = null,
   driverChanged: boolean = false,
   vehicleColor: string | null = null,
+  driverGender: string | null = null,
 ): Promise<void> {
   let message = STATUS_MESSAGES_PT[internalStatus];
   if (!message) return;
@@ -754,28 +851,29 @@ async function sendWhatsAppNotification(
   if (internalStatus === "accepted") {
     const isDriverChange = previousStatus === "accepted" && driverChanged;
     if (isDriverChange) {
-      message = "Seu motorista foi trocado! Confira os dados do novo motorista:";
+      message = "\U0001F501 Seu motorista foi trocado! Confira os dados do novo motorista:";
     }
+    const driverEmoji = driverGender === "F" ? "\U0001F470\u200D\u2640\uFE0F" : "\U0001F9D1\u200D\U0001F4BC";
     if (driverName) {
-      message += `\nMotorista: ${driverName}`;
-      if (vehicleModel) message += `\nVeículo: ${vehicleModel}`;
-      if (vehicleColor) message += `\nCor: ${vehicleColor}`;
-      if (vehiclePlate) message += `\nPlaca: ${vehiclePlate}`;
+      message += `\n${driverEmoji}: ${driverName}`;
+      if (vehicleModel) message += `\n\U0001F695: ${vehicleModel}`;
+      if (vehicleColor) message += `\n\U0001F3A8: ${vehicleColor}`;
+      if (vehiclePlate) message += `\n\U0001F524: ${vehiclePlate}`;
     }
 
     if (features.send_eta && etaMinutes != null) {
-      message += `\nTempo estimado de chegada: ${etaMinutes} min`;
+      message += `\n\u23F1\uFE0F: ${etaMinutes} min`;
     }
 
     if (features.distance_update_interval_min > 0 && driverDistanceKm != null) {
       if (driverDistanceKm >= 1) {
-        message += `\nO motorista está a ${driverDistanceKm.toFixed(1)} km de distância`;
+        message += `\nO motorista esta a ${driverDistanceKm.toFixed(1)} km de distancia`;
       } else {
-        message += `\nO motorista está a ${Math.round(driverDistanceKm * 1000)} m de distância`;
+        message += `\nO motorista esta a ${Math.round(driverDistanceKm * 1000)} m de distancia`;
       }
     }
 
-    message += `\n\nChat com Motorista esta ativo\n\nPara cancelar, responda "cancelar".`;
+    message += `\n\n\U0001F4AC Chat com Motorista esta ativo\n\nPara cancelar, responda "cancelar".`;
   }
 
   const { provider, fields: f } = await getCompanyWhatsAppConfig(companyId);

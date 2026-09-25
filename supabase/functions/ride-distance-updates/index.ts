@@ -159,6 +159,39 @@ function haversineKm(lat1: number, lng1: number, lat2: number, lng2: number): nu
   return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
 }
 
+async function fetchOSRMRoute(lat1: number, lng1: number, lat2: number, lng2: number): Promise<{ distanceKm: number; durationMin: number } | null> {
+  try {
+    const url = `https://router.project-osrm.org/route/v1/driving/${lng1},${lat1};${lng2},${lat2}?overview=false`;
+    const resp = await fetch(url);
+    if (!resp.ok) return null;
+    const json = await resp.json();
+    const route = json?.routes?.[0];
+    if (!route) return null;
+    return {
+      distanceKm: route.distance / 1000,
+      durationMin: route.duration / 60,
+    };
+  } catch { return null; }
+}
+
+async function fetchRideDetailsFromMachineForDistance(
+  supabase: ReturnType<typeof createClient>,
+  companyId: string,
+  machineOrderId: string,
+): Promise<{ distanciaColetaKm: number | null; duracaoMin: number | null }> {
+  const details = await fetchRideDetailsFromMachine(supabase, companyId, machineOrderId);
+  if (!details) return { distanciaColetaKm: null, duracaoMin: null };
+  const parseNum = (v: unknown): number | null => {
+    if (v == null) return null;
+    const n = parseFloat(String(v).replace(",", "."));
+    return isNaN(n) ? null : n;
+  };
+  return {
+    distanciaColetaKm: parseNum(details.distancia_coleta_km),
+    duracaoMin: parseNum(details.duracao_corrida),
+  };
+}
+
 async function saveChatMessage(
   supabase: ReturnType<typeof createClient>,
   companyId: string,
@@ -283,12 +316,12 @@ async function tryFetchAndSendDriverInfo(
     .maybeSingle();
   if (existing) return;
 
-  let msg = `Corrida confirmada! Seu motorista esta a caminho.`;
-  msg += `\n\nMotorista: ${driverName}`;
-  if (vehicleModel) msg += `\nVeiculo: ${vehicleModel}`;
-  if (vehicleColor) msg += `\nCor: ${vehicleColor}`;
-  if (vehiclePlate) msg += `\nPlaca: ${vehiclePlate}`;
-  msg += `\n\nPara cancelar, responda "cancelar".`;
+  let msg = `\u2705 Corrida confirmada! Seu motorista esta a caminho.`;
+  msg += `\n\n\U0001F9D1\u200D\U0001F4BC: ${driverName}`;
+  if (vehicleModel) msg += `\n\U0001F695: ${vehicleModel}`;
+  if (vehicleColor) msg += `\n\U0001F3A8: ${vehicleColor}`;
+  if (vehiclePlate) msg += `\n\U0001F524: ${vehiclePlate}`;
+  msg += `\n\n\U0001F4AC Chat com Motorista esta ativo\n\nPara cancelar, responda "cancelar".`;
 
   const cleanPhone = toBrazilianWhatsAppNumber(ride.passenger_phone);
   if (!cleanPhone) return;
@@ -480,12 +513,35 @@ Deno.serve(async (req: Request) => {
 
       if (!pos) { skippedCount++; continue; }
 
-      const distanceKm = haversineKm(pos.lat, pos.lng, ride.origin_lat, ride.origin_lng);
-      const etaMin = Math.max(1, Math.round(distanceKm * 2.5));
+      // Try Machine API route distance first, then OSRM, then haversine fallback
+      let distanceKm: number | null = null;
+      let etaMin: number | null = null;
+
+      if (ride.machine_order_id) {
+        const machineInfo = await fetchRideDetailsFromMachineForDistance(supabase, ride.company_id, ride.machine_order_id);
+        if (machineInfo.distanciaColetaKm != null && machineInfo.distanciaColetaKm > 0) {
+          distanceKm = machineInfo.distanciaColetaKm;
+          etaMin = machineInfo.duracaoMin != null && machineInfo.duracaoMin > 0
+            ? Math.max(1, Math.round(machineInfo.duracaoMin))
+            : Math.max(1, Math.round(distanceKm * 2.5));
+        }
+      }
+
+      if (distanceKm == null) {
+        const routeInfo = await fetchOSRMRoute(pos.lat, pos.lng, ride.origin_lat, ride.origin_lng);
+        if (routeInfo) {
+          distanceKm = routeInfo.distanceKm;
+          etaMin = Math.max(1, Math.round(routeInfo.durationMin));
+        } else {
+          // Fallback: haversine with 1.3x urban factor
+          distanceKm = haversineKm(pos.lat, pos.lng, ride.origin_lat, ride.origin_lng) * 1.3;
+          etaMin = Math.max(1, Math.round(distanceKm * 2.5));
+        }
+      }
 
       const updateMsg = distanceKm >= 1
-        ? `Atualização: O motorista está a ${distanceKm.toFixed(1)} km de distância. Tempo estimado: ${etaMin} min.`
-        : `Atualização: O motorista está a ${Math.round(distanceKm * 1000)} m de distância. Quase no local!`;
+        ? `\U0001F4CD Atualizacao: O motorista esta a ${distanceKm.toFixed(1)} km de distancia. Tempo estimado: ${etaMin} min.`
+        : `\U0001F4CD Atualizacao: O motorista esta a ${Math.round(distanceKm * 1000)} m de distancia. Quase no local!`;
 
       const cleanPhone = toBrazilianWhatsAppNumber(ride.passenger_phone);
       if (!cleanPhone) { skippedCount++; continue; }

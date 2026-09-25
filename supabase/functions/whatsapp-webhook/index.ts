@@ -822,7 +822,7 @@ async function proceedAfterDestination(
       .update({ state: "aguardando_categoria", updated_at: new Date().toISOString() })
       .eq("id", convId);
     const opts = categories.map((c, i) => `${i + 1} - ${c.label}`).join("\n");
-    await sendBotMessage(companyId, cleanPhone, connectionId, msg("ask_category", `Qual categoria voce deseja?\n\n${opts}\n\nResponda com o numero da opcao.`));
+    await sendBotMessage(companyId, cleanPhone, connectionId, msg("ask_category", `\U0001F3C6 Qual categoria voce deseja?\n\n${opts}\n\nResponda com o numero da opcao.`));
     return;
   }
 
@@ -834,7 +834,7 @@ async function proceedAfterDestination(
       updated_at: new Date().toISOString(),
     })
     .eq("id", convId);
-  await sendBotMessage(companyId, cleanPhone, connectionId, msg("ask_payment", `Qual a forma de pagamento?\n\n1 - Dinheiro\n2 - Pix\n3 - Cartao\n\nResponda com o numero da opcao.`));
+  await sendBotMessage(companyId, cleanPhone, connectionId, msg("ask_payment", `\U0001F4B0 Qual a forma de pagamento?\n\n1 - Dinheiro \U0001F4B5\n2 - Pix \U0001F9EC\n3 - Cartao \U0001F4B3\n\nResponda com o numero da opcao.`));
 }
 
 async function handleBotMessage(
@@ -881,7 +881,7 @@ async function handleBotMessage(
     conv = newConv as BotConversation;
 
     if (!text && !location && !audio) {
-      await sendBotMessage(companyId, cleanPhone, connectionId, msg("welcome_menu", "Ola! Como podemos ajudar?\n\n1 - Solicitar corrida\n2 - Suporte\n\nResponda com o numero da opcao."));
+      await sendBotMessage(companyId, cleanPhone, connectionId, msg("welcome_menu", "\U0001F44B Ola! Como podemos ajudar?\n\n1 - Solicitar corrida \U0001F695\n2 - Suporte \U0001F4AC\n\nResponda com o numero da opcao."));
       return;
     }
   }
@@ -903,7 +903,7 @@ async function handleBotMessage(
         await supabase.from("bot_conversas")
           .update({ state: "aguardando_endereco", updated_at: new Date().toISOString() })
           .eq("id", conv.id);
-        await sendBotMessage(companyId, cleanPhone, connectionId, msg("ask_address", "Perfeito! Qual e o endereco de embarque? Voce pode digitar o endereco, enviar sua localizacao ou mandar um audio."));
+        await sendBotMessage(companyId, cleanPhone, connectionId, msg("ask_address", "\U0001F4CD Perfeito! Qual e o endereco de embarque? Voce pode digitar o endereco, enviar sua localizacao ou mandar um audio."));
         break;
       }
       const requestedRide = ["1", "corrida", "sim", "sim.", "quero", "viagem", "sim!"].includes(normalizedText)
@@ -913,7 +913,7 @@ async function handleBotMessage(
         await supabase.from("bot_conversas")
           .update({ state: "aguardando_endereco", updated_at: new Date().toISOString() })
           .eq("id", conv.id);
-        await sendBotMessage(companyId, cleanPhone, connectionId, msg("ask_address", "Perfeito! Qual e o endereco de embarque? Voce pode digitar o endereco, enviar sua localizacao ou mandar um audio."));
+        await sendBotMessage(companyId, cleanPhone, connectionId, msg("ask_address", "\U0001F4CD Perfeito! Qual e o endereco de embarque? Voce pode digitar o endereco, enviar sua localizacao ou mandar um audio."));
       } else if (["2", "suporte", "ajuda", "suport"].includes(normalizedText)) {
         // Fetch company support WhatsApp
         const { data: company } = await supabase
@@ -926,7 +926,7 @@ async function handleBotMessage(
           await supabase.from("bot_conversas")
             .update({ state: "suporte", updated_at: new Date().toISOString() })
             .eq("id", conv.id);
-          await sendBotMessage(companyId, cleanPhone, connectionId, msg("support_forward", `Você sera direcionado para o suporte da ${company.name}. Envie sua mensagem e nossa equipe ira responder.`));
+          await sendBotMessage(companyId, cleanPhone, connectionId, msg("support_forward", `\U0001F4AC Voce sera direcionado para o suporte da ${company.name}. Envie sua mensagem e nossa equipe ira responder.`));
 
           // Forward the passenger's phone to the support WhatsApp
           const supportPhone = toBrazilianWhatsAppNumber(company.support_whatsapp);
@@ -941,7 +941,7 @@ As mensagens do passageiro serao encaminhadas a partir de agora.`;
             await saveMessage(companyId, supportPhone, "outgoing", supportIntro);
           } catch { /* best-effort */ }
         } else {
-          await sendBotMessage(companyId, cleanPhone, connectionId, msg("support_unavailable", "O suporte nao esta disponivel no momento. Tente novamente mais tarde ou solicite uma corrida digitando 1."));
+          await sendBotMessage(companyId, cleanPhone, connectionId, msg("support_unavailable", "\u26A0\uFE0F O suporte nao esta disponivel no momento. Tente novamente mais tarde ou solicite uma corrida digitando 1."));
           await supabase.from("bot_conversas")
             .update({ state: "menu_inicial", updated_at: new Date().toISOString() })
             .eq("id", conv.id);
@@ -950,9 +950,9 @@ As mensagens do passageiro serao encaminhadas a partir de agora.`;
         await supabase.from("bot_conversas")
           .update({ state: "corrida_solicitada", updated_at: new Date().toISOString() })
           .eq("id", conv.id);
-        await sendBotMessage(companyId, cleanPhone, connectionId, msg("decline", "Tudo bem! Quando precisar de uma corrida, e so nos mandar uma mensagem."));
+        await sendBotMessage(companyId, cleanPhone, connectionId, msg("decline", "\U0001F44D Tudo bem! Quando precisar de uma corrida, e so nos mandar uma mensagem."));
       } else {
-        await sendBotMessage(companyId, cleanPhone, connectionId, msg("welcome_repeat", "Como podemos ajudar?\n\n1 - Solicitar corrida\n2 - Suporte\n\nResponda com o numero da opcao."));
+        await sendBotMessage(companyId, cleanPhone, connectionId, msg("welcome_repeat", "\U0001F44B Como podemos ajudar?\n\n1 - Solicitar corrida \U0001F695\n2 - Suporte \U0001F4AC\n\nResponda com o numero da opcao."));
       }
       break;
     }
@@ -981,7 +981,7 @@ As mensagens do passageiro serao encaminhadas a partir de agora.`;
       }
 
       if (!addressText) {
-        await sendBotMessage(companyId, cleanPhone, connectionId, msg("address_retry", "Por favor, envie o endereco de embarque. Voce pode digitar, enviar sua localizacao ou mandar um audio."));
+        await sendBotMessage(companyId, cleanPhone, connectionId, msg("address_retry", "\U0001F4CD Por favor, envie o endereco de embarque. Voce pode digitar, enviar sua localizacao ou mandar um audio."));
         return;
       }
 
@@ -1026,7 +1026,7 @@ As mensagens do passageiro serao encaminhadas a partir de agora.`;
             finalLng = companyLoc.lng;
             isFallback = true;
           } else {
-            await sendBotMessage(companyId, cleanPhone, connectionId, msg("address_not_found", "Nao consegui encontrar esse endereco. Tente enviar um endereco mais completo (ex: Rua, numero, bairro, cidade) ou compartilhe sua localizacao."));
+            await sendBotMessage(companyId, cleanPhone, connectionId, msg("address_not_found", "\u274C Nao consegui encontrar esse endereco. Tente enviar um endereco mais completo (ex: Rua, numero, bairro, cidade) ou compartilhe sua localizacao."));
             return;
           }
         }
@@ -1052,7 +1052,7 @@ As mensagens do passageiro serao encaminhadas a partir de agora.`;
             finalAddress = addressText;
             isFallback = true;
           } else {
-            await sendBotMessage(companyId, cleanPhone, connectionId, msg("address_not_found", "Nao consegui encontrar esse endereco. Tente enviar um endereco mais completo (ex: Rua, numero, bairro, cidade) ou compartilhe sua localizacao."));
+            await sendBotMessage(companyId, cleanPhone, connectionId, msg("address_not_found", "\u274C Nao consegui encontrar esse endereco. Tente enviar um endereco mais completo (ex: Rua, numero, bairro, cidade) ou compartilhe sua localizacao."));
             return;
           }
         }
@@ -1070,7 +1070,7 @@ As mensagens do passageiro serao encaminhadas a partir de agora.`;
         })
         .eq("id", conv.id);
 
-      await sendBotMessage(companyId, cleanPhone, connectionId, msg("ask_destination", "Para onde voce vai?\n\n1 - Digitar o Endereco de Destino\n2 - Nao informar Endereco\n\nResponda com o numero da opcao."));
+      await sendBotMessage(companyId, cleanPhone, connectionId, msg("ask_destination", "\U0001F3AF Para onde voce vai?\n\n1 - Digitar o Endereco de Destino \U0001F4DD\n2 - Nao informar Endereco \U0001F6AB\n\nResponda com o numero da opcao."));
       break;
     }
 
@@ -1087,14 +1087,14 @@ As mensagens do passageiro serao encaminhadas a partir de agora.`;
           })
           .eq("id", conv.id);
         const pickupAddr = conv.address_formatted || conv.address_text || "Endereco nao informado";
-        await sendBotMessage(companyId, cleanPhone, connectionId, msg("confirm_address", `Confirma o embarque em: ${pickupAddr}?\n\nResponda SIM para confirmar ou NAO para corrigir.`));
+        await sendBotMessage(companyId, cleanPhone, connectionId, msg("confirm_address", `\u2705 Confirma o embarque em: ${pickupAddr}?\n\nResponda SIM para confirmar ou NAO para corrigir.`));
       } else if (normalizedText === "1" || location || audio || (text && !["1","2"].includes(normalizedText))) {
         // Accept "1" (menu choice), location, audio, or any typed text as a destination address
         if (normalizedText === "1" && !location && !audio) {
           await supabase.from("bot_conversas")
             .update({ state: "aguardando_endereco_destino", updated_at: new Date().toISOString() })
             .eq("id", conv.id);
-          await sendBotMessage(companyId, cleanPhone, connectionId, msg("ask_destination_address", "Digite o endereco de destino. Voce pode digitar, enviar sua localizacao ou mandar um audio."));
+          await sendBotMessage(companyId, cleanPhone, connectionId, msg("ask_destination_address", "\U0001F4DD Digite o endereco de destino. Voce pode digitar, enviar sua localizacao ou mandar um audio."));
         } else {
           // Process the destination directly — reuse the aguardando_endereco_destino logic
           let destText: string | null = null;
@@ -1120,7 +1120,7 @@ As mensagens do passageiro serao encaminhadas a partir de agora.`;
           }
 
           if (!destText) {
-            await sendBotMessage(companyId, cleanPhone, connectionId, msg("destination_retry", "Por favor, envie o endereco de destino. Voce pode digitar, mandar um audio ou compartilhar a localizacao."));
+            await sendBotMessage(companyId, cleanPhone, connectionId, msg("destination_retry", "\U0001F4CD Por favor, envie o endereco de destino. Voce pode digitar, mandar um audio ou compartilhar a localizacao."));
             return;
           }
 
@@ -1157,7 +1157,7 @@ As mensagens do passageiro serao encaminhadas a partir de agora.`;
                 finalDestLat = geocoded.lat;
                 finalDestLng = geocoded.lng;
               } else {
-                await sendBotMessage(companyId, cleanPhone, connectionId, msg("destination_not_found", "Nao consegui encontrar o endereco de destino. Tente enviar um endereco mais completo (ex: Rua, numero, bairro, cidade)."));
+                await sendBotMessage(companyId, cleanPhone, connectionId, msg("destination_not_found", "\u274C Nao consegui encontrar o endereco de destino. Tente enviar um endereco mais completo (ex: Rua, numero, bairro, cidade)."));
                 return;
               }
             }
@@ -1174,7 +1174,7 @@ As mensagens do passageiro serao encaminhadas a partir de agora.`;
               finalDestLng = geocoded.lng;
               finalDestAddress = geocoded.formatted;
             } else {
-              await sendBotMessage(companyId, cleanPhone, connectionId, msg("destination_not_found", "Nao consegui encontrar o endereco de destino. Tente enviar um endereco mais completo (ex: Rua, numero, bairro, cidade)."));
+              await sendBotMessage(companyId, cleanPhone, connectionId, msg("destination_not_found", "\u274C Nao consegui encontrar o endereco de destino. Tente enviar um endereco mais completo (ex: Rua, numero, bairro, cidade)."));
               return;
             }
           }
@@ -1190,10 +1190,10 @@ As mensagens do passageiro serao encaminhadas a partir de agora.`;
               updated_at: new Date().toISOString(),
             })
             .eq("id", conv.id);
-          await sendBotMessage(companyId, cleanPhone, connectionId, msg("confirm_address", `Confirma os dados da corrida?\n\nEmbarque: ${pickupAddr}\nDestino: ${finalDestAddress}\n\nResponda SIM para confirmar ou NAO para corrigir.`));
+          await sendBotMessage(companyId, cleanPhone, connectionId, msg("confirm_address", `\u2705 Confirma os dados da corrida?\n\n\U0001F4CD Embarque: ${pickupAddr}\n\U0001F3AF Destino: ${finalDestAddress}\n\nResponda SIM para confirmar ou NAO para corrigir.`));
         }
       } else {
-        await sendBotMessage(companyId, cleanPhone, connectionId, msg("destination_menu_retry", `Opcao invalida.\n\n1 - Digitar o Endereco de Destino\n2 - Nao informar Endereco\n\nResponda com o numero da opcao.`));
+        await sendBotMessage(companyId, cleanPhone, connectionId, msg("destination_menu_retry", `\u26A0\uFE0F Opcao invalida.\n\n1 - Digitar o Endereco de Destino \U0001F4DD\n2 - Nao informar Endereco \U0001F6AB\n\nResponda com o numero da opcao.`));
       }
       break;
     }
@@ -1222,7 +1222,7 @@ As mensagens do passageiro serao encaminhadas a partir de agora.`;
       }
 
       if (!destText) {
-        await sendBotMessage(companyId, cleanPhone, connectionId, msg("destination_retry", "Por favor, envie o endereco de destino. Voce pode digitar, mandar um audio ou compartilhar a localizacao."));
+        await sendBotMessage(companyId, cleanPhone, connectionId, msg("destination_retry", "\U0001F4CD Por favor, envie o endereco de destino. Voce pode digitar, mandar um audio ou compartilhar a localizacao."));
         return;
       }
 
@@ -1260,7 +1260,7 @@ As mensagens do passageiro serao encaminhadas a partir de agora.`;
             finalDestLat = geocoded.lat;
             finalDestLng = geocoded.lng;
           } else {
-            await sendBotMessage(companyId, cleanPhone, connectionId, msg("destination_not_found", "Nao consegui encontrar o endereco de destino. Tente enviar um endereco mais completo (ex: Rua, numero, bairro, cidade)."));
+            await sendBotMessage(companyId, cleanPhone, connectionId, msg("destination_not_found", "\u274C Nao consegui encontrar o endereco de destino. Tente enviar um endereco mais completo (ex: Rua, numero, bairro, cidade)."));
             return;
           }
         }
@@ -1277,7 +1277,7 @@ As mensagens do passageiro serao encaminhadas a partir de agora.`;
           finalDestLng = geocoded.lng;
           finalDestAddress = geocoded.formatted;
         } else {
-          await sendBotMessage(companyId, cleanPhone, connectionId, msg("destination_not_found", "Nao consegui encontrar o endereco de destino. Tente enviar um endereco mais completo (ex: Rua, numero, bairro, cidade)."));
+          await sendBotMessage(companyId, cleanPhone, connectionId, msg("destination_not_found", "\u274C Nao consegui encontrar o endereco de destino. Tente enviar um endereco mais completo (ex: Rua, numero, bairro, cidade)."));
           return;
         }
       }
@@ -1293,7 +1293,7 @@ As mensagens do passageiro serao encaminhadas a partir de agora.`;
           updated_at: new Date().toISOString(),
         })
         .eq("id", conv.id);
-      await sendBotMessage(companyId, cleanPhone, connectionId, msg("confirm_address", `Confirma os dados da corrida?\n\nEmbarque: ${pickupAddr}\nDestino: ${finalDestAddress}\n\nResponda SIM para confirmar ou NAO para corrigir.`));
+      await sendBotMessage(companyId, cleanPhone, connectionId, msg("confirm_address", `\u2705 Confirma os dados da corrida?\n\n\U0001F4CD Embarque: ${pickupAddr}\n\U0001F3AF Destino: ${finalDestAddress}\n\nResponda SIM para confirmar ou NAO para corrigir.`));
       break;
     }
 
@@ -1310,9 +1310,9 @@ As mensagens do passageiro serao encaminhadas a partir de agora.`;
         await supabase.from("bot_conversas")
           .update({ state: "aguardando_endereco", updated_at: new Date().toISOString() })
           .eq("id", conv.id);
-        await sendBotMessage(companyId, cleanPhone, connectionId, msg("address_correction", "Sem problema! Qual e o endereco correto de embarque? Voce pode digitar, enviar sua localizacao ou mandar um audio."));
+        await sendBotMessage(companyId, cleanPhone, connectionId, msg("address_correction", "\U0001F504 Sem problema! Qual e o endereco correto de embarque? Voce pode digitar, enviar sua localizacao ou mandar um audio."));
       } else {
-        await sendBotMessage(companyId, cleanPhone, connectionId, msg("confirm_retry", "Por favor, responda SIM para confirmar ou NAO para corrigir."));
+        await sendBotMessage(companyId, cleanPhone, connectionId, msg("confirm_retry", "\u26A0\uFE0F Por favor, responda SIM para confirmar ou NAO para corrigir."));
       }
       break;
     }
@@ -1320,7 +1320,7 @@ As mensagens do passageiro serao encaminhadas a partir de agora.`;
     case "aguardando_categoria": {
       const categories = await getCategoriesForConnection(companyId, connectionId);
       if (categories.length === 0) {
-        await sendBotMessage(companyId, cleanPhone, connectionId, msg("ride_error", "Nenhuma categoria disponivel. Tente novamente mais tarde."));
+        await sendBotMessage(companyId, cleanPhone, connectionId, msg("ride_error", "\u274C Nenhuma categoria disponivel. Tente novamente mais tarde."));
         await supabase.from("bot_conversas")
           .update({ state: "aguardando_endereco", updated_at: new Date().toISOString() })
           .eq("id", conv.id);
@@ -1339,7 +1339,7 @@ As mensagens do passageiro serao encaminhadas a partir de agora.`;
 
       if (!chosenCat) {
         const opts = categories.map((c, i) => `${i + 1} - ${c.label}`).join("\n");
-        await sendBotMessage(companyId, cleanPhone, connectionId, msg("category_retry", `Opcao invalida. Escolha uma categoria:\n\n${opts}\n\nResponda com o numero da opcao.`));
+        await sendBotMessage(companyId, cleanPhone, connectionId, msg("category_retry", `\u26A0\uFE0F Opcao invalida. Escolha uma categoria:\n\n${opts}\n\nResponda com o numero da opcao.`));
         return;
       }
 
@@ -1351,7 +1351,7 @@ As mensagens do passageiro serao encaminhadas a partir de agora.`;
           updated_at: new Date().toISOString(),
         })
         .eq("id", conv.id);
-      await sendBotMessage(companyId, cleanPhone, connectionId, msg("ask_payment", `Qual a forma de pagamento?\n\n1 - Dinheiro\n2 - Pix\n3 - Cartao\n\nResponda com o numero da opcao.`));
+      await sendBotMessage(companyId, cleanPhone, connectionId, msg("ask_payment", `\U0001F4B0 Qual a forma de pagamento?\n\n1 - Dinheiro \U0001F4B5\n2 - Pix \U0001F9EC\n3 - Cartao \U0001F4B3\n\nResponda com o numero da opcao.`));
       break;
     }
 
@@ -1368,7 +1368,7 @@ As mensagens do passageiro serao encaminhadas a partir de agora.`;
       const paymentMethod = paymentMap[normalizedText] ?? null;
 
       if (!paymentMethod) {
-        await sendBotMessage(companyId, cleanPhone, connectionId, msg("payment_retry", `Opcao invalida. Qual a forma de pagamento?\n\n1 - Dinheiro\n2 - Pix\n3 - Cartao\n\nResponda com o numero da opcao.`));
+        await sendBotMessage(companyId, cleanPhone, connectionId, msg("payment_retry", `\u26A0\uFE0F Opcao invalida. Qual a forma de pagamento?\n\n1 - Dinheiro \U0001F4B5\n2 - Pix \U0001F9EC\n3 - Cartao \U0001F4B3\n\nResponda com o numero da opcao.`));
         return;
       }
 
@@ -1426,7 +1426,7 @@ As mensagens do passageiro serao encaminhadas a partir de agora.`;
           })
           .eq("id", conv.id);
 
-        const successMsg = result.machineMessage || msg("ride_success", `Corrida solicitada com sucesso! Pagamento: ${paymentMethod}. Um motorista vai aceitar em breve. Aguarde.`);
+        const successMsg = result.machineMessage || msg("ride_success", `\u2705 Corrida solicitada com sucesso! Pagamento: ${paymentMethod}. Um motorista vai aceitar em breve. Aguarde.`);
         await sendBotMessage(companyId, cleanPhone, connectionId, successMsg);
 
         await supabase.from("admin_logs").insert({
@@ -1442,7 +1442,7 @@ As mensagens do passageiro serao encaminhadas a partir de agora.`;
             .update({ status: "canceled", updated_at: new Date().toISOString() })
             .eq("id", result.rideId);
         }
-        await sendBotMessage(companyId, cleanPhone, connectionId, msg("ride_error", `Houve um erro ao solicitar a corrida: ${result.error ?? "erro desconhecido"}.\n\nPara tentar novamente, envie uma mensagem.`));
+        await sendBotMessage(companyId, cleanPhone, connectionId, msg("ride_error", `\u274C Houve um erro ao solicitar a corrida: ${result.error ?? "erro desconhecido"}.\n\nPara tentar novamente, envie uma mensagem.`));
         await supabase.from("bot_conversas")
           .update({ state: "menu_inicial", ride_id: null, updated_at: new Date().toISOString() })
           .eq("id", conv.id);
@@ -1472,14 +1472,14 @@ As mensagens do passageiro serao encaminhadas a partir de agora.`;
           await supabase.from("bot_conversas")
             .update({ state: "menu_inicial", updated_at: new Date().toISOString() })
             .eq("id", conv.id);
-          await sendBotMessage(companyId, cleanPhone, connectionId, msg("support_exit", "Voce saiu do suporte.\n\n1 - Solicitar corrida\n2 - Suporte\n\nResponda com o numero da opcao."));
+          await sendBotMessage(companyId, cleanPhone, connectionId, msg("support_exit", "\U0001F44B Voce saiu do suporte.\n\n1 - Solicitar corrida \U0001F695\n2 - Suporte \U0001F4AC\n\nResponda com o numero da opcao."));
           break;
         }
       } else if (text && ["sair", "voltar", "corrida", "1", "menu", "fim"].includes(normalizedText)) {
         await supabase.from("bot_conversas")
           .update({ state: "menu_inicial", updated_at: new Date().toISOString() })
           .eq("id", conv.id);
-        await sendBotMessage(companyId, cleanPhone, connectionId, msg("support_exit", "Voce saiu do suporte.\n\n1 - Solicitar corrida\n2 - Suporte\n\nResponda com o numero da opcao."));
+        await sendBotMessage(companyId, cleanPhone, connectionId, msg("support_exit", "\U0001F44B Voce saiu do suporte.\n\n1 - Solicitar corrida \U0001F695\n2 - Suporte \U0001F4AC\n\nResponda com o numero da opcao."));
       }
       break;
     }
@@ -1488,7 +1488,7 @@ As mensagens do passageiro serao encaminhadas a partir de agora.`;
       await supabase.from("bot_conversas")
         .update({ state: "menu_inicial", ride_id: null, updated_at: new Date().toISOString() })
         .eq("id", conv.id);
-      await sendBotMessage(companyId, cleanPhone, connectionId, msg("welcome_back", "Ola! Como podemos ajudar?\n\n1 - Solicitar corrida\n2 - Suporte\n\nResponda com o numero da opcao."));
+      await sendBotMessage(companyId, cleanPhone, connectionId, msg("welcome_back", "\U0001F44B Ola! Como podemos ajudar?\n\n1 - Solicitar corrida \U0001F695\n2 - Suporte \U0001F4AC\n\nResponda com o numero da opcao."));
       break;
     }
   }
