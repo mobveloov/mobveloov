@@ -255,11 +255,25 @@ async function sendWhatsAppMessageWithProvider(
     const token = f["evo_token"] ?? "";
     if (!url || !token) return false;
     const instance = f["evo_instance"] || "veloov";
-    const resp = await fetch(`${url}/message/sendText/${instance}`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", apikey: token },
-      body: JSON.stringify({ number: cleanPhone, text: message, delay: 1200 }),
-    });
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 10000);
+    let resp: Response;
+    try {
+      resp = await fetch(`${url}/message/sendText/${instance}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", apikey: token },
+        body: JSON.stringify({ number: cleanPhone, text: message, delay: 1200 }),
+        signal: controller.signal,
+      });
+    } catch (fetchErr) {
+      clearTimeout(timeout);
+      await supabase.from("admin_logs").insert({
+        source: "whatsapp_webhook", level: "error",
+        message: `sendText Evolution fetch error for ${cleanPhone}: ${fetchErr instanceof Error ? fetchErr.message.slice(0, 500) : String(fetchErr).slice(0, 500)}`,
+      });
+      return false;
+    }
+    clearTimeout(timeout);
     const respBody = await resp.text().catch(() => "");
     if (!resp.ok) {
       await supabase.from("admin_logs").insert({
@@ -282,11 +296,25 @@ async function sendWhatsAppMessageWithProvider(
     const instanceToken = f["zapi_instance_token"] ?? "";
     const clientToken = f["zapi_client_token"] ?? "";
     if (!url || !instanceToken) return false;
-    const resp = await fetch(`${url}/token/${instanceToken}/send-text`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", ...(clientToken ? { "Client-Token": clientToken } : {}) },
-      body: JSON.stringify({ phone: cleanPhone, message }),
-    });
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 10000);
+    let resp: Response;
+    try {
+      resp = await fetch(`${url}/token/${instanceToken}/send-text`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...(clientToken ? { "Client-Token": clientToken } : {}) },
+        body: JSON.stringify({ phone: cleanPhone, message }),
+        signal: controller.signal,
+      });
+    } catch (fetchErr) {
+      clearTimeout(timeout);
+      await supabase.from("admin_logs").insert({
+        source: "whatsapp_webhook", level: "error",
+        message: `sendText Z-API fetch error for ${cleanPhone}: ${fetchErr instanceof Error ? fetchErr.message.slice(0, 500) : String(fetchErr).slice(0, 500)}`,
+      });
+      return false;
+    }
+    clearTimeout(timeout);
     return resp.ok;
   }
 
@@ -295,11 +323,25 @@ async function sendWhatsAppMessageWithProvider(
     const instanceToken = f["zpro_instance_token"] ?? "";
     const clientToken = f["zpro_client_token"] ?? "";
     if (!url || !instanceToken) return false;
-    const resp = await fetch(`${url}/token/${instanceToken}/send-text`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", ...(clientToken ? { "Client-Token": clientToken } : {}) },
-      body: JSON.stringify({ phone: cleanPhone, message }),
-    });
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 10000);
+    let resp: Response;
+    try {
+      resp = await fetch(`${url}/token/${instanceToken}/send-text`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...(clientToken ? { "Client-Token": clientToken } : {}) },
+        body: JSON.stringify({ phone: cleanPhone, message }),
+        signal: controller.signal,
+      });
+    } catch (fetchErr) {
+      clearTimeout(timeout);
+      await supabase.from("admin_logs").insert({
+        source: "whatsapp_webhook", level: "error",
+        message: `sendText Z-Pro fetch error for ${cleanPhone}: ${fetchErr instanceof Error ? fetchErr.message.slice(0, 500) : String(fetchErr).slice(0, 500)}`,
+      });
+      return false;
+    }
+    clearTimeout(timeout);
     return resp.ok;
   }
 
@@ -307,16 +349,30 @@ async function sendWhatsAppMessageWithProvider(
     const token = f["meta_token"] ?? "";
     const phoneId = f["meta_phone_id"] ?? "";
     if (!token || !phoneId) return false;
-    const resp = await fetch(`https://graph.facebook.com/v20.0/${phoneId}/messages`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-      body: JSON.stringify({
-        messaging_product: "whatsapp",
-        to: cleanPhone,
-        type: "text",
-        text: { body: message },
-      }),
-    });
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 10000);
+    let resp: Response;
+    try {
+      resp = await fetch(`https://graph.facebook.com/v20.0/${phoneId}/messages`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({
+          messaging_product: "whatsapp",
+          to: cleanPhone,
+          type: "text",
+          text: { body: message },
+        }),
+        signal: controller.signal,
+      });
+    } catch (fetchErr) {
+      clearTimeout(timeout);
+      await supabase.from("admin_logs").insert({
+        source: "whatsapp_webhook", level: "error",
+        message: `sendText Meta Cloud fetch error for ${cleanPhone}: ${fetchErr instanceof Error ? fetchErr.message.slice(0, 500) : String(fetchErr).slice(0, 500)}`,
+      });
+      return false;
+    }
+    clearTimeout(timeout);
     return resp.ok;
   }
 
@@ -327,15 +383,29 @@ async function sendWhatsAppMessageWithProvider(
     if (!url) return false;
     let extraHeaders: Record<string, string> = {};
     try { extraHeaders = JSON.parse(headersJson); } catch { /* ignore */ }
-    const resp = await fetch(url, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: token ? `Bearer ${token}` : "",
-        ...extraHeaders,
-      },
-      body: JSON.stringify({ phone: cleanPhone, message, text: message, number: cleanPhone }),
-    });
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 10000);
+    let resp: Response;
+    try {
+      resp = await fetch(url, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: token ? `Bearer ${token}` : "",
+          ...extraHeaders,
+        },
+        body: JSON.stringify({ phone: cleanPhone, message, text: message, number: cleanPhone }),
+        signal: controller.signal,
+      });
+    } catch (fetchErr) {
+      clearTimeout(timeout);
+      await supabase.from("admin_logs").insert({
+        source: "whatsapp_webhook", level: "error",
+        message: `sendText custom webhook fetch error for ${cleanPhone}: ${fetchErr instanceof Error ? fetchErr.message.slice(0, 500) : String(fetchErr).slice(0, 500)}`,
+      });
+      return false;
+    }
+    clearTimeout(timeout);
     return resp.ok;
   }
 
@@ -410,25 +480,39 @@ async function sendInteractiveWithProvider(
     const phoneId = f["meta_phone_id"] ?? "";
     if (!token || !phoneId) return false;
     // Meta Cloud API: up to 3 buttons via interactive type
-    const resp = await fetch(`https://graph.facebook.com/v20.0/${phoneId}/messages`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-      body: JSON.stringify({
-        messaging_product: "whatsapp",
-        to: cleanPhone,
-        type: "interactive",
-        interactive: {
-          type: "button",
-          body: { text: bodyText },
-          action: {
-            buttons: buttons.slice(0, 3).map((b) => ({
-              type: "reply",
-              reply: { id: b.id, title: b.label.slice(0, 20) },
-            })),
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 10000);
+    let resp: Response;
+    try {
+      resp = await fetch(`https://graph.facebook.com/v20.0/${phoneId}/messages`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({
+          messaging_product: "whatsapp",
+          to: cleanPhone,
+          type: "interactive",
+          interactive: {
+            type: "button",
+            body: { text: bodyText },
+            action: {
+              buttons: buttons.slice(0, 3).map((b) => ({
+                type: "reply",
+                reply: { id: b.id, title: b.label.slice(0, 20) },
+              })),
+            },
           },
-        },
-      }),
-    });
+        }),
+        signal: controller.signal,
+      });
+    } catch (fetchErr) {
+      clearTimeout(timeout);
+      await supabase.from("admin_logs").insert({
+        source: "whatsapp_webhook", level: "error",
+        message: `sendInteractiveButtons Meta fetch error for ${cleanPhone}: ${fetchErr instanceof Error ? fetchErr.message.slice(0, 500) : String(fetchErr).slice(0, 500)}`,
+      });
+      return false;
+    }
+    clearTimeout(timeout);
     return resp.ok;
   }
 
@@ -497,26 +581,40 @@ async function sendInteractiveListWithProvider(
     const token = f["meta_token"] ?? "";
     const phoneId = f["meta_phone_id"] ?? "";
     if (!token || !phoneId) return false;
-    const resp = await fetch(`https://graph.facebook.com/v20.0/${phoneId}/messages`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-      body: JSON.stringify({
-        messaging_product: "whatsapp",
-        to: cleanPhone,
-        type: "interactive",
-        interactive: {
-          type: "list",
-          body: { text: bodyText },
-          action: {
-            button: buttonText,
-            sections: sections.map((s) => ({
-              title: s.title,
-              rows: s.rows.map((r) => ({ id: r.id, title: r.label.slice(0, 24) })),
-            })),
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 10000);
+    let resp: Response;
+    try {
+      resp = await fetch(`https://graph.facebook.com/v20.0/${phoneId}/messages`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({
+          messaging_product: "whatsapp",
+          to: cleanPhone,
+          type: "interactive",
+          interactive: {
+            type: "list",
+            body: { text: bodyText },
+            action: {
+              button: buttonText,
+              sections: sections.map((s) => ({
+                title: s.title,
+                rows: s.rows.map((r) => ({ id: r.id, title: r.label.slice(0, 24) })),
+              })),
+            },
           },
-        },
-      }),
-    });
+        }),
+        signal: controller.signal,
+      });
+    } catch (fetchErr) {
+      clearTimeout(timeout);
+      await supabase.from("admin_logs").insert({
+        source: "whatsapp_webhook", level: "error",
+        message: `sendInteractiveList Meta fetch error for ${cleanPhone}: ${fetchErr instanceof Error ? fetchErr.message.slice(0, 500) : String(fetchErr).slice(0, 500)}`,
+      });
+      return false;
+    }
+    clearTimeout(timeout);
     return resp.ok;
   }
 
