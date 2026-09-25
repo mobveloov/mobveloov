@@ -2226,7 +2226,7 @@ async function handleIncomingMessage(companyId: string, data: Record<string, unk
     ?? (data?.audio as Record<string, unknown> | undefined)?.base64
     ?? data?.base64
     ?? null;
-  const mimetype = audioSource?.mimetype ?? audioSource?.mimeType ?? data?.mimetype ?? "audio/ogg";
+  let audioMimeType = String(audioSource?.mimetype ?? audioSource?.mimeType ?? data?.mimetype ?? "audio/ogg");
 
   // Evolution API often sends audioMessage with NO audio data in the webhook payload.
   // We must call the getBase64FromMediaMessage endpoint to fetch the actual base64 audio.
@@ -2245,12 +2245,14 @@ async function handleIncomingMessage(companyId: string, data: Record<string, unk
               headers: { "Content-Type": "application/json", apikey: evoToken },
               body: JSON.stringify({
                 message: { key: { id: msgKeyId } },
-                convertToMp4: false,
+                convertToMp4: true,
               }),
             });
             if (mediaResp.ok) {
               const mediaData = await mediaResp.json() as Record<string, unknown>;
               audioData = mediaData.base64 ?? mediaData.base64Media ?? null;
+              // convertToMp4 returns MP4 audio, which Groq/Whisper can process
+              if (audioData) audioMimeType = "audio/mp4";
             } else {
               const errBody = await mediaResp.text().catch(() => "");
               await supabase.from("admin_logs").insert({
@@ -2308,7 +2310,7 @@ async function handleIncomingMessage(companyId: string, data: Record<string, unk
         });
       }
     }
-    audio = { data: audioDataStr, mimetype: String(mimetype) };
+    audio = { data: audioDataStr, mimetype: audioMimeType };
   }
 
   if (!rawPhone) return;
