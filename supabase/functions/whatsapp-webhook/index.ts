@@ -751,22 +751,12 @@ function formatReverseAddress(data: Record<string, unknown>): string | null {
     city,
     state,
   ].filter((part, index, all) => part && all.indexOf(part) === index) as string[];
+  if (!street && !number) return null;
   return parts.length > 0 ? parts.join(" - ") : null;
 }
 
 async function reverseGeocode(lat: number, lng: number): Promise<string | null> {
-  // BigDataCloud provides detailed results without an API key.
-  try {
-    const bdcUrl = `https://api.bigdatacloud.net/data/reverse-geocode-client?latitude=${encodeURIComponent(lat)}&longitude=${encodeURIComponent(lng)}&localityLanguage=pt`;
-    const bdcResp = await fetch(bdcUrl);
-    if (bdcResp.ok) {
-      const bdc = await bdcResp.json() as Record<string, unknown>;
-      const formatted = formatReverseAddress(bdc);
-      if (formatted) return formatted;
-    }
-  } catch { /* try the next provider */ }
-
-  // Nominatim fallback.
+  // Nominatim first — at zoom=18 it returns street-level detail (road + housenumber).
   try {
     const nomUrl = `https://nominatim.openstreetmap.org/reverse?lat=${encodeURIComponent(lat)}&lon=${encodeURIComponent(lng)}&format=json&addressdetails=1&zoom=18&accept-language=pt-BR`;
     const nomResp = await fetch(nomUrl, {
@@ -782,6 +772,17 @@ async function reverseGeocode(lat: number, lng: number): Promise<string | null> 
       if (formatted) return formatted;
       const displayName = cleanAddressPart(data.display_name);
       if (displayName) return displayName;
+    }
+  } catch { /* try the next provider */ }
+
+  // BigDataCloud fallback — no API key needed, but may only return neighborhood/city.
+  try {
+    const bdcUrl = `https://api.bigdatacloud.net/data/reverse-geocode-client?latitude=${encodeURIComponent(lat)}&longitude=${encodeURIComponent(lng)}&localityLanguage=pt`;
+    const bdcResp = await fetch(bdcUrl);
+    if (bdcResp.ok) {
+      const bdc = await bdcResp.json() as Record<string, unknown>;
+      const formatted = formatReverseAddress(bdc);
+      if (formatted) return formatted;
     }
   } catch { /* try the next provider */ }
 
@@ -1660,6 +1661,7 @@ async function handleBotMessage(
             address_lat: location.lat,
             address_lng: location.lng,
             address_formatted: pickupAddress,
+            origin_reference: normalizePlaceText(pickupAddress),
             address_is_fallback: false,
             updated_at: new Date().toISOString(),
           })
@@ -1748,6 +1750,7 @@ As mensagens do passageiro serao encaminhadas a partir de agora.`;
         lng = location.lng;
         const reversed = await reverseGeocode(lat, lng);
         addressText = reversed ?? "Localizacao compartilhada pelo passageiro";
+        originReference = normalizePlaceText(addressText);
       } else if (audio) {
         const transcribed = await transcribeAudio(audio.data, audio.mimetype, companyId);
         if (transcribed) {
@@ -1762,8 +1765,8 @@ As mensagens do passageiro serao encaminhadas a partir de agora.`;
           if (llmResult && llmResult.endereco_origem) {
             addressText = normalizePlaceText(llmResult.endereco_origem);
             combinedDest = normalizePlaceText(llmResult.endereco_destino);
-            originReference = normalizePlaceText(llmResult.texto_embarque_motorista ?? llmResult.endereco_origem);
-            destinationReference = normalizePlaceText(llmResult.texto_destino_motorista);
+            originReference = normalizePlaceText(llmResult.texto_embarque_motorista ?? llmResult.endereco_origem) ?? addressText;
+            destinationReference = normalizePlaceText(llmResult.texto_destino_motorista) ?? combinedDest;
             llmIsRuaOficial = !!llmResult.eh_rua_oficial;
           } else {
             const combined = parseCombinedAddress(audioText);
@@ -1792,8 +1795,8 @@ As mensagens do passageiro serao encaminhadas a partir de agora.`;
         if (llmResult && llmResult.endereco_origem) {
           addressText = normalizePlaceText(llmResult.endereco_origem);
           combinedDest = normalizePlaceText(llmResult.endereco_destino);
-          originReference = normalizePlaceText(llmResult.texto_embarque_motorista ?? llmResult.endereco_origem);
-          destinationReference = normalizePlaceText(llmResult.texto_destino_motorista);
+          originReference = normalizePlaceText(llmResult.texto_embarque_motorista ?? llmResult.endereco_origem) ?? addressText;
+          destinationReference = normalizePlaceText(llmResult.texto_destino_motorista) ?? combinedDest;
           llmIsRuaOficial = !!llmResult.eh_rua_oficial;
         } else {
           const combined = parseCombinedAddress(text.trim());
@@ -1860,7 +1863,7 @@ As mensagens do passageiro serao encaminhadas a partir de agora.`;
         if (geocoded) {
           finalLat = geocoded.lat;
           finalLng = geocoded.lng;
-          finalAddress = geocoded.formatted;
+          finalAddress = addressText;
         } else if (companyLoc.lat != null && companyLoc.lng != null) {
           finalLat = companyLoc.lat;
           finalLng = companyLoc.lng;
