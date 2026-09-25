@@ -1692,7 +1692,31 @@ As mensagens do passageiro serao encaminhadas a partir de agora.`;
       } else if (audio) {
         const transcribed = await transcribeAudio(audio.data, audio.mimetype, companyId);
         if (transcribed) {
-          addressText = transcribed.trim();
+          const audioText = transcribed.trim();
+          const llmCtx = await getCompanyLocationInfo(companyId, connectionId);
+          const llmResult = await interpretMessageWithLLM(audioText, companyId, {
+            city: llmCtx.city,
+            state: llmCtx.state,
+            totemReference: llmCtx.pickupAddress || llmCtx.totemName,
+            isTotemFixo: !!llmCtx.pickupAddress,
+          });
+          if (llmResult && llmResult.endereco_origem) {
+            addressText = llmResult.endereco_origem;
+            combinedDest = llmResult.endereco_destino ?? null;
+            originReference = (llmResult.texto_embarque_motorista ?? llmResult.endereco_origem).toUpperCase();
+            destinationReference = (llmResult.texto_destino_motorista ?? null) ? (llmResult.texto_destino_motorista as string).toUpperCase() : null;
+            llmIsRuaOficial = !!llmResult.eh_rua_oficial;
+          } else {
+            const combined = parseCombinedAddress(audioText);
+            if (combined) {
+              addressText = combined.pickup;
+              combinedDest = combined.destination;
+              originReference = combined.pickup.toUpperCase();
+              destinationReference = combined.destination.toUpperCase();
+            } else {
+              addressText = audioText;
+            }
+          }
         } else {
           await sendBotMessage(companyId, cleanPhone, connectionId, "Nao consegui transcrever o audio. Por favor, digite o endereco de embarque ou envie sua localizacao.");
           return;
@@ -1881,13 +1905,13 @@ As mensagens do passageiro serao encaminhadas a partir de agora.`;
           } else if (audio) {
             const transcribed = await transcribeAudio(audio.data, audio.mimetype, companyId);
             if (transcribed) {
-              destText = transcribed.trim();
+              destText = transcribed.trim().toUpperCase();
             } else {
               await sendBotMessage(companyId, cleanPhone, connectionId, "Nao consegui transcrever o audio. Por favor, digite o endereco de destino.");
               return;
             }
           } else if (text) {
-            destText = text.trim();
+            destText = text.trim().toUpperCase();
           }
 
           if (!destText) {
@@ -1898,7 +1922,7 @@ As mensagens do passageiro serao encaminhadas a partir de agora.`;
           // For text/audio destinations, keep lat/lng null so Machine API calculates by KM
           let finalDestLat: number | null = null;
           let finalDestLng: number | null = null;
-          let finalDestAddress = destText.toUpperCase();
+          let finalDestAddress = destText;
 
           if (location) {
             finalDestLat = destLat!;
@@ -1939,13 +1963,13 @@ As mensagens do passageiro serao encaminhadas a partir de agora.`;
       } else if (audio) {
         const transcribed = await transcribeAudio(audio.data, audio.mimetype, companyId);
         if (transcribed) {
-          destText = transcribed.trim();
+          destText = transcribed.trim().toUpperCase();
         } else {
           await sendBotMessage(companyId, cleanPhone, connectionId, "Nao consegui transcrever o audio. Por favor, digite o endereco de destino.");
           return;
         }
       } else if (text) {
-        destText = text.trim();
+        destText = text.trim().toUpperCase();
       }
 
       if (!destText) {
@@ -1956,7 +1980,7 @@ As mensagens do passageiro serao encaminhadas a partir de agora.`;
       // For text/audio destinations, keep lat/lng null so Machine API calculates by KM
       let finalDestLat: number | null = null;
       let finalDestLng: number | null = null;
-      let finalDestAddress = destText.toUpperCase();
+      let finalDestAddress = destText;
 
       if (location) {
         finalDestLat = destLat!;
