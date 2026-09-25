@@ -476,7 +476,7 @@ function ManualDispatchSection({ conn, companyId, onError, onSuccess, onUpdate }
           </span>
         </button>
       </div>
-      <p className="text-[11px] text-slate-500 mb-2">Quando ativado, o numero de suporte da empresa pode enviar mensagens formatadas para o bot para criar e despachar corridas em nome do passageiro.</p>
+      <p className="text-[11px] text-slate-500 mb-2">Quando ativado, a pessoa que usa o WhatsApp conectado nesta instancia do bot pode enviar mensagens formatadas para despachar corridas em nome dos passageiros.</p>
 
       {enabled && (
         <div className="bg-slate-800/40 rounded-lg px-3 py-3 space-y-2">
@@ -484,7 +484,7 @@ function ManualDispatchSection({ conn, companyId, onError, onSuccess, onUpdate }
             <Radio className="h-3.5 w-3.5 text-gold-400 mt-0.5 shrink-0" />
             <div className="min-w-0">
               <p className="text-[11px] font-bold text-slate-300">Como usar</p>
-              <p className="text-[10px] text-slate-500 mt-0.5">O WhatsApp de suporte envia uma mensagem para o numero do bot no formato:</p>
+              <p className="text-[10px] text-slate-500 mt-0.5">Usando o proprio WhatsApp do bot, envie uma mensagem no formato:</p>
             </div>
           </div>
           <div className="bg-slate-950/60 rounded-lg px-3 py-2 text-[10px] text-slate-400 font-mono leading-relaxed">
@@ -495,7 +495,7 @@ function ManualDispatchSection({ conn, companyId, onError, onSuccess, onUpdate }
             <li>Se houver uma corrida pendente para o passageiro, ela sera cancelada automaticamente (sem mensagem para o cliente)</li>
             <li>A conversa do bot com o passageiro e resetada para a nova corrida</li>
             <li>O destino e opcional — sem "vai para", despacha sem destino</li>
-            <li>A confirmacao e enviada apenas para o numero de suporte, nao para o passageiro</li>
+            <li>A confirmacao e enviada apenas para o numero do bot, nao para o passageiro</li>
           </ul>
         </div>
       )}

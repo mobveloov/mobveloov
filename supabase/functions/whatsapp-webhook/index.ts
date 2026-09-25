@@ -2551,8 +2551,7 @@ async function handleIncomingMessage(companyId: string, data: Record<string, unk
 
   const key = data?.key as Record<string, unknown> | undefined;
 
-  // Skip outgoing messages (from the bot/instance itself) — only process incoming human messages
-  if (key?.fromMe === true) return;
+  const isOutgoing = key?.fromMe === true;
 
   let rawPhone: string | null = null;
   let text: string | null = null;
@@ -2756,6 +2755,245 @@ async function handleIncomingMessage(companyId: string, data: Record<string, unk
   }
 
   const cleanPhone = rawPhone.replace(/\D/g, "");
+
+  // Handle outgoing messages (fromMe=true) — manual dispatch via the bot's own WhatsApp number
+  if (isOutgoing && text && connectionId) {
+    // Check if manual dispatch is enabled for this connection
+    const { data: mdConn } = await supabase
+      .from("bot_whatsapp_conexoes")
+      .select("manual_dispatch_enabled")
+      .eq("id", connectionId)
+      .maybeSingle();
+    const manualDispatchEnabled = mdConn?.manual_dispatch_enabled ?? false;
+
+    if (manualDispatchEnabled) {
+      const normalizedOutText = text.trim().toLowerCase();
+
+      // Try to parse a manual dispatch command:
+      // Format: "Nome, Telefone, Endereco vai para Destino" or "Nome, Telefone, Endereco" (no destination)
+      const dispatchRegex = /^([^,]+),\s*([0-9\s()+\-]+),\s*(.+?)(?:\s+vai\s+para\s+(.+))?$/i;
+      const dispatchMatch = text.trim().match(dispatchRegex);
+
+      if (dispatchMatch) {
+        const [, name, phoneStr, addressPart, destinationPart] = dispatchMatch;
+        const passengerName = name.trim();
+        const passengerPhone = toBrazilianWhatsAppNumber(phoneStr.trim());
+        const pickupAddress = addressPart.trim();
+        const destAddress = destinationPart?.trim() || null;
+
+        if (!passengerName || !passengerPhone || !pickupAddress) {
+          try {
+            const botConfig = await getBotConnectionConfig(connectionId);
+            if (botConfig) {
+              await sendWhatsAppMessageWithProvider(botConfig.provider, botConfig.fields, cleanPhone, "Formato invalido. Use: Nome, Telefone, Endereco de embarque vai para Destino");
+            }
+          } catch { /* best-effort */ }
+          return;
+        }
+
+        // Cancel any pending ride for this passenger (no auto message to passenger)
+        const { data: existingRides } = await supabase
+          .from("rides")
+          .select("id, status, machine_order_id")
+          .eq("company_id", companyId)
+          .eq("passenger_phone", passengerPhone)
+          .in("status", ["pending"])
+          .order("created_at", { ascending: false });
+
+        if (existingRides && existingRides.length > 0) {
+          for (const r of existingRides) {
+            if (r.machine_order_id) {
+              try {
+                const { data: credentials } = await supabase
+                  .from("company_credentials")
+                  .select("machine_api_url, machine_api_key, taximetro_username, taximetro_password")
+                  .eq("company_id", companyId)
+                  .maybeSingle();
+                const { data: tenantRows } = await supabase
+                  .from("tenant_secrets")
+                  .select("secret_name, secret_value")
+                  .eq("tenant_id", companyId);
+                const tenantMap = new Map(
+                  (tenantRows ?? []).map((r2: { secret_name: string; secret_value: string }) => [r2.secret_name, r2.secret_value])
+                );
+                const baseUrl = (credentials?.machine_api_url || "https://api.taximachine.com.br").replace(/\/+$/, "");
+                const apiKey = tenantMap.get("MACHINE_API_KEY") || credentials?.machine_api_key || "";
+                const user = tenantMap.get("TAXIMETRO_USER") || credentials?.taximetro_username || "";
+                const pass = tenantMap.get("TAXIMETRO_PASSWORD") || credentials?.taximetro_password || "";
+                if (apiKey && user && pass) {
+                  await fetch(`${baseUrl}/api/v2/integracao/corridas/${r.machine_order_id}/cancelar`, {
+                    method: "POST",
+                    headers: {
+                      "Content-Type": "application/json",
+                      "api-key": apiKey,
+                      "Authorization": `Basic ${btoa(`${user}:${pass}`)}`,
+                    },
+                    body: JSON.stringify({ motivo_id: 1 }),
+                  });
+                }
+              } catch { /* best-effort */ }
+            }
+            await supabase.from("rides").update({
+              status: "canceled",
+              updated_at: new Date().toISOString(),
+            }).eq("id", r.id);
+          }
+
+          await supabase.from("admin_logs").insert({
+            company_id: companyId,
+            source: "whatsapp_webhook",
+            level: "info",
+            message: `Corrida(s) pendente(s) cancelada(s) para ${passengerName} (${passengerPhone}) via despacho manual pelo numero do bot`,
+          });
+        }
+
+        // Reset the passenger's bot conversation
+        await supabase.from("bot_conversas")
+          .update({
+            state: "corrida_solicitada",
+            passenger_name: passengerName,
+            address_text: pickupAddress,
+            address_formatted: pickupAddress,
+            destination_text: destAddress ?? null,
+            destination_formatted: destAddress ?? null,
+            selected_category_id: null,
+            selected_payment_method: null,
+            updated_at: new Date().toISOString(),
+          })
+          .eq("company_id", companyId)
+          .eq("phone", passengerPhone);
+
+        // Get company slug
+        const { data: companyRow } = await supabase
+          .from("companies")
+          .select("slug")
+          .eq("id", companyId)
+          .maybeSingle();
+
+        // Geocode the pickup address
+        const companyLoc = await getCompanyLocationInfo(companyId, connectionId);
+        const pickupGeocoded = await geocodeAddress(pickupAddress, companyLoc.city ?? undefined, companyLoc.state ?? undefined);
+        let originLat: number;
+        let originLng: number;
+        let originAddress: string;
+        if (pickupGeocoded) {
+          originLat = pickupGeocoded.lat;
+          originLng = pickupGeocoded.lng;
+          originAddress = pickupGeocoded.formatted;
+        } else if (companyLoc.lat != null && companyLoc.lng != null) {
+          originLat = companyLoc.lat;
+          originLng = companyLoc.lng;
+          originAddress = pickupAddress;
+        } else {
+          try {
+            const botConfig = await getBotConnectionConfig(connectionId);
+            if (botConfig) {
+              await sendWhatsAppMessageWithProvider(botConfig.provider, botConfig.fields, cleanPhone, `Nao foi possivel geocodificar o endereco de embarque: ${pickupAddress}. Verifique se o endereco esta correto.`);
+            }
+          } catch { /* best-effort */ }
+          return;
+        }
+
+        // Geocode destination if provided
+        let destination: { lat: number; lng: number; address: string } | null = null;
+        if (destAddress) {
+          const destGeocoded = await geocodeAddress(destAddress, companyLoc.city ?? undefined, companyLoc.state ?? undefined);
+          if (destGeocoded) {
+            destination = { lat: destGeocoded.lat, lng: destGeocoded.lng, address: destGeocoded.formatted };
+          } else {
+            destination = { lat: originLat, lng: originLng, address: destAddress };
+          }
+        }
+
+        // Get the first available category for this connection
+        const categories = await getCategoriesForConnection(companyId, connectionId);
+        const category = categories[0] ?? null;
+        const categoryLabel = category?.label ?? "Economico";
+        const machineCategoryId = category?.machine_category_id ?? null;
+
+        // Create and dispatch the ride
+        const result = await createAndDispatchRide(
+          companyId,
+          companyRow?.slug ?? "",
+          passengerName,
+          passengerPhone,
+          { lat: originLat, lng: originLng, address: originAddress },
+          categoryLabel,
+          machineCategoryId,
+          null,
+          destination,
+        );
+
+        // Update the conversation with the ride ID
+        if (result.rideId) {
+          await supabase.from("bot_conversas")
+            .update({ ride_id: result.rideId, updated_at: new Date().toISOString() })
+            .eq("company_id", companyId)
+            .eq("phone", passengerPhone);
+        }
+
+        // Log the manual dispatch
+        await supabase.from("admin_logs").insert({
+          company_id: companyId,
+          source: "whatsapp_webhook",
+          level: "info",
+          message: `Despacho manual via numero do bot: ${passengerName} (${passengerPhone}) - Embarque: ${originAddress}${destination ? ` - Destino: ${destination.address}` : ""} - ${result.success ? "Sucesso" : "Falha: " + (result.error ?? "")}`,
+          ride_id: result.rideId || undefined,
+        });
+
+        // Confirm back to the sender (the company person using the bot's WhatsApp)
+        try {
+          const botConfig = await getBotConnectionConfig(connectionId);
+          if (botConfig) {
+            const confirmMsg = result.success
+              ? `\u2705 Corrida despachada para ${passengerName} (${passengerPhone}).\nEmbarque: ${originAddress}${destination ? `\nDestino: ${destination.address}` : ""}${result.machineMessage ? `\n${result.machineMessage}` : ""}`
+              : `\u274C Erro ao despachar corrida para ${passengerName}: ${result.error ?? "erro desconhecido"}`;
+            await sendWhatsAppMessageWithProvider(botConfig.provider, botConfig.fields, cleanPhone, confirmMsg);
+          }
+        } catch { /* best-effort */ }
+
+        return;
+      }
+
+      // Outgoing message doesn't match dispatch format — check if there's a suporte conversation
+      // to forward the message to the passenger (support agent using bot's number to chat with passenger)
+      const supportExitWords = ["sair", "voltar", "corrida", "1", "menu", "fim", "encerrar", "encerra", "finalizar", "finaliza", "terminar", "termina", "encerrar suporte", "finalizar suporte"];
+      const { data: supportConv } = await supabase
+        .from("bot_conversas")
+        .select("id, phone, passenger_name, updated_at")
+        .eq("company_id", companyId)
+        .eq("state", "suporte")
+        .order("updated_at", { ascending: false })
+        .limit(1)
+        .maybeSingle();
+      if (supportConv) {
+        if (supportExitWords.includes(normalizedOutText)) {
+          await supabase.from("bot_conversas")
+            .update({ state: "menu_inicial", updated_at: new Date().toISOString() })
+            .eq("id", supportConv.id);
+          return;
+        }
+        // Forward message to passenger
+        const replyMsg = `Mensagem do Suporte: ${text.trim()}`;
+        try {
+          const botConfig = await getBotConnectionConfig(connectionId);
+          if (botConfig) {
+            await sendWhatsAppMessageWithProvider(botConfig.provider, botConfig.fields, supportConv.phone, replyMsg);
+          }
+        } catch { /* best-effort */ }
+        await supabase.from("bot_conversas")
+          .update({ updated_at: new Date().toISOString() })
+          .eq("id", supportConv.id);
+      }
+      return;
+    }
+
+    // Manual dispatch not enabled — skip outgoing messages
+    return;
+  }
+
+  // Skip further processing for outgoing messages when manual dispatch is not enabled
+  if (isOutgoing) return;
 
   if (!text && audio) {
     await supabase.from("admin_logs").insert({
