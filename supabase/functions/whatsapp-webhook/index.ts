@@ -682,6 +682,9 @@ function normalizePlaceText(value: string | null | undefined): string | null {
       .replace(/^(?:ate|até|a|o)\s+/i, "")
       .replace(/^(?:lá|la)\s+(?:no|na|em)\s+/i, "")
       .replace(/^(?:aqui\s+)?(?:na|no|em)\s+/i, "")
+      .replace(/[,\s]+eu\s*$/i, "")
+      .replace(/^eu\s+quero\s+um\s+carro\s+(?:aqui\s+)?(?:na|no|em)\s+/i, "")
+      .replace(/^eu\s+/i, "")
       .trim();
     if (s === before) break;
   }
@@ -2494,14 +2497,14 @@ As mensagens do passageiro serao encaminhadas a partir de agora.`;
               addressText = driverText;
             }
           } else if (combined) {
-            addressText = normalizePlaceText(combined.pickup);
-            combinedDest = normalizePlaceText(combined.destination);
-            originReference = normalizePlaceText(combined.pickup);
-            destinationReference = normalizePlaceText(combined.destination);
+            addressText = normalizePickupForDispatch(combined.pickup) ?? normalizePlaceText(combined.pickup);
+            combinedDest = normalizeDestinationForDispatch(combined.destination) ?? normalizePlaceText(combined.destination);
+            originReference = normalizePickupForDispatch(combined.pickup) ?? normalizePlaceText(combined.pickup);
+            destinationReference = combinedDest;
             llmIsRuaOficial = looksLikeOfficialAddress(combined.pickup);
           } else {
-            addressText = normalizePlaceText(audioText);
-            originReference = cleanPickupReference(audioText);
+            addressText = normalizePickupForDispatch(audioText) ?? normalizePlaceText(audioText);
+            originReference = normalizePickupForDispatch(audioText) ?? cleanPickupReference(audioText);
           }
         } else {
           await sendBotMessage(companyId, cleanPhone, connectionId, "Nao consegui transcrever o audio. Por favor, digite o endereco de embarque ou envie sua localizacao.");
@@ -2533,14 +2536,14 @@ As mensagens do passageiro serao encaminhadas a partir de agora.`;
             addressText = driverText;
           }
         } else if (combined) {
-          addressText = normalizePlaceText(combined.pickup);
-          combinedDest = normalizePlaceText(combined.destination);
-          originReference = normalizePlaceText(combined.pickup);
-          destinationReference = normalizePlaceText(combined.destination);
+          addressText = normalizePickupForDispatch(combined.pickup) ?? normalizePlaceText(combined.pickup);
+          combinedDest = normalizeDestinationForDispatch(combined.destination) ?? normalizePlaceText(combined.destination);
+          originReference = normalizePickupForDispatch(combined.pickup) ?? normalizePlaceText(combined.pickup);
+          destinationReference = combinedDest;
           llmIsRuaOficial = looksLikeOfficialAddress(combined.pickup);
         } else {
-          addressText = normalizePlaceText(inputText);
-          originReference = cleanPickupReference(inputText);
+          addressText = normalizePickupForDispatch(inputText) ?? normalizePlaceText(inputText);
+          originReference = normalizePickupForDispatch(inputText) ?? cleanPickupReference(inputText);
         }
       }
 
@@ -3376,7 +3379,7 @@ Deno.serve(async (req: Request) => {
         }
 
         // Handle incoming messages via bot flow
-        if (event === "messages.upsert" || event === "MESSAGES_UPSERT" || event === "message.receive") {
+        if (event === "messages.upsert" || event === "MESSAGES_UPSERT" || event === "message.receive" || event === "poll.update" || event === "messages.update" || event === "POLL_UPDATE") {
           const key = data?.key as Record<string, unknown> | undefined;
           // Skip outgoing messages (from the bot itself)
           if (key?.fromMe === true) {
@@ -3403,6 +3406,20 @@ Deno.serve(async (req: Request) => {
           if (typeof data?.body === "string") text = data.body;
           else if (data?.body && typeof data.body === "object") text = String((data.body as Record<string, unknown>).text ?? "");
 
+          // Extract poll vote from top-level data (Evolution API poll.update event)
+          if (!text) {
+            const pollVotes = data?.votes as Array<Record<string, unknown>> | undefined;
+            if (pollVotes && pollVotes.length > 0) {
+              text = String(pollVotes[0]?.optionName ?? pollVotes[0]?.name ?? "");
+            }
+            if (!text) {
+              const selectedOption = data?.selectedOption as Record<string, unknown> | undefined;
+              if (selectedOption?.name) {
+                text = String(selectedOption.name);
+              }
+            }
+          }
+
           // Extract interactive button/list/poll replies (Evolution API format)
           if (!text) {
             const buttonsResp = msg?.buttonsResponseMessage as Record<string, unknown> | undefined;
@@ -3415,7 +3432,7 @@ Deno.serve(async (req: Request) => {
                 text = String(singleSelect.selectedRowId);
               }
             }
-            // Poll vote extraction
+            // Poll vote extraction from nested message object
             if (!text) {
               const pollResp = msg?.pollUpdateMessage as Record<string, unknown> | undefined;
               if (pollResp) {
@@ -3546,7 +3563,7 @@ Deno.serve(async (req: Request) => {
     }
 
     // Handle incoming messages from passengers (e.g. "cancelar")
-    if (event === "messages.upsert" || event === "MESSAGES_UPSERT" || event === "message.receive") {
+    if (event === "messages.upsert" || event === "MESSAGES_UPSERT" || event === "message.receive" || event === "poll.update" || event === "messages.update" || event === "POLL_UPDATE") {
       // Skip outgoing messages (from the instance itself)
       const key = data?.key as Record<string, unknown> | undefined;
       if (key?.fromMe === true) {
