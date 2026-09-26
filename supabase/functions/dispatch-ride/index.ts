@@ -382,15 +382,15 @@ async function dispatchToMachine(
     return `${addr}, ${regionSuffix}`;
   };
 
-  // Helper: check if destination has real coordinates (used to decide whether
-  // to append city/state suffix). Informal destinations (no coords) get raw text only.
-  const hasRealCoords = (lat?: number | null, lng?: number | null): boolean =>
-    lat != null && lng != null && (lat !== 0 || lng !== 0);
+  // Strip any "/" from address text and normalize separators to " - "
+  const cleanAddressText = (addr: string | undefined): string => {
+    if (!addr) return "Endereço não informado";
+    return addr.replace(/\s*\/\s*/g, " - ").trim();
+  };
 
   // Build the v2 API payload per docs.machine.global spec
-  // IMPORTANT: lat/lng are intentionally OMITTED from partida and desejado.
-  // Sending coordinates makes the Machine API ignore the address text and
-  // use the fixed city coordinates instead, which freezes the map.
+  // The Machine API flow is 100% text-based: lat/lng are NEVER sent.
+  // The Machine's internal geocoder reads the address string + city/state.
   const v2Payload: Record<string, unknown> = {
     id_externo: externalId,
     dados_cadastro: {
@@ -406,7 +406,7 @@ async function dispatchToMachine(
     },
     forma_pagamento: data.payment_method === "Cartao" ? "C" : data.payment_method === "Pix" ? "X" : "D",
     partida: {
-      endereco: ensureCityStateSuffix(data.origin?.address),
+      endereco: ensureCityStateSuffix(cleanAddressText(data.origin?.address)),
       bairro: extractBairro(data.origin?.address) || "Centro",
       ...(cidade ? { cidade } : {}),
       ...(estado ? { estado } : {}),
@@ -423,15 +423,11 @@ async function dispatchToMachine(
   }
 
   if (data.destination?.address) {
-    const destHasCoords = hasRealCoords(data.destination.lat, data.destination.lng);
     v2Payload.desejado = {
-      // Only append city/state suffix when we have real coordinates (structured address).
-      // For informal destinations (no coords), send the raw text so the Machine
-      // registers the ride for KM-based fare without breaking its text search.
-      endereco: destHasCoords ? ensureCityStateSuffix(data.destination.address) : data.destination.address,
+      endereco: ensureCityStateSuffix(cleanAddressText(data.destination.address)),
       bairro: extractBairro(data.destination.address) || "Centro",
-      ...(destHasCoords && cidade ? { cidade } : {}),
-      ...(destHasCoords && estado ? { estado } : {}),
+      ...(cidade ? { cidade } : {}),
+      ...(estado ? { estado } : {}),
       ...(data.destination_reference ? { referencia: data.destination_reference } : {}),
     };
   } else if (data.destination_reference) {

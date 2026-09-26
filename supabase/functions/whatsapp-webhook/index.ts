@@ -2448,16 +2448,18 @@ async function dispatchRideFromConversation(
   }
 
   const passengerName = conv.passenger_name || "Passageiro";
+  // Bot/Totem flow: send ONLY text addresses to the Machine API — no coordinates.
+  // The Machine API uses its own internal geocoder to resolve the address string.
   const origin = {
-    lat: conv.address_lat!,
-    lng: conv.address_lng!,
+    lat: 0,
+    lng: 0,
     address: conv.address_formatted || conv.address_text || "Endereco nao informado",
   };
   const originReference = conv.origin_reference ?? null;
   const destinationReference = conv.destination_reference ?? null;
 
-  const destination = conv.destination_lat != null && conv.destination_lng != null
-    ? { lat: conv.destination_lat, lng: conv.destination_lng, address: conv.destination_formatted || conv.destination_text || "" }
+  const destination = conv.destination_formatted || conv.destination_text
+    ? { lat: 0, lng: 0, address: conv.destination_formatted || conv.destination_text || "" }
     : null;
 
   const result = await createAndDispatchRide(
@@ -3097,130 +3099,32 @@ As mensagens do passageiro serao encaminhadas a partir de agora.`;
         addressText = fallbackAddr;
       }
 
-      // If the LLM identified this as an informal place (not a real street),
-      // skip geocoding entirely and use the fallback address. Only attempt OSM
-      // validation when the LLM says it's a structured street address.
-      // Also force geocoding when the text itself looks like "street + number".
-      const looksOfficial = llmIsRuaOficial || looksLikeOfficialAddress(addressText ?? "");
+      // Machine API flow: skip OSM geocoding entirely. The Machine API does its
+      // own internal geocoding from the address string + city/state. We only need
+      // to store the cleaned text and zeroed coordinates (kept for DB compatibility).
       let suggestionMatch: { address_text: string; lat: number | null; lng: number | null } | null = null;
-      // Try nickname suggestions regardless of whether the text looks like an
-      // official street — suggestions are usually informal POI names.
       if (connectionId) {
         suggestionMatch = await findAddressSuggestionFuzzy(connectionId, addressText);
       }
-
-      let finalLat: number;
-      let finalLng: number;
-      let finalAddress: string;
+      let finalLat: number = 0;
+      let finalLng: number = 0;
+      let finalAddress: string = addressText;
       let isFallback = false;
 
       if (image) {
-        // Image-based pickup: use fallback coordinates, skip geocoding
         const companyLoc = await getCompanyLocationInfo(companyId, connectionId);
         if (companyLoc.lat != null && companyLoc.lng != null) {
           finalLat = companyLoc.lat;
           finalLng = companyLoc.lng;
-          finalAddress = addressText;
-          isFallback = true;
-        } else {
-          finalLat = 0;
-          finalLng = 0;
-          finalAddress = addressText;
           isFallback = true;
         }
-      } else if (suggestionMatch) {
-        if (suggestionMatch.lat != null && suggestionMatch.lng != null) {
-          finalLat = suggestionMatch.lat;
-          finalLng = suggestionMatch.lng;
-        } else {
-          const companyLoc = await getCompanyLocationInfo(companyId, connectionId);
-          const geocoded = await geocodeAddress(suggestionMatch.address_text, companyLoc.city ?? undefined, companyLoc.state ?? undefined, companyLoc.lat ?? undefined, companyLoc.lng ?? undefined);
-          if (geocoded) {
-            finalLat = geocoded.lat;
-            finalLng = geocoded.lng;
-          } else if (companyLoc.lat != null && companyLoc.lng != null) {
-            finalLat = companyLoc.lat;
-            finalLng = companyLoc.lng;
-            isFallback = true;
-          } else {
-            await sendBotMessage(companyId, cleanPhone, connectionId, msg("address_not_found", "\u274C Nao encontrei esse endereco. Voce pode:\n\n1\uFE0F\u20E3 Mandar sua localizacao pelo WhatsApp (clipe \u{1F4CE} > Localizacao)\n2\uFE0F\u20E3 Enviar o endereco completo com numero e bairro\n3\uFE0F\u20E3 Seguir sem endereco confirmado — o motorista entra em contato"));
-            await supabase.from("bot_conversas")
-              .update({ state: "aguardando_endereco", updated_at: new Date().toISOString() })
-              .eq("id", conv.id);
-            return;
-          }
-        }
-        finalAddress = suggestionMatch.address_text;
       } else if (location) {
         finalLat = lat!;
         finalLng = lng!;
-        finalAddress = addressText;
-      } else if (looksOfficial) {
-        // Official street — try OSM geocoding
-        const companyLoc = await getCompanyLocationInfo(companyId, connectionId);
-        await supabase.from("admin_logs").insert({
-          company_id: companyId, source: "whatsapp_webhook", level: "info",
-          message: `GEOCODE DEBUG: addressText="${addressText}" city="${companyLoc.city}" state="${companyLoc.state}" bias=(${companyLoc.lat},${companyLoc.lng})`,
-        });
-        const geocoded = await geocodeAddress(addressText, companyLoc.city ?? undefined, companyLoc.state ?? undefined, companyLoc.lat ?? undefined, companyLoc.lng ?? undefined);
-        await supabase.from("admin_logs").insert({
-          company_id: companyId, source: "whatsapp_webhook", level: "info",
-          message: `GEOCODE RESULT: ${geocoded ? `lat=${geocoded.lat} lng=${geocoded.lng} formatted="${geocoded.formatted.slice(0, 80)}"` : "NULL (not found)"}`,
-        });
-        if (geocoded) {
-          finalLat = geocoded.lat;
-          finalLng = geocoded.lng;
-          finalAddress = geocoded.formatted;
-          const bairro = extractBairroFromFormatted(geocoded.formatted);
-          if (bairro && originReference && !originReference.includes(bairro.toUpperCase())) {
-            originReference = `${originReference}, ${bairro.toUpperCase()}`;
-          }
-        } else if (fuzzyMatchesForCaller.length >= 2) {
-          // Multiple fuzzy street matches found — present options to the passenger
-          const optionText = fuzzyMatchesForCaller.map((m, i) => `${i + 1} - ${m.streetName}`).join("\n");
-          await sendBotMessage(companyId, cleanPhone, connectionId, `\u{1F50D} Encontrei varias ruas parecidas com "${addressText}":\n\n${optionText}\n\nResponda com o numero da rua correta. Se nenhuma for a certa, digite o endereco completo.`);
-          await supabase.from("bot_conversas")
-            .update({ state: "aguardando_selecao_rua", address_text: addressText, pending_fuzzy_options: JSON.stringify(fuzzyMatchesForCaller), updated_at: new Date().toISOString() })
-            .eq("id", conv.id);
-          return;
-        } else if (companyLoc.lat != null && companyLoc.lng != null) {
-          finalLat = companyLoc.lat;
-          finalLng = companyLoc.lng;
-          finalAddress = addressText;
-          isFallback = true;
-        } else {
-          await sendBotMessage(companyId, cleanPhone, connectionId, msg("address_not_found", "\u274C Nao encontrei esse endereco. Voce pode:\n\n1\uFE0F\u20E3 Mandar sua localizacao pelo WhatsApp (clipe \u{1F4CE} > Localizacao)\n2\uFE0F\u20E3 Enviar o endereco completo com numero e bairro\n3\uFE0F\u20E3 Seguir sem endereco confirmado — o motorista entra em contato"));
-          await supabase.from("bot_conversas")
-            .update({ state: "aguardando_endereco", updated_at: new Date().toISOString() })
-            .eq("id", conv.id);
-          return;
-        }
-      } else {
-        // Informal place (POI) — try OSM geocoding with the place name + city bias.
-        // If found, use the real coordinates and formatted address. If not found,
-        // fall back to the bot connection's default coordinates and keep the
-        // place name as the display text.
-        const companyLoc = await getCompanyLocationInfo(companyId, connectionId);
-        const poiGeocoded = await geocodePOI(addressText, companyLoc.city ?? undefined, companyLoc.state ?? undefined, companyLoc.lat ?? undefined, companyLoc.lng ?? undefined);
-        if (poiGeocoded) {
-          finalLat = poiGeocoded.lat;
-          finalLng = poiGeocoded.lng;
-          finalAddress = poiGeocoded.formatted;
-          const bairro = extractBairroFromFormatted(poiGeocoded.formatted);
-          if (bairro && originReference && !originReference.includes(bairro.toUpperCase())) {
-            originReference = `${originReference}, ${bairro.toUpperCase()}`;
-          }
-        } else if (companyLoc.lat != null && companyLoc.lng != null) {
-          finalLat = companyLoc.lat;
-          finalLng = companyLoc.lng;
-          finalAddress = addressText;
-          isFallback = true;
-        } else {
-          finalLat = 0;
-          finalLng = 0;
-          finalAddress = addressText;
-          isFallback = true;
-        }
+      } else if (suggestionMatch && suggestionMatch.lat != null && suggestionMatch.lng != null) {
+        finalLat = suggestionMatch.lat;
+        finalLng = suggestionMatch.lng;
+        finalAddress = suggestionMatch.address_text;
       }
 
       await supabase.from("bot_conversas")
@@ -3237,32 +3141,16 @@ As mensagens do passageiro serao encaminhadas a partir de agora.`;
         })
         .eq("id", conv.id);
 
-      // If the LLM or regex already extracted a destination, geocode it as a POI
-      // so the Machine API gets real coordinates. If geocoding fails, keep text-only
-      // and the Machine API calculates by KM (taximeter).
+      // Machine API flow: no OSM geocoding for destination — text only.
       const extractedDest = destinationReference ?? combinedDest ?? null;
       if (extractedDest) {
-        let destLat: number | null = null;
-        let destLng: number | null = null;
-        let destFormatted: string | null = null;
-        const companyLoc = await getCompanyLocationInfo(companyId, connectionId);
-        const destGeocoded = await geocodePOI(extractedDest, companyLoc.city ?? undefined, companyLoc.state ?? undefined, companyLoc.lat ?? undefined, companyLoc.lng ?? undefined);
-        await supabase.from("admin_logs").insert({
-          company_id: companyId, source: "whatsapp_webhook", level: "info",
-          message: `DEST GEOCODE: dest="${extractedDest}" result=${destGeocoded ? `lat=${destGeocoded.lat} lng=${destGeocoded.lng}` : "NULL"}`,
-        });
-        if (destGeocoded) {
-          destLat = destGeocoded.lat;
-          destLng = destGeocoded.lng;
-          destFormatted = destGeocoded.formatted;
-        }
         await supabase.from("bot_conversas")
           .update({
             state: "aguardando_confirmacao",
             destination_text: extractedDest,
-            destination_lat: destLat,
-            destination_lng: destLng,
-            destination_formatted: destFormatted,
+            destination_lat: null,
+            destination_lng: null,
+            destination_formatted: extractedDest,
             destination_reference: extractedDest,
             updated_at: new Date().toISOString(),
           })
@@ -3396,9 +3284,8 @@ As mensagens do passageiro serao encaminhadas a partir de agora.`;
             return;
           }
 
-          // For text/audio destinations, try POI/street geocoding with city bias.
-          // If found, use real coordinates + formatted address. If not, keep
-          // lat/lng null so Machine API calculates by KM (taximeter).
+          // Machine API flow: no OSM geocoding — keep text only for text/audio.
+          // WhatsApp location pins provide real GPS coordinates, so keep those.
           let finalDestLat: number | null = null;
           let finalDestLng: number | null = null;
           let finalDestAddress = destText;
@@ -3407,14 +3294,6 @@ As mensagens do passageiro serao encaminhadas a partir de agora.`;
             finalDestLat = destLat!;
             finalDestLng = destLng!;
             finalDestAddress = destText;
-          } else {
-            const companyLoc = await getCompanyLocationInfo(companyId, connectionId);
-            const destGeocoded = await geocodePOI(destText, companyLoc.city ?? undefined, companyLoc.state ?? undefined, companyLoc.lat ?? undefined, companyLoc.lng ?? undefined);
-            if (destGeocoded) {
-              finalDestLat = destGeocoded.lat;
-              finalDestLng = destGeocoded.lng;
-              finalDestAddress = destGeocoded.formatted;
-            }
           }
 
           const pickupAddr = normalizePlaceText(conv.origin_reference || conv.address_formatted || conv.address_text || "Endereco nao informado");
@@ -3465,9 +3344,8 @@ As mensagens do passageiro serao encaminhadas a partir de agora.`;
         return;
       }
 
-      // For text/audio destinations, try POI/street geocoding with city bias.
-      // If found, use real coordinates + formatted address. If not, keep
-      // lat/lng null so Machine API calculates by KM (taximeter).
+      // Machine API flow: no OSM geocoding — text only for text/audio.
+      // WhatsApp location pins provide real GPS coordinates, so keep those.
       let finalDestLat: number | null = null;
       let finalDestLng: number | null = null;
       let finalDestAddress = destText;
@@ -3476,14 +3354,6 @@ As mensagens do passageiro serao encaminhadas a partir de agora.`;
         finalDestLat = destLat!;
         finalDestLng = destLng!;
         finalDestAddress = destText;
-      } else {
-        const companyLoc = await getCompanyLocationInfo(companyId, connectionId);
-        const destGeocoded = await geocodePOI(destText, companyLoc.city ?? undefined, companyLoc.state ?? undefined, companyLoc.lat ?? undefined, companyLoc.lng ?? undefined);
-        if (destGeocoded) {
-          finalDestLat = destGeocoded.lat;
-          finalDestLng = destGeocoded.lng;
-          finalDestAddress = destGeocoded.formatted;
-        }
       }
 
       const pickupAddr = normalizePlaceText(conv.origin_reference || conv.address_formatted || conv.address_text || "Endereco nao informado");
