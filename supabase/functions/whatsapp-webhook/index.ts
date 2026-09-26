@@ -412,21 +412,23 @@ async function sendWhatsAppMessageWithProvider(
   return false;
 }
 
-// ── Bot: Interactive buttons (WhatsApp native) ──
+// ── Bot: Poll-based interactive menus ──
+// Meta blocks interactive buttons on Baileys/QR instances, so we use WhatsApp
+// native Polls (Evolution /message/sendPoll) which render as clickable options.
 
 interface InteractiveButton {
   id: string;
   label: string;
 }
 
-async function sendInteractiveButtons(
+async function sendPollMessage(
   companyId: string,
   phone: string,
   connectionId: string | undefined,
   bodyText: string,
   buttons: InteractiveButton[],
-  footerText?: string,
 ): Promise<void> {
+  const options = buttons.map((b) => b.label);
   try {
     let provider: string;
     let f: Record<string, string>;
@@ -438,48 +440,77 @@ async function sendInteractiveButtons(
       const c = await getCompanyWhatsAppConfig(companyId); provider = c.provider; f = c.fields;
     }
 
-    // WhatsApp limits buttons to 3 per message. If more, use a list instead.
-    const sent = await sendInteractiveWithProvider(provider, f, phone, bodyText, buttons, footerText);
+    const sent = await sendPollWithProvider(provider, f, phone, bodyText, options);
     if (sent) {
-      // Save a text representation of the message for chat history
-      const buttonText = buttons.map((b) => `▶ ${b.label}`).join("\n");
-      await saveMessage(companyId, phone, "outgoing", `${bodyText}${footerText ? `\n${footerText}` : ""}\n${buttonText}`);
+      const optionText = buttons.map((b) => `▶ ${b.label}`).join("\n");
+      await saveMessage(companyId, phone, "outgoing", `${bodyText}\n${optionText}`);
     } else {
-      // Fallback to plain text if interactive buttons fail
-      const fallbackMsg = `${bodyText}${footerText ? `\n${footerText}` : ""}\n\n${buttons.map((b, i) => `${i + 1} - ${b.label}`).join("\n")}\n\nResponda com o numero da opcao.`;
+      const fallbackMsg = `${bodyText}\n\n${buttons.map((b, i) => `${i + 1} - ${b.label}`).join("\n")}\n\nResponda com o numero da opcao.`;
       await sendBotMessage(companyId, phone, connectionId, fallbackMsg);
     }
   } catch (err) {
     await supabase.from("admin_logs").insert({
       company_id: companyId,
       source: "whatsapp_webhook", level: "error",
-      message: `sendInteractiveButtons exception for ${phone}: ${err instanceof Error ? err.message.slice(0, 500) : String(err).slice(0, 500)}`,
+      message: `sendPollMessage exception for ${phone}: ${err instanceof Error ? err.message.slice(0, 500) : String(err).slice(0, 500)}`,
     });
     const fallbackMsg = `${bodyText}\n\n${buttons.map((b, i) => `${i + 1} - ${b.label}`).join("\n")}\n\nResponda com o numero da opcao.`;
     await sendBotMessage(companyId, phone, connectionId, fallbackMsg);
   }
 }
 
-async function sendInteractiveWithProvider(
+async function sendPollWithProvider(
   provider: string,
   f: Record<string, string>,
   cleanPhone: string,
   bodyText: string,
-  buttons: InteractiveButton[],
-  footerText?: string,
+  options: string[],
 ): Promise<boolean> {
   if (provider === "evolution" || provider === "veloov") {
-    // Evolution API sendButtons is unreliable across versions (GitHub issue #1597:
-    // buttons show "content not compatible with WhatsApp Web"). Always return false
-    // so the caller falls back to plain text with numbered options.
-    return false;
+    const url = f["evo_url"] ?? "";
+    const token = f["evo_token"] ?? "";
+    if (!url || !token) return false;
+    const instance = f["evo_instance"] || "veloov";
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 10000);
+    let resp: Response;
+    try {
+      resp = await fetch(`${url}/message/sendPoll/${instance}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", apikey: token },
+        body: JSON.stringify({
+          number: cleanPhone,
+          name: bodyText,
+          selectableCount: 1,
+          values: options,
+          delay: 1200,
+        }),
+        signal: controller.signal,
+      });
+    } catch (fetchErr) {
+      clearTimeout(timeout);
+      await supabase.from("admin_logs").insert({
+        source: "whatsapp_webhook", level: "error",
+        message: `sendPoll Evolution fetch error for ${cleanPhone}: ${fetchErr instanceof Error ? fetchErr.message.slice(0, 500) : String(fetchErr).slice(0, 500)}`,
+      });
+      return false;
+    }
+    clearTimeout(timeout);
+    const respBody = await resp.text().catch(() => "");
+    if (!resp.ok) {
+      await supabase.from("admin_logs").insert({
+        source: "whatsapp_webhook", level: "error",
+        message: `sendPoll Evolution HTTP ${resp.status} for ${cleanPhone}: ${respBody.slice(0, 500)}`,
+      });
+    }
+    return resp.ok;
   }
 
   if (provider === "meta_cloud") {
+    // Meta Cloud API doesn't support polls — use interactive buttons as fallback.
     const token = f["meta_token"] ?? "";
     const phoneId = f["meta_phone_id"] ?? "";
     if (!token || !phoneId) return false;
-    // Meta Cloud API: up to 3 buttons via interactive type
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 10000);
     let resp: Response;
@@ -495,9 +526,9 @@ async function sendInteractiveWithProvider(
             type: "button",
             body: { text: bodyText },
             action: {
-              buttons: buttons.slice(0, 3).map((b) => ({
+              buttons: options.slice(0, 3).map((label, i) => ({
                 type: "reply",
-                reply: { id: b.id, title: b.label.slice(0, 20) },
+                reply: { id: `poll_${i}`, title: label.slice(0, 20) },
               })),
             },
           },
@@ -508,109 +539,7 @@ async function sendInteractiveWithProvider(
       clearTimeout(timeout);
       await supabase.from("admin_logs").insert({
         source: "whatsapp_webhook", level: "error",
-        message: `sendInteractiveButtons Meta fetch error for ${cleanPhone}: ${fetchErr instanceof Error ? fetchErr.message.slice(0, 500) : String(fetchErr).slice(0, 500)}`,
-      });
-      return false;
-    }
-    clearTimeout(timeout);
-    return resp.ok;
-  }
-
-  return false;
-}
-
-async function sendInteractiveList(
-  companyId: string,
-  phone: string,
-  connectionId: string | undefined,
-  bodyText: string,
-  buttonText: string,
-  sections: { title: string; rows: InteractiveButton[] }[],
-  footerText?: string,
-): Promise<void> {
-  try {
-    let provider: string;
-    let f: Record<string, string>;
-    if (connectionId) {
-      const botConfig = await getBotConnectionConfig(connectionId);
-      if (botConfig) { provider = botConfig.provider; f = botConfig.fields; }
-      else { const c = await getCompanyWhatsAppConfig(companyId); provider = c.provider; f = c.fields; }
-    } else {
-      const c = await getCompanyWhatsAppConfig(companyId); provider = c.provider; f = c.fields;
-    }
-
-    const sent = await sendInteractiveListWithProvider(provider, f, phone, bodyText, buttonText, sections, footerText);
-    if (sent) {
-      const allRows = sections.flatMap((s) => s.rows);
-      const rowText = allRows.map((r) => `▶ ${r.label}`).join("\n");
-      await saveMessage(companyId, phone, "outgoing", `${bodyText}${footerText ? `\n${footerText}` : ""}\n${rowText}`);
-    } else {
-      // Fallback to text
-      const allRows = sections.flatMap((s) => s.rows);
-      const fallbackMsg = `${bodyText}\n\n${allRows.map((r, i) => `${i + 1} - ${r.label}`).join("\n")}\n\nResponda com o numero da opcao.`;
-      await sendBotMessage(companyId, phone, connectionId, fallbackMsg);
-    }
-  } catch (err) {
-    await supabase.from("admin_logs").insert({
-      company_id: companyId,
-      source: "whatsapp_webhook", level: "error",
-      message: `sendInteractiveList exception for ${phone}: ${err instanceof Error ? err.message.slice(0, 500) : String(err).slice(0, 500)}`,
-    });
-    const allRows = sections.flatMap((s) => s.rows);
-    const fallbackMsg = `${bodyText}\n\n${allRows.map((r, i) => `${i + 1} - ${r.label}`).join("\n")}\n\nResponda com o numero da opcao.`;
-    await sendBotMessage(companyId, phone, connectionId, fallbackMsg);
-  }
-}
-
-async function sendInteractiveListWithProvider(
-  provider: string,
-  f: Record<string, string>,
-  cleanPhone: string,
-  bodyText: string,
-  buttonText: string,
-  sections: { title: string; rows: InteractiveButton[] }[],
-  footerText?: string,
-): Promise<boolean> {
-  if (provider === "evolution" || provider === "veloov") {
-    // Evolution API sendList has the same compatibility issues as sendButtons.
-    // Always return false so the caller falls back to plain text with numbered options.
-    return false;
-  }
-
-  if (provider === "meta_cloud") {
-    const token = f["meta_token"] ?? "";
-    const phoneId = f["meta_phone_id"] ?? "";
-    if (!token || !phoneId) return false;
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 10000);
-    let resp: Response;
-    try {
-      resp = await fetch(`https://graph.facebook.com/v20.0/${phoneId}/messages`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-        body: JSON.stringify({
-          messaging_product: "whatsapp",
-          to: cleanPhone,
-          type: "interactive",
-          interactive: {
-            type: "list",
-            body: { text: bodyText },
-            action: {
-              button: buttonText,
-              sections: sections.map((s) => ({
-                title: s.title,
-                rows: s.rows.map((r) => ({ id: r.id, title: r.label.slice(0, 24) })),
-              })),
-            },
-          },
-        }),
-        signal: controller.signal,
-      });
-    } catch (fetchErr) {
-      clearTimeout(timeout);
-      await supabase.from("admin_logs").insert({
-        source: "whatsapp_webhook", level: "error",
-        message: `sendInteractiveList Meta fetch error for ${cleanPhone}: ${fetchErr instanceof Error ? fetchErr.message.slice(0, 500) : String(fetchErr).slice(0, 500)}`,
+        message: `sendPoll Meta fetch error for ${cleanPhone}: ${fetchErr instanceof Error ? fetchErr.message.slice(0, 500) : String(fetchErr).slice(0, 500)}`,
       });
       return false;
     }
@@ -1949,18 +1878,10 @@ async function proceedAfterDestination(
     await supabase.from("bot_conversas")
       .update({ state: "aguardando_categoria", updated_at: new Date().toISOString() })
       .eq("id", convId);
-    if (categories.length <= 3) {
-      await sendInteractiveButtons(companyId, cleanPhone, connectionId,
-        msg("ask_category", "\u{1F3C6} Qual categoria voce deseja?"),
-        categories.map((c) => ({ id: `cat_${c.id}`, label: c.label })),
-      );
-    } else {
-      await sendInteractiveList(companyId, cleanPhone, connectionId,
-        msg("ask_category", "\u{1F3C6} Qual categoria voce deseja?"),
-        "Ver categorias",
-        [{ title: "Categorias", rows: categories.map((c) => ({ id: `cat_${c.id}`, label: c.label })) }],
-      );
-    }
+    await sendPollMessage(companyId, cleanPhone, connectionId,
+      msg("ask_category", "\u{1F3C6} Qual categoria voce deseja?"),
+      categories.map((c) => ({ id: `cat_${c.id}`, label: c.label })),
+    );
     return;
   }
 
@@ -1972,7 +1893,7 @@ async function proceedAfterDestination(
       updated_at: new Date().toISOString(),
     })
     .eq("id", convId);
-  await sendInteractiveButtons(companyId, cleanPhone, connectionId,
+  await sendPollMessage(companyId, cleanPhone, connectionId,
     msg("ask_payment", "\u{1F4B0} Qual a forma de pagamento?"),
     [
       { id: "pay_dinheiro", label: "Dinheiro \u{1F4B5}" },
@@ -2028,7 +1949,7 @@ async function handleBotMessage(
     conv = newConv as BotConversation;
 
     if (!text && !location && !audio && !image) {
-      await sendInteractiveButtons(companyId, cleanPhone, connectionId, msg("welcome_menu", "\u{1F44B} Ola! Como podemos ajudar?"), [{ id: "menu_corrida", label: "Solicitar corrida \u{1F695}" }, { id: "menu_suporte", label: "Suporte \u{1F4AC}" }]);
+      await sendPollMessage(companyId, cleanPhone, connectionId, msg("welcome_menu", "\u{1F44B} Ola! Como podemos ajudar?"), [{ id: "menu_corrida", label: "Solicitar corrida \u{1F695}" }, { id: "menu_suporte", label: "Suporte \u{1F4AC}" }]);
       return;
     }
   }
@@ -2044,6 +1965,39 @@ async function handleBotMessage(
   // Incoming messages are still saved (done by the caller), but no bot replies are sent.
   if (conv.human_takeover) {
     return;
+  }
+
+  // Map poll vote labels back to button IDs so the state machine can process them.
+  // Poll votes arrive as the option text (e.g. "Solicitar corrida") not the button ID.
+  const pollLabelMap: Record<string, string> = {
+    "solicitar corrida": "menu_corrida",
+    "suporte": "menu_suporte",
+    "digitar endereco": "dest_digitar",
+    "nao informar": "dest_nao_informar",
+    "sim, confirmar": "conf_sim",
+    "nao, corrigir": "conf_nao",
+    "sim": "conf_sim",
+    "nao": "conf_nao",
+    "sim, cancelar": "btn_cancelar_sim",
+    "nao, manter": "btn_cancelar_nao",
+    "dinheiro": "pay_dinheiro",
+    "pix": "pay_pix",
+    "cartao": "pay_cartao",
+    "outro endereco": "freq_new",
+  };
+  const rawText = (text ?? "").trim();
+  const lowerRaw = rawText.toLowerCase();
+  if (rawText) {
+    if (pollLabelMap[lowerRaw]) {
+      text = pollLabelMap[lowerRaw];
+    } else {
+      for (const [label, id] of Object.entries(pollLabelMap)) {
+        if (lowerRaw.startsWith(label)) {
+          text = id;
+          break;
+        }
+      }
+    }
   }
 
   const normalizedText = (text ?? "").trim().toLowerCase();
@@ -2142,7 +2096,7 @@ async function handleBotMessage(
       await supabase.from("bot_conversas")
         .update({ state: "aguardando_cancelamento", updated_at: new Date().toISOString() })
         .eq("id", conv.id);
-      await sendInteractiveButtons(companyId, cleanPhone, connectionId,
+      await sendPollMessage(companyId, cleanPhone, connectionId,
         "\u26A0\uFE0F Voce realmente deseja cancelar sua corrida?",
         [{ id: "btn_cancelar_sim", label: "Sim, cancelar \u2705" }, { id: "btn_cancelar_nao", label: "Nao, manter \u{1F695}" }],
       );
@@ -2176,7 +2130,7 @@ async function handleBotMessage(
             updated_at: new Date().toISOString(),
           })
           .eq("id", conv.id);
-        await sendInteractiveButtons(companyId, cleanPhone, connectionId, msg("ask_destination", "\u{1F3AF} Para onde voce vai?"), [{ id: "dest_digitar", label: "Digitar Endereco \u{1F4DD}" }, { id: "dest_nao_informar", label: "Nao informar \u{1F6AB}" }]);
+        await sendPollMessage(companyId, cleanPhone, connectionId, msg("ask_destination", "\u{1F3AF} Para onde voce vai?"), [{ id: "dest_digitar", label: "Digitar Endereco \u{1F4DD}" }, { id: "dest_nao_informar", label: "Nao informar \u{1F6AB}" }]);
         break;
       }
 
@@ -2203,7 +2157,7 @@ async function handleBotMessage(
               updated_at: new Date().toISOString(),
             })
             .eq("id", conv.id);
-          await sendInteractiveButtons(companyId, cleanPhone, connectionId, `\u{1F4F7} Identifiquei: ${establishmentName}\n\n\u{1F3AF} Para onde voce vai?`, [{ id: "dest_digitar", label: "Digitar Endereco \u{1F4DD}" }, { id: "dest_nao_informar", label: "Nao informar \u{1F6AB}" }]);
+          await sendPollMessage(companyId, cleanPhone, connectionId, `\u{1F4F7} Identifiquei: ${establishmentName}\n\n\u{1F3AF} Para onde voce vai?`, [{ id: "dest_digitar", label: "Digitar Endereco \u{1F4DD}" }, { id: "dest_nao_informar", label: "Nao informar \u{1F6AB}" }]);
         } else {
           await supabase.from("bot_conversas")
             .update({ state: "aguardando_endereco", updated_at: new Date().toISOString() })
@@ -2249,7 +2203,7 @@ async function handleBotMessage(
               label: (a.origin_reference || a.address_formatted || a.address_text).slice(0, 20),
             }));
             buttons.push({ id: "freq_new", label: "Outro endereco \u{1F4DD}" });
-            await sendInteractiveButtons(companyId, cleanPhone, connectionId,
+            await sendPollMessage(companyId, cleanPhone, connectionId,
               "\u{1F4CD} Encontrei seus enderecos salvos. Qual e o endereco de embarque?",
               buttons,
             );
@@ -2310,7 +2264,7 @@ As mensagens do passageiro serao encaminhadas a partir de agora.`;
           .eq("id", conv.id);
         await sendBotMessage(companyId, cleanPhone, connectionId, msg("decline", "\u{1F44D} Tudo bem! Quando precisar de uma corrida, e so nos mandar uma mensagem."));
       } else {
-        await sendInteractiveButtons(companyId, cleanPhone, connectionId, msg("welcome_repeat", "\u{1F44B} Como podemos ajudar?"), [{ id: "menu_corrida", label: "Solicitar corrida \u{1F695}" }, { id: "menu_suporte", label: "Suporte \u{1F4AC}" }]);
+        await sendPollMessage(companyId, cleanPhone, connectionId, msg("welcome_repeat", "\u{1F44B} Como podemos ajudar?"), [{ id: "menu_corrida", label: "Solicitar corrida \u{1F695}" }, { id: "menu_suporte", label: "Suporte \u{1F4AC}" }]);
       }
       break;
     }
@@ -2347,7 +2301,7 @@ As mensagens do passageiro serao encaminhadas a partir de agora.`;
               updated_at: new Date().toISOString(),
             })
             .eq("id", conv.id);
-          await sendInteractiveButtons(companyId, cleanPhone, connectionId, msg("ask_destination", "\u{1F3AF} Para onde voce vai?"), [{ id: "dest_digitar", label: "Digitar Endereco \u{1F4DD}" }, { id: "dest_nao_informar", label: "Nao informar \u{1F6AB}" }]);
+          await sendPollMessage(companyId, cleanPhone, connectionId, msg("ask_destination", "\u{1F3AF} Para onde voce vai?"), [{ id: "dest_digitar", label: "Digitar Endereco \u{1F4DD}" }, { id: "dest_nao_informar", label: "Nao informar \u{1F6AB}" }]);
           break;
         }
       }
@@ -2595,11 +2549,11 @@ As mensagens do passageiro serao encaminhadas a partir de agora.`;
             updated_at: new Date().toISOString(),
           })
           .eq("id", conv.id);
-        await sendInteractiveButtons(companyId, cleanPhone, connectionId, msg("confirm_address", `\u2705 Confirma os dados da corrida?\n\n\u{1F4CD} Embarque: ${originReference ?? finalAddress}\n\u{1F3AF} Destino: ${extractedDest}`), [{ id: "conf_sim", label: "SIM \u2705" }, { id: "conf_nao", label: "NAO \u{1F504}" }]);
+        await sendPollMessage(companyId, cleanPhone, connectionId, msg("confirm_address", `\u2705 Confirma os dados da corrida?\n\n\u{1F4CD} Embarque: ${originReference ?? finalAddress}\n\u{1F3AF} Destino: ${extractedDest}`), [{ id: "conf_sim", label: "SIM \u2705" }, { id: "conf_nao", label: "NAO \u{1F504}" }]);
         break;
       }
 
-      await sendInteractiveButtons(companyId, cleanPhone, connectionId, msg("ask_destination", "\u{1F3AF} Para onde voce vai?"), [{ id: "dest_digitar", label: "Digitar Endereco \u{1F4DD}" }, { id: "dest_nao_informar", label: "Nao informar \u{1F6AB}" }]);
+      await sendPollMessage(companyId, cleanPhone, connectionId, msg("ask_destination", "\u{1F3AF} Para onde voce vai?"), [{ id: "dest_digitar", label: "Digitar Endereco \u{1F4DD}" }, { id: "dest_nao_informar", label: "Nao informar \u{1F6AB}" }]);
       break;
     }
 
@@ -2618,7 +2572,7 @@ As mensagens do passageiro serao encaminhadas a partir de agora.`;
           })
           .eq("id", conv.id);
         const pickupAddr = normalizePlaceText(conv.origin_reference || conv.address_formatted || conv.address_text || "Endereco nao informado");
-        await sendInteractiveButtons(companyId, cleanPhone, connectionId, msg("confirm_address", `\u2705 Confirma os dados da corrida?\n\n\u{1F4CD} Embarque: ${pickupAddr}\n\u{1F3AF} Destino: DEFINIR NO CARRO`), [{ id: "conf_sim", label: "SIM \u2705" }, { id: "conf_nao", label: "NAO \u{1F504}" }]);
+        await sendPollMessage(companyId, cleanPhone, connectionId, msg("confirm_address", `\u2705 Confirma os dados da corrida?\n\n\u{1F4CD} Embarque: ${pickupAddr}\n\u{1F3AF} Destino: DEFINIR NO CARRO`), [{ id: "conf_sim", label: "SIM \u2705" }, { id: "conf_nao", label: "NAO \u{1F504}" }]);
       } else if (normalizedText === "1" || normalizedText === "dest_digitar" || location || audio || (text && !["1","2","dest_digitar","dest_nao_informar"].includes(normalizedText))) {
         // Accept "1" / "dest_digitar" (menu choice), location, audio, or any typed text as a destination address
         if ((normalizedText === "1" || normalizedText === "dest_digitar") && !location && !audio) {
@@ -2682,10 +2636,10 @@ As mensagens do passageiro serao encaminhadas a partir de agora.`;
               updated_at: new Date().toISOString(),
             })
             .eq("id", conv.id);
-          await sendInteractiveButtons(companyId, cleanPhone, connectionId, msg("confirm_address", `\u2705 Confirma os dados da corrida?\n\n\u{1F4CD} Embarque: ${pickupAddr}\n\u{1F3AF} Destino: ${finalDestAddress}`), [{ id: "conf_sim", label: "SIM \u2705" }, { id: "conf_nao", label: "NAO \u{1F504}" }]);
+          await sendPollMessage(companyId, cleanPhone, connectionId, msg("confirm_address", `\u2705 Confirma os dados da corrida?\n\n\u{1F4CD} Embarque: ${pickupAddr}\n\u{1F3AF} Destino: ${finalDestAddress}`), [{ id: "conf_sim", label: "SIM \u2705" }, { id: "conf_nao", label: "NAO \u{1F504}" }]);
         }
       } else {
-        await sendInteractiveButtons(companyId, cleanPhone, connectionId, msg("destination_menu_retry", "\u26A0\uFE0F Opcao invalida. Para onde voce vai?"), [{ id: "dest_digitar", label: "Digitar Endereco \u{1F4DD}" }, { id: "dest_nao_informar", label: "Nao informar \u{1F6AB}" }]);
+        await sendPollMessage(companyId, cleanPhone, connectionId, msg("destination_menu_retry", "\u26A0\uFE0F Opcao invalida. Para onde voce vai?"), [{ id: "dest_digitar", label: "Digitar Endereco \u{1F4DD}" }, { id: "dest_nao_informar", label: "Nao informar \u{1F6AB}" }]);
       }
       break;
     }
@@ -2745,7 +2699,7 @@ As mensagens do passageiro serao encaminhadas a partir de agora.`;
           updated_at: new Date().toISOString(),
         })
         .eq("id", conv.id);
-      await sendInteractiveButtons(companyId, cleanPhone, connectionId, msg("confirm_address", `\u2705 Confirma os dados da corrida?\n\n\u{1F4CD} Embarque: ${pickupAddr}\n\u{1F3AF} Destino: ${finalDestAddress}`), [{ id: "conf_sim", label: "SIM \u2705" }, { id: "conf_nao", label: "NAO \u{1F504}" }]);
+      await sendPollMessage(companyId, cleanPhone, connectionId, msg("confirm_address", `\u2705 Confirma os dados da corrida?\n\n\u{1F4CD} Embarque: ${pickupAddr}\n\u{1F3AF} Destino: ${finalDestAddress}`), [{ id: "conf_sim", label: "SIM \u2705" }, { id: "conf_nao", label: "NAO \u{1F504}" }]);
       break;
     }
 
@@ -2794,18 +2748,10 @@ As mensagens do passageiro serao encaminhadas a partir de agora.`;
       }
 
       if (!chosenCat) {
-        if (categories.length <= 3) {
-          await sendInteractiveButtons(companyId, cleanPhone, connectionId,
-            msg("category_retry", "\u26A0\uFE0F Opcao invalida. Escolha uma categoria:"),
-            categories.map((c) => ({ id: `cat_${c.id}`, label: c.label })),
-          );
-        } else {
-          await sendInteractiveList(companyId, cleanPhone, connectionId,
-            msg("category_retry", "\u26A0\uFE0F Opcao invalida. Escolha uma categoria:"),
-            "Ver categorias",
-            [{ title: "Categorias", rows: categories.map((c) => ({ id: `cat_${c.id}`, label: c.label })) }],
-          );
-        }
+        await sendPollMessage(companyId, cleanPhone, connectionId,
+        msg("category_retry", "\u26A0\uFE0F Opcao invalida. Escolha uma categoria:"),
+        categories.map((c) => ({ id: `cat_${c.id}`, label: c.label })),
+      );
         return;
       }
 
@@ -2817,7 +2763,7 @@ As mensagens do passageiro serao encaminhadas a partir de agora.`;
           updated_at: new Date().toISOString(),
         })
         .eq("id", conv.id);
-      await sendInteractiveButtons(companyId, cleanPhone, connectionId,
+      await sendPollMessage(companyId, cleanPhone, connectionId,
         msg("ask_payment", "\u{1F4B0} Qual a forma de pagamento?"),
         [
           { id: "pay_dinheiro", label: "Dinheiro \u{1F4B5}" },
@@ -2844,7 +2790,7 @@ As mensagens do passageiro serao encaminhadas a partir de agora.`;
       const paymentMethod = paymentMap[normalizedText] ?? null;
 
       if (!paymentMethod) {
-        await sendInteractiveButtons(companyId, cleanPhone, connectionId,
+        await sendPollMessage(companyId, cleanPhone, connectionId,
           msg("payment_retry", "\u26A0\uFE0F Opcao invalida. Qual a forma de pagamento?"),
           [
             { id: "pay_dinheiro", label: "Dinheiro \u{1F4B5}" },
@@ -2999,7 +2945,7 @@ As mensagens do passageiro serao encaminhadas a partir de agora.`;
           await supabase.from("bot_conversas")
             .update({ state: "menu_inicial", updated_at: new Date().toISOString() })
             .eq("id", conv.id);
-          await sendInteractiveButtons(companyId, cleanPhone, connectionId, msg("support_timeout", "\u23F1\uFE0F O atendimento de suporte foi encerrado por inatividade."), [{ id: "menu_corrida", label: "Solicitar corrida \u{1F695}" }, { id: "menu_suporte", label: "Suporte \u{1F4AC}" }]);
+          await sendPollMessage(companyId, cleanPhone, connectionId, msg("support_timeout", "\u23F1\uFE0F O atendimento de suporte foi encerrado por inatividade."), [{ id: "menu_corrida", label: "Solicitar corrida \u{1F695}" }, { id: "menu_suporte", label: "Suporte \u{1F4AC}" }]);
           break;
         }
       }
@@ -3009,7 +2955,7 @@ As mensagens do passageiro serao encaminhadas a partir de agora.`;
         await supabase.from("bot_conversas")
           .update({ state: "menu_inicial", updated_at: new Date().toISOString() })
           .eq("id", conv.id);
-        await sendInteractiveButtons(companyId, cleanPhone, connectionId, msg("support_exit", "\u{1F44B} Suporte encerrado."), [{ id: "menu_corrida", label: "Solicitar corrida \u{1F695}" }, { id: "menu_suporte", label: "Suporte \u{1F4AC}" }]);
+        await sendPollMessage(companyId, cleanPhone, connectionId, msg("support_exit", "\u{1F44B} Suporte encerrado."), [{ id: "menu_corrida", label: "Solicitar corrida \u{1F695}" }, { id: "menu_suporte", label: "Suporte \u{1F4AC}" }]);
         break;
       }
 
@@ -3052,7 +2998,7 @@ As mensagens do passageiro serao encaminhadas a partir de agora.`;
         // Also handled by the global cancel handler above
       } else {
         // Any other message in this state — re-ask for confirmation
-        await sendInteractiveButtons(companyId, cleanPhone, connectionId,
+        await sendPollMessage(companyId, cleanPhone, connectionId,
           "\u26A0\uFE0F Voce realmente deseja cancelar sua corrida?",
           [{ id: "btn_cancelar_sim", label: "Sim, cancelar \u2705" }, { id: "btn_cancelar_nao", label: "Nao, manter \u{1F695}" }],
         );
@@ -3095,7 +3041,7 @@ As mensagens do passageiro serao encaminhadas a partir de agora.`;
           });
         }
       } else {
-        await sendInteractiveButtons(companyId, cleanPhone, connectionId, msg("welcome_back", "\u{1F44B} Ola! Como podemos ajudar?"), [{ id: "menu_corrida", label: "Solicitar corrida \u{1F695}" }, { id: "menu_suporte", label: "Suporte \u{1F4AC}" }]);
+        await sendPollMessage(companyId, cleanPhone, connectionId, msg("welcome_back", "\u{1F44B} Ola! Como podemos ajudar?"), [{ id: "menu_corrida", label: "Solicitar corrida \u{1F695}" }, { id: "menu_suporte", label: "Suporte \u{1F4AC}" }]);
       }
       break;
     }
@@ -3459,7 +3405,7 @@ Deno.serve(async (req: Request) => {
           if (typeof data?.body === "string") text = data.body;
           else if (data?.body && typeof data.body === "object") text = String((data.body as Record<string, unknown>).text ?? "");
 
-          // Extract interactive button/list replies (Evolution API format)
+          // Extract interactive button/list/poll replies (Evolution API format)
           if (!text) {
             const buttonsResp = msg?.buttonsResponseMessage as Record<string, unknown> | undefined;
             if (buttonsResp?.selectedButtonId) {
@@ -3469,6 +3415,21 @@ Deno.serve(async (req: Request) => {
               const singleSelect = listResp?.singleSelectReply as Record<string, unknown> | undefined;
               if (singleSelect?.selectedRowId) {
                 text = String(singleSelect.selectedRowId);
+              }
+            }
+            // Poll vote extraction
+            if (!text) {
+              const pollResp = msg?.pollUpdateMessage as Record<string, unknown> | undefined;
+              if (pollResp) {
+                const votes = pollResp.votes as Array<Record<string, unknown>> | undefined;
+                if (votes && votes.length > 0) {
+                  text = String(votes[0]?.optionName ?? votes[0]?.name ?? "");
+                } else {
+                  const selectedOption = pollResp.selectedOption as Record<string, unknown> | undefined;
+                  if (selectedOption?.name) {
+                    text = String(selectedOption.name);
+                  }
+                }
               }
             }
           }
@@ -3756,7 +3717,7 @@ async function handleIncomingMessage(companyId: string, data: Record<string, unk
     text = data.body;
   }
 
-  // Extract interactive button/list replies (Evolution API v1/v2 format)
+  // Extract interactive button/list/poll replies (Evolution API v1/v2 format)
   if (!text && message) {
     const buttonsResp = message.buttonsResponseMessage as Record<string, unknown> | undefined;
     if (buttonsResp?.selectedButtonId) {
@@ -3766,6 +3727,25 @@ async function handleIncomingMessage(companyId: string, data: Record<string, unk
       const singleSelect = listResp?.singleSelectReply as Record<string, unknown> | undefined;
       if (singleSelect?.selectedRowId) {
         text = String(singleSelect.selectedRowId);
+      }
+    }
+    // Evolution API poll vote: pollUpdateMessage with selected option(s)
+    if (!text) {
+      const pollResp = message.pollUpdateMessage as Record<string, unknown> | undefined;
+      if (pollResp) {
+        const votes = pollResp.votes as Array<Record<string, unknown>> | undefined;
+        if (votes && votes.length > 0) {
+          const optionName = String(votes[0]?.optionName ?? votes[0]?.name ?? "");
+          if (optionName) {
+            // Map the option text to a button id by matching known labels
+            text = optionName;
+          }
+        } else {
+          const selectedOption = pollResp.selectedOption as Record<string, unknown> | undefined;
+          if (selectedOption?.name) {
+            text = String(selectedOption.name);
+          }
+        }
       }
     }
   }
