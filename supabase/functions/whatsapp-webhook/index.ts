@@ -706,8 +706,8 @@ async function geocodePOI(
           const formatted = r.display_name ?? placeName;
           return { lat: parseFloat(r.lat), lng: parseFloat(r.lon), formatted };
         }
-        // No results with bounded viewbox — try unbounded on last attempt
-        if (attempt === 1 && biasLat != null && biasLng != null) {
+        if (biasLat != null && biasLng != null) {
+          // No results with bounded viewbox — retry without boundary restriction
           const unboundedUrl = url.replace(/&viewbox=[^&]+&bounded=1/, "");
           const resp2 = await fetch(unboundedUrl, { headers: { "User-Agent": "VeloovBot/1.0 (contato@veloov.com.br)" } });
           if (resp2.ok) {
@@ -1138,8 +1138,8 @@ async function geocodeAddress(address: string, city?: string, state?: string, bi
             formatted,
           };
         }
-        // No results with bounded viewbox — try unbounded on last attempt
-        if (attempt === 1 && biasLat != null && biasLng != null) {
+        if (biasLat != null && biasLng != null) {
+          // No results with bounded viewbox — retry without boundary restriction
           const unboundedUrl = url.replace(/&viewbox=[^&]+&bounded=1/, "");
           const resp2 = await fetch(unboundedUrl, { headers: { "User-Agent": "VeloovBot/1.0 (contato@veloov.com.br)" } });
           if (resp2.ok) {
@@ -5060,6 +5060,37 @@ async function handleIncomingMessage(companyId: string, data: Record<string, unk
 
   // Only handle "cancelar" (and variations like "cancelar corrida", "cancela")
   if (!normalizedText.includes("cancel")) return;
+
+  // If this is the first cancel request (not already waiting for confirmation),
+  // ask the passenger to confirm before actually canceling.
+  const cancelConfirmTexts = ["sim", "s", "1", "confirmar", "btn_cancelar_sim", "sim cancelar", "sim, cancelar"];
+  const cancelDenyTexts = ["nao", "n", "2", "btn_cancelar_nao", "nao manter", "nao, manter", "manter"];
+  const conv2 = await supabase.from("bot_conversas").select("id, state").eq("company_id", companyId).eq("phone", cleanPhone).maybeSingle();
+  const convState = conv2.data?.state ?? "";
+
+  if (convState === "aguardando_cancelamento") {
+    if (cancelDenyTexts.includes(normalizedText)) {
+      await supabase.from("bot_conversas").update({ state: "corrida_solicitada", updated_at: new Date().toISOString() }).eq("id", conv2.data!.id);
+      const { provider, fields: f } = await getCompanyWhatsAppConfig(companyId);
+      await sendWhatsAppMessageWithProvider(provider, f, cleanPhone, "\u2705 Cancelamento abortado. Sua corrida continua ativa.");
+      return;
+    }
+    if (!cancelConfirmTexts.includes(normalizedText)) {
+      // User typed something else — re-ask
+      const { provider, fields: f } = await getCompanyWhatsAppConfig(companyId);
+      await sendWhatsAppMessageWithProvider(provider, f, cleanPhone, "\u26A0\uFE0F Responda 1 para CONFIRMAR o cancelamento ou 2 para MANTER a corrida.");
+      return;
+    }
+    // Confirmed — proceed to cancel below
+  } else {
+    // First cancel request — ask for confirmation
+    if (conv2.data?.id) {
+      await supabase.from("bot_conversas").update({ state: "aguardando_cancelamento", updated_at: new Date().toISOString() }).eq("id", conv2.data.id);
+    }
+    const { provider, fields: f } = await getCompanyWhatsAppConfig(companyId);
+    await sendWhatsAppMessageWithProvider(provider, f, cleanPhone, "\u26A0\uFE0F Voce realmente deseja cancelar sua corrida?\n\n1 - Sim, cancelar\n2 - Nao, manter");
+    return;
+  }
 
   // Block cancellation when driver has arrived (en_route)
   if (ride.status === "en_route") {
