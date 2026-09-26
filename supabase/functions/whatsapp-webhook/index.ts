@@ -2593,6 +2593,18 @@ async function handleBotMessage(
   };
   const rawText = (text ?? "").trim();
   const lowerRaw = rawText.toLowerCase();
+
+  // WhatsApp poll providers may return a number, the full option label, or its button id.
+  // Resolve all cancel-confirmation variants before the global cancel shortcut runs.
+  if (conv.state === "aguardando_cancelamento" && rawText) {
+    const cancelReply = deaccent(rawText).replace(/[^a-z0-9\s]/g, "").replace(/\s+/g, " ").trim();
+    if (cancelReply === "1" || cancelReply.startsWith("1 sim") || cancelReply.includes("sim cancelar") || cancelReply === "btn cancelar sim" || cancelReply === "conf sim" || cancelReply === "cancelar") {
+      text = "btn_cancelar_sim";
+    } else if (cancelReply === "2" || cancelReply.startsWith("2 nao") || cancelReply.includes("nao manter") || cancelReply === "btn cancelar nao" || cancelReply === "conf nao" || cancelReply === "manter") {
+      text = "btn_cancelar_nao";
+    }
+  }
+
   if (rawText) {
     if (pollLabelMap[lowerRaw]) {
       text = pollLabelMap[lowerRaw];
