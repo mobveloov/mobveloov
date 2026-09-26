@@ -2,7 +2,7 @@ import { useState, useEffect, type ReactNode } from 'react';
 import {
   LayoutDashboard, MapPin, Plug, DollarSign, Radio, Users, Car,
   MessageCircle, MessagesSquare, BookOpen, Settings, UserCog, Bell, ScrollText, Bot,
-  BarChart3, Wallet, LogOut, Menu, X, ChevronRight, Crown,
+  BarChart3, Wallet, LogOut, Menu, X, ChevronRight, Crown, Zap,
 } from 'lucide-react';
 import { useAuth } from '@/context/AuthContext';
 import { useNav, type AdminScreen } from '@/context/NavContext';
@@ -23,6 +23,7 @@ const NAV_ITEMS: NavItem[] = [
   { key: 'locations', label: 'Totens & Locais', icon: MapPin, group: 'Operação' },
   { key: 'pricing', label: 'Preços', icon: DollarSign, group: 'Configuração' },
   { key: 'integration', label: 'Integração', icon: Plug, group: 'Configuração' },
+  { key: 'integrations', label: 'Integrações Avançadas', icon: Zap, group: 'Configuração' },
   { key: 'whatsapp', label: 'WhatsApp', icon: MessageCircle, group: 'Configuração' },
   { key: 'bot', label: 'Bot de Corridas', icon: Bot, group: 'Configuração' },
   { key: 'chats', label: 'Conversas', icon: MessagesSquare, group: 'Configuração' },

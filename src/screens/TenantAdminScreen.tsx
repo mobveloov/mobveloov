@@ -13,6 +13,7 @@ import { ReportsModule } from '@/screens/admin/ReportsModule';
 import { FinanceModule } from '@/screens/admin/FinanceModule';
 import { SubscriptionModule } from '@/screens/admin/SubscriptionModule';
 import { IntegrationPanel } from '@/screens/IntegrationPanel';
+import { AdvancedIntegrationsPanel } from '@/screens/admin/AdvancedIntegrationsPanel';
 import { PricingPanel } from '@/screens/PricingPanel';
 import { RideLogsPanel } from '@/screens/RideLogsPanel';
 import { WhatsAppPanel } from '@/screens/WhatsAppPanel';
@@ -67,6 +68,7 @@ export function TenantAdminScreen() {
       {adminScreen === 'dashboard' && <DashboardModule />}
       {adminScreen === 'locations' && <LocationsPanel />}
       {adminScreen === 'integration' && <IntegrationPanel />}
+      {adminScreen === 'integrations' && <AdvancedIntegrationsPanel />}
       {adminScreen === 'pricing' && <PricingPanel />}
       {adminScreen === 'dispatch' && <DispatchBoard />}
       {adminScreen === 'drivers' && <DriversPanel />}

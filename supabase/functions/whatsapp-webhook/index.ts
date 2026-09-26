@@ -662,6 +662,35 @@ async function geocodePOI(
     const extra = (config?.additional_config ?? {}) as Record<string, string>;
     googleKey = extra.google_geocoding_key;
   }
+  if (!googleKey) {
+    // Try integration_credentials table (per-company, then global fallback)
+    if (companyIdForGeocoding) {
+      const { data: cred } = await supabase
+        .from("integration_credentials")
+        .select("credentials")
+        .eq("tenant_id", companyIdForGeocoding)
+        .eq("category", "maps")
+        .eq("provider", "google_maps")
+        .eq("is_active", true)
+        .order("priority")
+        .limit(1)
+        .maybeSingle();
+      if (cred?.credentials) googleKey = (cred.credentials as Record<string, string>).api_key;
+    }
+    if (!googleKey) {
+      const { data: cred } = await supabase
+        .from("integration_credentials")
+        .select("credentials")
+        .is("tenant_id", null)
+        .eq("category", "maps")
+        .eq("provider", "google_maps")
+        .eq("is_active", true)
+        .order("priority")
+        .limit(1)
+        .maybeSingle();
+      if (cred?.credentials) googleKey = (cred.credentials as Record<string, string>).api_key;
+    }
+  }
   if (!googleKey) googleKey = Deno.env.get("GOOGLE_GEOCODING_API_KEY");
 
   if (googleKey) {
@@ -792,6 +821,39 @@ async function interpretMessageWithLLM(
       provider = config.provider;
       const extra = (config.additional_config ?? {}) as Record<string, string>;
       if (extra.nlu_model) model = extra.nlu_model;
+    }
+  }
+  if (!apiKey) {
+    // Try integration_credentials table (per-company, then global fallback)
+    if (companyId) {
+      const { data: cred } = await supabase
+        .from("integration_credentials")
+        .select("credentials, provider")
+        .eq("tenant_id", companyId)
+        .eq("category", "transcription")
+        .eq("is_active", true)
+        .order("priority")
+        .limit(1)
+        .maybeSingle();
+      if (cred?.credentials) {
+        const c = cred.credentials as Record<string, string>;
+        if (c.api_key) { apiKey = c.api_key; provider = cred.provider; }
+      }
+    }
+    if (!apiKey) {
+      const { data: cred } = await supabase
+        .from("integration_credentials")
+        .select("credentials, provider")
+        .is("tenant_id", null)
+        .eq("category", "transcription")
+        .eq("is_active", true)
+        .order("priority")
+        .limit(1)
+        .maybeSingle();
+      if (cred?.credentials) {
+        const c = cred.credentials as Record<string, string>;
+        if (c.api_key) { apiKey = c.api_key; provider = cred.provider; }
+      }
     }
   }
   if (!apiKey) {
@@ -1248,6 +1310,35 @@ async function geocodeAddress(address: string, city?: string, state?: string, bi
       .maybeSingle();
     const extra = (config?.additional_config ?? {}) as Record<string, string>;
     googleKey = extra.google_geocoding_key;
+  }
+  if (!googleKey) {
+    // Try integration_credentials table (per-company, then global fallback)
+    if (companyIdForGeocoding) {
+      const { data: cred } = await supabase
+        .from("integration_credentials")
+        .select("credentials")
+        .eq("tenant_id", companyIdForGeocoding)
+        .eq("category", "maps")
+        .eq("provider", "google_maps")
+        .eq("is_active", true)
+        .order("priority")
+        .limit(1)
+        .maybeSingle();
+      if (cred?.credentials) googleKey = (cred.credentials as Record<string, string>).api_key;
+    }
+    if (!googleKey) {
+      const { data: cred } = await supabase
+        .from("integration_credentials")
+        .select("credentials")
+        .is("tenant_id", null)
+        .eq("category", "maps")
+        .eq("provider", "google_maps")
+        .eq("is_active", true)
+        .order("priority")
+        .limit(1)
+        .maybeSingle();
+      if (cred?.credentials) googleKey = (cred.credentials as Record<string, string>).api_key;
+    }
   }
   if (!googleKey) googleKey = Deno.env.get("GOOGLE_GEOCODING_API_KEY");
 
@@ -1731,6 +1822,39 @@ async function transcribeAudio(audioBase64OrUrl: string, mimetype: string, compa
     }
   }
   // Fallback to env vars if no per-company config (OpenAI/Groq only)
+  if (!apiKey) {
+    // Try integration_credentials table (per-company, then global fallback)
+    if (companyId) {
+      const { data: cred } = await supabase
+        .from("integration_credentials")
+        .select("credentials, provider")
+        .eq("tenant_id", companyId)
+        .eq("category", "transcription")
+        .eq("is_active", true)
+        .order("priority")
+        .limit(1)
+        .maybeSingle();
+      if (cred?.credentials) {
+        const c = cred.credentials as Record<string, string>;
+        if (c.api_key) { apiKey = c.api_key; provider = cred.provider; }
+      }
+    }
+    if (!apiKey) {
+      const { data: cred } = await supabase
+        .from("integration_credentials")
+        .select("credentials, provider")
+        .is("tenant_id", null)
+        .eq("category", "transcription")
+        .eq("is_active", true)
+        .order("priority")
+        .limit(1)
+        .maybeSingle();
+      if (cred?.credentials) {
+        const c = cred.credentials as Record<string, string>;
+        if (c.api_key) { apiKey = c.api_key; provider = cred.provider; }
+      }
+    }
+  }
   if (!apiKey) {
     const groqKey = Deno.env.get("GROQ_API_KEY");
     const openaiKey = Deno.env.get("OPENAI_API_KEY");

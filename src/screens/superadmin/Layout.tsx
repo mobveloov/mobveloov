@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import {
   LayoutDashboard, Building2, Smartphone, CreditCard, Settings2,
   Car, Users, MessageCircle, Shield, FileText, ScrollText, LifeBuoy,
-  LogOut, Crown, X, Moon, Sun, UserCircle, ChevronDown,
+  LogOut, Crown, X, Moon, Sun, UserCircle, ChevronDown, Zap,
 } from 'lucide-react';
 import { useAuth } from '@/context/AuthContext';
 import { useNav } from '@/context/NavContext';
@@ -17,6 +17,7 @@ import { TotemsModule } from './modules/Totems';
 import { PlansModule } from './modules/Plans';
 import { BillingModule } from './modules/Billing';
 import { IntegrationsModule } from './modules/Integrations';
+import { AdvancedIntegrationsModule } from './modules/AdvancedIntegrations';
 import { DriversModule } from './modules/Drivers';
 import { PassengersModule } from './modules/Passengers';
 import { RidesModule } from './modules/Rides';
@@ -27,7 +28,7 @@ import { TicketsModule } from './modules/Tickets';
 
 export type ModuleKey =
   | 'dashboard' | 'companies' | 'totems' | 'plans' | 'billing'
-  | 'integrations' | 'drivers' | 'passengers' | 'rides'
+  | 'integrations' | 'advanced_integrations' | 'drivers' | 'passengers' | 'rides'
   | 'users' | 'reports' | 'audit' | 'tickets' | 'profile';
 
 interface NavItem {
@@ -47,6 +48,7 @@ const NAV_ITEMS: NavItem[] = [
   { key: 'passengers', label: 'Passageiros', icon: <Users className="h-4 w-4" />, group: 'Operação' },
   { key: 'rides', label: 'Corridas', icon: <MessageCircle className="h-4 w-4" />, group: 'Operação' },
   { key: 'integrations', label: 'Integrações', icon: <Settings2 className="h-4 w-4" />, group: 'Sistema' },
+  { key: 'advanced_integrations', label: 'Integrações Avançadas', icon: <Zap className="h-4 w-4" />, group: 'Sistema' },
   { key: 'users', label: 'Usuários Internos', icon: <Shield className="h-4 w-4" />, group: 'Sistema' },
   { key: 'reports', label: 'Relatórios', icon: <FileText className="h-4 w-4" />, group: 'Sistema' },
   { key: 'audit', label: 'Auditoria', icon: <ScrollText className="h-4 w-4" />, group: 'Sistema' },
@@ -120,6 +122,7 @@ export function SuperadminLayout() {
       case 'plans': return <PlansModule {...props} />;
       case 'billing': return <BillingModule {...props} />;
       case 'integrations': return <IntegrationsModule {...props} />;
+      case 'advanced_integrations': return <AdvancedIntegrationsModule {...props} />;
       case 'drivers': return <DriversModule {...props} />;
       case 'passengers': return <PassengersModule {...props} />;
       case 'rides': return <RidesModule {...props} />;

@@ -2,7 +2,7 @@ import { createContext, useContext, useState, useEffect, type ReactNode } from '
 
 type AppView = 'landing' | 'passenger' | 'tenant_login' | 'tenant_admin' | 'superadmin_login' | 'superadmin' | 'terms' | 'privacy';
 type PassengerScreen = 'identify' | 'destination' | 'category' | 'tracking';
-type AdminScreen = 'dashboard' | 'locations' | 'integration' | 'pricing' | 'dispatch' | 'drivers' | 'rides' | 'whatsapp' | 'chats' | 'manual' | 'settings' | 'users' | 'notifications' | 'audit' | 'reports' | 'finance' | 'subscription' | 'bot';
+type AdminScreen = 'dashboard' | 'locations' | 'integration' | 'integrations' | 'pricing' | 'dispatch' | 'drivers' | 'rides' | 'whatsapp' | 'chats' | 'manual' | 'settings' | 'users' | 'notifications' | 'audit' | 'reports' | 'finance' | 'subscription' | 'bot';
 
 interface NavContextValue {
   view: AppView;
