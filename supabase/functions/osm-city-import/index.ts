@@ -584,7 +584,17 @@ function normalizeName(name: string): string {
 
 // Fetch bounding box for a city from Nominatim (first time only)
 async function fetchBBox(city: string, stateSigla: string): Promise<{ min_lat: number; min_lon: number; max_lat: number; max_lon: number } | null> {
-  const query = `${city}, ${stateSigla}, Brazil`;
+  // Map common abbreviations to full state names for better Nominatim results
+  const stateNames: Record<string, string> = {
+    SP: "São Paulo", RJ: "Rio de Janeiro", MG: "Minas Gerais", RS: "Rio Grande do Sul",
+    PR: "Paraná", SC: "Santa Catarina", BA: "Bahia", CE: "Ceará", PE: "Pernambuco",
+    GO: "Goiás", DF: "Distrito Federal", ES: "Espírito Santo", MT: "Mato Grosso",
+    MS: "Mato Grosso do Sul", PA: "Pará", PB: "Paraíba", RN: "Rio Grande do Norte",
+    AL: "Alagoas", PI: "Piauí", MA: "Maranhão", SE: "Sergipe", RO: "Rondônia",
+    TO: "Tocantins", AC: "Acre", AM: "Amazonas", AP: "Amapá", RR: "Roraima",
+  };
+  const stateName = stateNames[stateSigla.toUpperCase()] ?? stateSigla;
+  const query = `${city}, ${stateName}, Brazil`;
   const url = `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(query)}&format=json&limit=1&polygon_geojson=0&addressdetails=0`;
   try {
     const resp = await fetch(url, {
@@ -865,9 +875,46 @@ async function handleImport(req: Request): Promise<Response> {
       }
     } catch { /* fall through to error */ }
 
-    // R2 fallback — read the .pbf file from Cloudflare R2 when both Overpass endpoints fail.
+    // Third Overpass mirror (Mail.ru)
+    try {
+      const resp3 = await fetch("https://maps.mail.ru/osm/tools/overpass/api/interpreter", {
+        method: "POST",
+        headers: { "Content-Type": "text/plain" },
+        body: `[out:json][timeout:120];(way["highway"](${bbox.min_lat},${bbox.min_lon},${bbox.max_lat},${bbox.max_lon});way["addr:street"](${bbox.min_lat},${bbox.min_lon},${bbox.max_lat},${bbox.max_lon}););out geom;`,
+      });
+      if (resp3.ok) {
+        const data = await resp3.json() as { elements: Array<Record<string, unknown>> };
+        const ways: Array<{ id: number; tags: Record<string, string>; nodes: Array<[number, number]> }> = [];
+        for (const el of data.elements ?? []) {
+          if (el.type === "way") {
+            const geometry = (el.geometry ?? []) as Array<{ lat: number; lon: number }>;
+            ways.push({
+              id: el.id as number,
+              tags: (el.tags ?? {}) as Record<string, string>,
+              nodes: geometry.map((g) => [g.lat, g.lon]),
+            });
+          }
+        }
+        if (ways.length > 0) {
+          const result = await processCityData(cidadeId, { ways });
+          await supabase.from("cidades").update({
+            import_status: "completed",
+            imported_at: new Date().toISOString(),
+            import_source: "overpass_mailru",
+          }).eq("id", cidadeId);
+          return new Response(JSON.stringify({
+            success: true,
+            cidade_id: cidadeId,
+            source: "overpass_mailru",
+            ...result,
+          }), { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } });
+        }
+      }
+    } catch { /* fall through to R2 */ }
+
+    // R2 fallback — read the .pbf file from Cloudflare R2 when all Overpass endpoints fail.
     // This only runs on Overpass failure, not on every request, to avoid R2 Class B costs.
-    console.log("Overpass failed — attempting R2 .pbf fallback");
+    console.log("All Overpass endpoints failed — attempting R2 .pbf fallback");
     const r2Data = await fetchR2Fallback(bbox);
     if (r2Data && r2Data.ways.length > 0) {
       const result = await processCityData(cidadeId, r2Data);
