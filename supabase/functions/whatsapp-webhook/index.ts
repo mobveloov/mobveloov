@@ -3013,7 +3013,13 @@ As mensagens do passageiro serao encaminhadas a partir de agora.`;
             const driverText = normalizePickupForDispatch(llmResult.texto_embarque_motorista)!;
             originReference = driverText;
             const llmDest = normalizeDestinationForDispatch(llmResult.texto_destino_motorista);
-            destinationReference = (llmDest && llmDest !== "DEFINIR NO CARRO") ? llmDest : null;
+            if (llmDest && llmDest !== "DEFINIR NO CARRO") {
+              destinationReference = llmDest;
+            } else if (combined && combined.destination) {
+              destinationReference = normalizeDestinationForDispatch(combined.destination) ?? normalizePlaceText(combined.destination);
+            } else {
+              destinationReference = null;
+            }
             combinedDest = destinationReference;
             llmIsRuaOficial = !!llmResult.eh_rua_oficial || (!!combined && looksLikeOfficialAddress(combined.pickup));
             if (llmIsRuaOficial && llmResult.geolocalizacao_origem) {
@@ -3056,7 +3062,13 @@ As mensagens do passageiro serao encaminhadas a partir de agora.`;
           const driverText = normalizePickupForDispatch(llmResult.texto_embarque_motorista)!;
           originReference = driverText;
           const llmDest = normalizeDestinationForDispatch(llmResult.texto_destino_motorista);
-          destinationReference = (llmDest && llmDest !== "DEFINIR NO CARRO") ? llmDest : null;
+          if (llmDest && llmDest !== "DEFINIR NO CARRO") {
+            destinationReference = llmDest;
+          } else if (combined && combined.destination) {
+            destinationReference = normalizeDestinationForDispatch(combined.destination) ?? normalizePlaceText(combined.destination);
+          } else {
+            destinationReference = null;
+          }
           combinedDest = destinationReference;
           llmIsRuaOficial = !!llmResult.eh_rua_oficial || (!!combined && looksLikeOfficialAddress(combined.pickup));
           if (llmIsRuaOficial && llmResult.geolocalizacao_origem) {
