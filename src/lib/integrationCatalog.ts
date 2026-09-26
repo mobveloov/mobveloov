@@ -1,14 +1,11 @@
 import {
-  Map, Navigation, CreditCard, MessageSquare, Bell, ShieldCheck, FileText,
+  Map, CreditCard, Bell, ShieldCheck, FileText,
   type LucideIcon,
 } from 'lucide-react';
 
 export type IntegrationCategory =
   | 'maps'
-  | 'dispatch'
   | 'payments'
-  | 'messaging'
-  | 'transcription'
   | 'push'
   | 'compliance'
   | 'fiscal';
@@ -79,44 +76,6 @@ export const INTEGRATION_CATALOG: CategoryDef[] = [
     ],
   },
   {
-    value: 'dispatch',
-    label: 'Dispatch / Motor de Corridas',
-    description: 'Plataforma de despacho de motoristas',
-    icon: Navigation,
-    providers: [
-      {
-        value: 'machine',
-        label: 'Machine API',
-        description: 'Integracao direta com taximachine.com.br',
-        fields: [
-          { key: 'api_url', label: 'URL base da API', type: 'url', placeholder: 'https://api.taximachine.com.br', required: true },
-          { key: 'api_key', label: 'API Key', type: 'password', required: true },
-          { key: 'taximetro_user', label: 'Usuario Taximetro', type: 'text' },
-          { key: 'taximetro_pass', label: 'Senha Taximetro', type: 'password' },
-        ],
-        supportsSimulation: true,
-      },
-      {
-        value: 'webhook',
-        label: 'Webhook Customizado',
-        description: 'Gateway generico para qualquer provedor',
-        fields: [
-          { key: 'webhook_url', label: 'URL do webhook', type: 'url', required: true },
-          { key: 'webhook_headers', label: 'Headers (JSON)', type: 'text', placeholder: '{"Authorization": "Bearer ..."}' },
-          { key: 'webhook_template', label: 'Template do payload', type: 'text' },
-        ],
-        supportsSimulation: true,
-      },
-      {
-        value: 'manual',
-        label: 'Dispatch Manual Interno',
-        description: 'Sem software externo. Painel interno para designar motoristas.',
-        fields: [],
-        supportsSimulation: true,
-      },
-    ],
-  },
-  {
     value: 'payments',
     label: 'Pagamentos e Cobranca',
     description: 'Pagamento de corrida e cobranca de assinaturas',
@@ -162,76 +121,6 @@ export const INTEGRATION_CATALOG: CategoryDef[] = [
         description: 'Pix, cartao, boleto',
         fields: [
           { key: 'token', label: 'Token', type: 'password', required: true },
-        ],
-      },
-    ],
-  },
-  {
-    value: 'messaging',
-    label: 'Mensageria (WhatsApp/SMS)',
-    description: 'Envio de mensagens para passageiros e motoristas',
-    icon: MessageSquare,
-    providers: [
-      {
-        value: 'evolution',
-        label: 'Evolution API',
-        description: 'Servidor self-hosted, instancia unica',
-        fields: [
-          { key: 'evo_url', label: 'Base URL', type: 'url', placeholder: 'https://suaevolution.com', required: true },
-          { key: 'evo_token', label: 'Global Master Token', type: 'password', required: true },
-          { key: 'evo_instance', label: 'Nome da Instancia', type: 'text', placeholder: 'veloov' },
-        ],
-      },
-      {
-        value: 'meta_cloud',
-        label: 'Meta Cloud API',
-        description: 'WhatsApp Business oficial (Meta)',
-        fields: [
-          { key: 'access_token', label: 'Access Token', type: 'password', required: true },
-          { key: 'phone_number_id', label: 'Phone Number ID', type: 'text', required: true },
-          { key: 'waba_id', label: 'WABA ID', type: 'text' },
-        ],
-      },
-      {
-        value: 'twilio',
-        label: 'Twilio',
-        description: 'WhatsApp + SMS como fallback',
-        fields: [
-          { key: 'account_sid', label: 'Account SID', type: 'text', required: true },
-          { key: 'auth_token', label: 'Auth Token', type: 'password', required: true },
-          { key: 'from_number', label: 'Numero de origem', type: 'text' },
-        ],
-      },
-      {
-        value: 'zenvia',
-        label: 'Zenvia',
-        description: 'Alternativa nacional para SMS/WhatsApp',
-        fields: [
-          { key: 'api_key', label: 'API Key', type: 'password', required: true },
-        ],
-      },
-    ],
-  },
-  {
-    value: 'transcription',
-    label: 'Transcricao de Audio',
-    description: 'Converte audio do passageiro em texto (endereco por voz)',
-    icon: MessageSquare,
-    providers: [
-      {
-        value: 'groq',
-        label: 'Groq',
-        description: 'Whisper API de alta velocidade',
-        fields: [
-          { key: 'api_key', label: 'API Key', type: 'password', placeholder: 'gsk_...', required: true },
-        ],
-      },
-      {
-        value: 'openai',
-        label: 'OpenAI',
-        description: 'Whisper API da OpenAI',
-        fields: [
-          { key: 'api_key', label: 'API Key', type: 'password', placeholder: 'sk-...', required: true },
         ],
       },
     ],

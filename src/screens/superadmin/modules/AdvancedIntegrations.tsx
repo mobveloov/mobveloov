@@ -174,7 +174,9 @@ export function AdvancedIntegrationsModule({ success, error: toastError }: Modul
       <div className="flex items-start gap-2 rounded-lg border border-blue-500/20 bg-blue-500/5 p-3">
         <Info className="h-4 w-4 shrink-0 text-blue-500 mt-0.5" />
         <p className="text-[11px] text-blue-300">
-          <strong>Fallback automatico:</strong> Quando uma chave atinge limite ou falha, o sistema tenta a proxima credencial ativa da mesma categoria. Multiplas chaves do mesmo provedor sao suportadas (ex: 10 chaves Groq).
+          <strong>Fallback automatico:</strong> Quando uma chave atinge limite ou falha, o sistema tenta a proxima credencial ativa da mesma categoria. Multiplas chaves do mesmo provedor sao suportadas.
+          <br /><br />
+          <strong>Outras integracoes:</strong> Transcricao de audio, WhatsApp e Dispatch tem configuracao dedicada nas respectivas abas das empresas e no modulo "Integracoes" do SuperAdmin.
         </p>
       </div>
 

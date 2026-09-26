@@ -190,6 +190,8 @@ export function AdvancedIntegrationsPanel() {
         <Info className="h-4 w-4 shrink-0 text-blue-500 mt-0.5" />
         <p className="text-xs text-blue-700 dark:text-blue-300">
           <strong>Fallback automatico:</strong> Quando uma chave de API atinge limite ou falha, o sistema tenta a proxima credencial ativa da mesma categoria, na ordem de prioridade. Nada trava.
+          <br /><br />
+          <strong>Outras integracoes:</strong> Transcricao de audio, WhatsApp e Dispatch tem configuracao dedicada nas abas "WhatsApp", "Bot de Corridas" e "Integracao".
         </p>
       </div>
 
