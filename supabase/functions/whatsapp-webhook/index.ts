@@ -437,7 +437,7 @@ async function sendPollMessage(
 }
 
 // ── Bot: WhatsApp ride-request flow ──
-// State machine: inicio -> aguardando_endereco -> aguardando_destino -> [aguardando_endereco_destino] -> aguardando_confirmacao -> [aguardando_categoria] -> aguardando_pagamento -> corrida_solicitada
+// State machine: inicio -> aguardando_endereco -> [aguardando_selecao_rua] -> aguardando_destino -> [aguardando_endereco_destino] -> aguardando_confirmacao -> [aguardando_categoria] -> aguardando_pagamento -> corrida_solicitada
 
 interface BotConversation {
   id: string;
@@ -461,6 +461,7 @@ interface BotConversation {
   taken_over_at: string | null;
   taken_over_by: string | null;
   updated_at: string | null;
+  pending_fuzzy_options: Array<{ streetName: string; normalized: string; similarity: number; lat: number | null; lng: number | null; formatted: string | null }> | null;
 }
 
 async function getBotConnectionConfig(connectionId: string): Promise<{ provider: string; fields: Record<string, string> } | null> {
@@ -1064,11 +1065,178 @@ async function findAddressSuggestionFuzzy(
   return bestScore >= 30 ? bestMatch : null;
 }
 
+// ── Fuzzy street matching helpers ──
+
+// Normalize a street name for comparison: lowercase, remove accents, remove
+// common prefixes (rua/avenida/av/r/travessa/alameda), remove special chars.
+function normalizeStreetName(name: string): string {
+  return name
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .trim()
+    .replace(/^(rua|avenida|av|av\.|travessa|tr|alameda|estrada|rodovia|viela|beco|praca|pca)\s+/i, "")
+    .replace(/[^\w\s]/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+// Levenshtein distance between two strings (iterative, O(n*m)).
+function levenshtein(a: string, b: string): number {
+  const m = a.length;
+  const n = b.length;
+  if (m === 0) return n;
+  if (n === 0) return m;
+  const dp: number[][] = Array.from({ length: m + 1 }, () => new Array(n + 1).fill(0));
+  for (let i = 0; i <= m; i++) dp[i][0] = i;
+  for (let j = 0; j <= n; j++) dp[0][j] = j;
+  for (let i = 1; i <= m; i++) {
+    for (let j = 1; j <= n; j++) {
+      const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+      dp[i][j] = Math.min(dp[i - 1][j] + 1, dp[i][j - 1] + 1, dp[i - 1][j - 1] + cost);
+    }
+  }
+  return dp[m][n];
+}
+
+// Similarity ratio between two strings (0..1) based on Levenshtein distance.
+function similarity(a: string, b: string): number {
+  const maxLen = Math.max(a.length, b.length);
+  if (maxLen === 0) return 1;
+  return 1 - levenshtein(a, b) / maxLen;
+}
+
+interface StreetCacheEntry {
+  id: string;
+  street_name: string;
+  street_name_normalized: string;
+  lat: number | null;
+  lng: number | null;
+  formatted_address: string | null;
+}
+
+interface FuzzyMatchResult {
+  matches: Array<{ streetName: string; normalized: string; similarity: number; lat: number | null; lng: number | null; formatted: string | null }>;
+}
+
+// Look up streets in the cache for a given company + city that fuzzy-match
+// the input street name. Returns matches sorted by similarity descending.
+async function fuzzyMatchStreet(
+  companyId: string,
+  city: string | undefined,
+  inputStreet: string,
+): Promise<FuzzyMatchResult> {
+  if (!companyId || !inputStreet) return { matches: [] };
+  const normalizedInput = normalizeStreetName(inputStreet);
+  if (normalizedInput.length < 3) return { matches: [] };
+
+  let query = supabase
+    .from("street_cache")
+    .select("id, street_name, street_name_normalized, lat, lng, formatted_address")
+    .eq("company_id", companyId);
+  if (city) query = query.eq("city", city.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, ""));
+  const { data: streets, error } = await query.limit(500);
+
+  if (error || !streets || streets.length === 0) return { matches: [] };
+
+  const scored = (streets as StreetCacheEntry[])
+    .map((s) => ({
+      streetName: s.street_name,
+      normalized: s.street_name_normalized,
+      similarity: similarity(normalizedInput, s.street_name_normalized),
+      lat: s.lat != null ? Number(s.lat) : null,
+      lng: s.lng != null ? Number(s.lng) : null,
+      formatted: s.formatted_address,
+    }))
+    .filter((s) => s.similarity >= 0.75)
+    .sort((a, b) => b.similarity - a.similarity);
+
+  return { matches: scored };
+}
+
+// Cache a successfully geocoded street for future fuzzy matching.
+async function cacheStreet(
+  companyId: string,
+  city: string | undefined,
+  state: string | undefined,
+  streetName: string,
+  lat: number,
+  lng: number,
+  formattedAddress: string,
+): Promise<void> {
+  if (!companyId || !streetName) return;
+  const normalized = normalizeStreetName(streetName);
+  if (normalized.length < 3) return;
+  const cityNorm = city ? city.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "") : "unknown";
+  try {
+    await supabase
+      .from("street_cache")
+      .upsert(
+        {
+          company_id: companyId,
+          city: cityNorm,
+          state: state ?? "SP",
+          street_name: streetName,
+          street_name_normalized: normalized,
+          lat,
+          lng,
+          formatted_address: formattedAddress,
+        },
+        { onConflict: "company_id,city,street_name_normalized", ignoreDuplicates: true },
+      );
+  } catch { /* best-effort */ }
+}
+
+// Extract the street name (without number) from a formatted address string.
+function extractStreetName(formatted: string): string | null {
+  // Try "Rua X, 123 - Bairro - Cidade - Estado" format
+  const dashParts = formatted.split(" - ");
+  if (dashParts.length >= 2) {
+    const firstPart = dashParts[0].trim();
+    // Remove house number from "Rua X, 123"
+    const commaParts = firstPart.split(",");
+    if (commaParts.length >= 1) return commaParts[0].trim();
+  }
+  // Try "Rua X, 123, Bairro, Cidade - Estado" format
+  const commaParts = formatted.split(",");
+  if (commaParts.length >= 2) return commaParts[0].trim();
+  return null;
+}
+
 async function geocodeAddress(address: string, city?: string, state?: string, biasLat?: number, biasLng?: number): Promise<{ lat: number; lng: number; formatted: string } | null> {
   // Extract house number from the original address text so we can preserve it
   // in the formatted result even if the geocoder drops it.
   const houseNumberMatch = address.match(/\b(\d{1,6}(?:[A-Za-z]?)|s\/n)\b/i);
   const passengerHouseNumber = houseNumberMatch ? houseNumberMatch[1] : null;
+
+  // 0. Fuzzy match against cached streets for this company + city
+  fuzzyMatchesForCaller = [];
+  if (companyIdForGeocoding && city) {
+    const fuzzy = await fuzzyMatchStreet(companyIdForGeocoding, city, address);
+    if (fuzzy.matches.length === 1 && fuzzy.matches[0].similarity >= 0.9 && fuzzy.matches[0].lat != null && fuzzy.matches[0].lng != null) {
+      // Single high-confidence match (>= 90%) — use it directly
+      const m = fuzzy.matches[0];
+      let formatted = m.formatted ?? m.streetName;
+      if (passengerHouseNumber && !formatted.toLowerCase().includes(passengerHouseNumber.toLowerCase())) {
+        formatted = preserveHouseNumberInFormatted(formatted, passengerHouseNumber);
+      }
+      await supabase.from("admin_logs").insert({
+        company_id: companyIdForGeocoding, source: "whatsapp_webhook", level: "info",
+        message: `FUZZY MATCH (auto): input="${address}" matched="${m.streetName}" sim=${(m.similarity * 100).toFixed(0)}%`,
+      });
+      return { lat: m.lat!, lng: m.lng!, formatted };
+    }
+    if (fuzzy.matches.length >= 2 && fuzzy.matches[0].similarity >= 0.75 && fuzzy.matches[0].lat != null) {
+      // Multiple matches >= 75% — signal caller to present options
+      fuzzyMatchesForCaller = fuzzy.matches.slice(0, 5);
+      await supabase.from("admin_logs").insert({
+        company_id: companyIdForGeocoding, source: "whatsapp_webhook", level: "info",
+        message: `FUZZY MATCH (multi): input="${address}" matches=${fuzzy.matches.length} best="${fuzzy.matches[0].streetName}" sim=${(fuzzy.matches[0].similarity * 100).toFixed(0)}%`,
+      });
+      // Return null so the caller checks fuzzyMatchesForCaller before treating as not-found
+      return null;
+    }
+  }
 
   // 1. Try Google Geocoding API if a key is configured (per-company or env)
   let googleKey: string | undefined;
@@ -1100,6 +1268,7 @@ async function geocodeAddress(address: string, city?: string, state?: string, bi
           if (passengerHouseNumber && !formatted.toLowerCase().includes(passengerHouseNumber.toLowerCase())) {
             formatted = preserveHouseNumberInFormatted(formatted, passengerHouseNumber);
           }
+          if (companyIdForGeocoding) { const sn = extractStreetName(formatted); if (sn) await cacheStreet(companyIdForGeocoding, city, state, sn, r.geometry.location.lat, r.geometry.location.lng, formatted); }
           return {
             lat: r.geometry.location.lat,
             lng: r.geometry.location.lng,
@@ -1125,6 +1294,7 @@ async function geocodeAddress(address: string, city?: string, state?: string, bi
           if (passengerHouseNumber && !formatted.toLowerCase().includes(passengerHouseNumber.toLowerCase())) {
             formatted = preserveHouseNumberInFormatted(formatted, passengerHouseNumber);
           }
+          if (companyIdForGeocoding) { const sn = extractStreetName(formatted); if (sn) await cacheStreet(companyIdForGeocoding, city, state, sn, parseFloat(r.lat), parseFloat(r.lon), formatted); }
           return { lat: parseFloat(r.lat), lng: parseFloat(r.lon), formatted };
         }
       }
@@ -1157,6 +1327,7 @@ async function geocodeAddress(address: string, city?: string, state?: string, bi
             if (passengerHouseNumber && !formatted.toLowerCase().includes(passengerHouseNumber.toLowerCase())) {
               formatted = preserveHouseNumberInFormatted(formatted, passengerHouseNumber);
             }
+            if (companyIdForGeocoding) { const sn = extractStreetName(formatted); if (sn) await cacheStreet(companyIdForGeocoding, city, state, sn, parseFloat(r.lat), parseFloat(r.lon), formatted); }
             return { lat: parseFloat(r.lat), lng: parseFloat(r.lon), formatted };
           }
           // No results with bounded viewbox — try unbounded
@@ -1171,6 +1342,7 @@ async function geocodeAddress(address: string, city?: string, state?: string, bi
                 if (passengerHouseNumber && !formatted.toLowerCase().includes(passengerHouseNumber.toLowerCase())) {
                   formatted = preserveHouseNumberInFormatted(formatted, passengerHouseNumber);
                 }
+                if (companyIdForGeocoding) { const sn = extractStreetName(formatted); if (sn) await cacheStreet(companyIdForGeocoding, city, state, sn, parseFloat(r.lat), parseFloat(r.lon), formatted); }
                 return { lat: parseFloat(r.lat), lng: parseFloat(r.lon), formatted };
               }
             }
@@ -1210,6 +1382,7 @@ async function geocodeAddress(address: string, city?: string, state?: string, bi
         if (passengerHouseNumber && !formatted.toLowerCase().includes(passengerHouseNumber.toLowerCase())) {
           formatted = preserveHouseNumberInFormatted(formatted, passengerHouseNumber);
         }
+        if (companyIdForGeocoding) { const sn = extractStreetName(formatted); if (sn) await cacheStreet(companyIdForGeocoding, city, state, sn, lat, lng, formatted); }
         return { lat, lng, formatted };
       }
     }
@@ -1239,6 +1412,11 @@ function preserveHouseNumberInFormatted(formatted: string, houseNumber: string):
 // Module-level variable set during handleBotMessage so geocodeAddress can access
 // the company ID for Google Geocoding key lookup without changing its signature.
 let companyIdForGeocoding: string | null = null;
+
+// Fuzzy match alternatives populated by geocodeAddress when multiple streets
+// match the input with >= 75% similarity. The caller (handleBotMessage) reads
+// this to present interactive options to the passenger.
+let fuzzyMatchesForCaller: Array<{ streetName: string; normalized: string; similarity: number; lat: number | null; lng: number | null; formatted: string | null }> = [];
 
 function cleanAddressPart(value: unknown): string | null {
   if (typeof value !== "string") return null;
@@ -2741,6 +2919,14 @@ As mensagens do passageiro serao encaminhadas a partir de agora.`;
           if (bairro && originReference && !originReference.includes(bairro.toUpperCase())) {
             originReference = `${originReference}, ${bairro.toUpperCase()}`;
           }
+        } else if (fuzzyMatchesForCaller.length >= 2) {
+          // Multiple fuzzy street matches found — present options to the passenger
+          const optionText = fuzzyMatchesForCaller.map((m, i) => `${i + 1} - ${m.streetName}`).join("\n");
+          await sendBotMessage(companyId, cleanPhone, connectionId, `\u{1F50D} Encontrei varias ruas parecidas com "${addressText}":\n\n${optionText}\n\nResponda com o numero da rua correta. Se nenhuma for a certa, digite o endereco completo.`);
+          await supabase.from("bot_conversas")
+            .update({ state: "aguardando_selecao_rua", address_text: addressText, pending_fuzzy_options: JSON.stringify(fuzzyMatchesForCaller), updated_at: new Date().toISOString() })
+            .eq("id", conv.id);
+          return;
         } else if (companyLoc.lat != null && companyLoc.lng != null) {
           finalLat = companyLoc.lat;
           finalLng = companyLoc.lng;
@@ -2830,6 +3016,65 @@ As mensagens do passageiro serao encaminhadas a partir de agora.`;
       }
 
       await sendPollMessage(companyId, cleanPhone, connectionId, msg("ask_destination", "\u{1F3AF} Para onde voce vai?"), [{ id: "dest_digitar", label: "Digitar Endereco \u{1F4DD}" }, { id: "dest_nao_informar", label: "Nao informar \u{1F6AB}" }]);
+      break;
+    }
+
+    case "aguardando_selecao_rua": {
+      // Passenger is choosing between multiple fuzzy-matched streets.
+      // Options are stored in pending_fuzzy_options as JSON.
+      const rawOptions = (conv as Record<string, unknown>).pending_fuzzy_options;
+      const fuzzyOptions: Array<{ streetName: string; normalized: string; similarity: number; lat: number | null; lng: number | null; formatted: string | null }> =
+        Array.isArray(rawOptions) ? rawOptions as Array<{ streetName: string; normalized: string; similarity: number; lat: number | null; lng: number | null; formatted: string | null }> : [];
+      const choiceNum = parseInt(normalizedText, 10);
+      if (!isNaN(choiceNum) && choiceNum >= 1 && choiceNum <= fuzzyOptions.length) {
+        const m = fuzzyOptions[choiceNum - 1];
+        if (m.lat != null && m.lng != null) {
+          const houseNumberMatch = (conv.address_text ?? "").match(/\b(\d{1,6}(?:[A-Za-z]?)|s\/n)\b/i);
+          const houseNum = houseNumberMatch ? houseNumberMatch[1] : null;
+          let formatted = m.formatted ?? m.streetName;
+          if (houseNum && !formatted.toLowerCase().includes(houseNum.toLowerCase())) {
+            formatted = preserveHouseNumberInFormatted(formatted, houseNum);
+          }
+          const extractedDest = conv.destination_reference ?? conv.destination_text ?? null;
+          if (extractedDest) {
+            await supabase.from("bot_conversas")
+              .update({
+                state: "aguardando_confirmacao",
+                address_lat: m.lat,
+                address_lng: m.lng,
+                address_formatted: formatted,
+                address_is_fallback: false,
+                pending_fuzzy_options: null,
+                updated_at: new Date().toISOString(),
+              })
+              .eq("id", conv.id);
+            await sendPollMessage(companyId, cleanPhone, connectionId, msg("confirm_address", `\u2705 Confirma os dados da corrida?\n\n\u{1F4CD} Embarque: ${formatted}\n\u{1F3AF} Destino: ${extractedDest}`), [{ id: "conf_sim", label: "SIM \u2705" }, { id: "conf_nao", label: "NAO \u{1F504}" }]);
+          } else {
+            await supabase.from("bot_conversas")
+              .update({
+                state: "aguardando_destino",
+                address_lat: m.lat,
+                address_lng: m.lng,
+                address_formatted: formatted,
+                address_is_fallback: false,
+                pending_fuzzy_options: null,
+                updated_at: new Date().toISOString(),
+              })
+              .eq("id", conv.id);
+            await sendPollMessage(companyId, cleanPhone, connectionId, msg("ask_destination", "\u{1F3AF} Para onde voce vai?"), [{ id: "dest_digitar", label: "Digitar Endereco \u{1F4DD}" }, { id: "dest_nao_informar", label: "Nao informar \u{1F6AB}" }]);
+          }
+          break;
+        }
+      }
+      // If the passenger typed a new address instead of choosing, reset to ask for address
+      if (text && !normalizedText.match(/^[1-9]$/)) {
+        await supabase.from("bot_conversas")
+          .update({ state: "aguardando_endereco", pending_fuzzy_options: null, updated_at: new Date().toISOString() })
+          .eq("id", conv.id);
+        await sendBotMessage(companyId, cleanPhone, connectionId, msg("address_retry", `\u{1F4CD} Por favor, envie o endereco completo do embarque (rua, numero e bairro).`));
+        break;
+      }
+      await sendBotMessage(companyId, cleanPhone, connectionId, `\u26A0\uFE0F Opcao invalida. Responda com o numero da rua correta (1 a ${fuzzyOptions.length}).`);
       break;
     }
 
