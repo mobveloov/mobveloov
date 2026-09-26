@@ -897,7 +897,7 @@ async function sendWhatsAppNotification(
     if (isDriverChange) {
       message = "\u{1F501} Seu motorista foi trocado! Confira os dados do novo motorista:";
     }
-    const driverEmoji = driverGender === "F" ? "\u{1F470}\u200D\u2640\uFE0F" : "\u{1F9D1}\u200D\u{1F4BC}";
+    const driverEmoji = driverGender === "F" ? "\u{1F935}\u{1F3FC}\u200D\u2640\uFE0F" : "\u{1F468}\u{1F3FB}\u200D\u{1F4BC}";
     if (driverName) {
       message += `\n${driverEmoji}: ${driverName}`;
       if (vehicleModel) message += `\n\u{1F695}: ${vehicleModel}`;

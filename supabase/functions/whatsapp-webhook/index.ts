@@ -862,7 +862,7 @@ interface ParsedRideIntent {
 async function interpretMessageWithLLM(
   text: string,
   companyId: string | undefined,
-  context?: { city: string | null; state: string | null; totemReference: string | null; isTotemFixo: boolean },
+  context?: { city: string | null; state: string | null; totemReference: string | null; isTotemFixo: boolean; integrationMode?: string },
 ): Promise<ParsedRideIntent | null> {
   let apiKey: string | undefined;
   let provider = "groq";
@@ -944,33 +944,56 @@ async function interpretMessageWithLLM(
   const canal = isTotemFixo ? "TOTEM_FIXO" : "BOT_WHATSAPP";
   const fallbackAddr = refTotem ? `${refTotem}, ${cidade} - ${estado}` : `Rua Pernambuco, 402 - Vila Caroni, ${cidade} - ${estado}`;
   const nomeTotem = refTotem ? refTotem.toUpperCase() : "TOTEM CENTRAL";
+  const integrationMode = context?.integrationMode ?? "machine";
+  const isMachineMode = integrationMode === "machine";
 
   const systemPrompt = `Voce e o modulo de Inteligencia Artificial, Visao Computacional e Engenharia Geografica Avancada de uma plataforma de mobilidade urbana profissional (Bot de Corridas no WhatsApp e Totens Fisicos). Sua principal especialidade e a Tolerancia a Falhas Textuais e Foneticas (NLU/Fuzzy Matching).
 
-Sua missao e interpretar a intencao real do passageiro, mesmo que ele escreva ou fale com graves erros de portugues, girias ou abreviacoes.
+Sua missao e interpretar a intencao real do passageiro OU do motorista, mesmo que ele escreva ou fale com graves erros de portugues, girias, sotaques regionais de todo o Brasil, abreviacoes ou numeros por extenso.
 
 ### CONTEXTO DA OPERACAO DESTA INSTANCIA (INJETADO DINAMICAMENTE)
 - Canal de Entrada: ${canal} (Valores possiveis: "BOT_WHATSAPP" ou "TOTEM_FIXO")
 - Cidade de Operacao Padrao: ${cidade}
 - Estado: ${estado}
+- Motor de Integracao: ${isMachineMode ? "MACHINE_API (Automatica)" : "DESPACHO_MANUAL (Suporte/Operador)"}
 - Endereco de Fallback do Bot (Mapa): "${fallbackAddr}"
 ${isTotemFixo ? `- Endereco Real de Instalacao do Totem: "${fallbackAddr}"\n- Nome Identificador do Totem: "${nomeTotem}"\n` : ""}
 
-### DICIONARIO DE TOLERANCIA A FALHAS E INTERPRETACAO SEMANTICA:
+### DICIONARIO UNIVERSAL DE TOLERANCIA A FALHAS E INTERPRETACAO SEMANTICA:
 
 1. INTENCAO DE CONFIRMACAO (SIM):
-   - Variacoes aceitas: "sim", "si", "s", "sin", "comcerteza", "pode mandar", "manda", "bora", "ok", "confirmar", "comfima", "comfirma".
+   - Variacoes aceitas: "sim", "si", "s", "sin", "comcerteza", "pode mandar", "manda", "bora", "ok", "confirmar", "comfima", "comfirma", "isso", "isso mesmo", "pode ser", "fechou", "blz", "beleza", "certo", "exato", "exatamente", "claro", "logico", "aham", "hmhm", "uhum".
    - Mapeamento intencao_usuario: "SIM"
 
 2. INTENCAO DE CANCELAMENTO / CORRECAO (NAO):
-   - Variacoes aceitas: "nao", "nn", "n", "canselar", "cancelar", "cancela", "mudei de ideia", "errado", "corrigir", "mudar", "parar".
+   - Variacoes aceitas: "nao", "nn", "n", "canselar", "cancelar", "cancela", "mudei de ideia", "errado", "corrigir", "mudar", "parar", "deixa", "esquece", "cancela logo", "quero canselar".
    - Mapeamento intencao_usuario: "NAO"
 
-3. CORRECAO FONETICA DE RUAS E BAIRROS LOCAIS:
-   - Se o usuario escrever nomes de ruas de forma errada, use aproximacao fonetica para deduzir a rua oficial (Ex: "artu mesquita" -> "Rua Arthur Mesquita"; "pernanbuco" -> "Rua Pernambuco"; "vila carone" -> "Vila Caroni"). Marque "eh_rua_oficial": true.
+3. CORRECAO FONETICA DE RUAS E BAIRROS LOCAIS (TODO BRASIL):
+   - Sotaques regionais: norte ("tristeza" vs "tristiza"), nordeste ("arthur" vs "artu"), sul ("rua" vs "ru"), sudeste ("mesquita" vs "mesquita"), centro-oeste.
+   - Erros comuns de transcricao de audio: "rua" omitido, numeros por extenso ("cinquenta e sete" -> "57"), "numero" abreviado ("num", "n").
+   - Aproximacao fonetica para deduzir a rua oficial (Ex: "artu mesquita" -> "Rua Arthur Mesquita"; "pernanbuco" -> "Rua Pernambuco"; "vila carone" -> "Vila Caroni"; "djornalista" -> "Rua Jornalista"). Marque "eh_rua_oficial": true.
+   - Numeros por extenso: "quatrocentos e dois" -> "402"; "cento e noventa e cinco" -> "195"; "mil e quinhentos" -> "1500".
 
 4. CORRECAO DE LOCAIS INFORMAIS / APELIDOS:
-   - Trate girias e erros de digitacao de pontos turisticos comuns (Ex: "amarelina", "amarelinha da av", "amarelinha do centro" -> "AMARELINHA DA AVENIDA"; "prainha", "prainha de pitangueiras", "praninha" -> "PRAINHA").
+   - Trate girias e erros de digitacao de pontos turisticos, comerciais e locais conhecidos (Ex: "amarelina", "amarelinha da av", "amarelinha do centro" -> "AMARELINHA DA AVENIDA"; "prainha", "prainha de pitangueiras", "praninha" -> "PRAINHA"; "pesqueiro do diu" -> "PESQUEIRO DO DIU"; "shopping" -> "SHOPPING"; "rodoviaria" -> "RODOVIARIA"; "hospital" -> "HOSPITAL").
+   - Locais informais conhecidos devem ser preservados em MAIUSCULAS no campo texto_embarque_motorista ou texto_destino_motorista.
+
+5. INTENCOES DO MOTORISTA (QUANDO APLICAVEL):
+   - "aceitar corrida", "aceito", "vou pegar", "tô a caminho", "to a caminho", "cheguei", "cheguei no embarque", "finalizei", "corrida finalizada", "conclui", "terminei a corrida".
+   - Estas mensagens sao tratadas pelo backend via webhook da Machine API, mas o LLM deve reconhecer o contexto se receber.
+
+### REGRA DE NEGOCIO DO MOTOR DE INTEGRACAO (CRITICO):
+
+${isMachineMode ? `MOTOR ATUAL: MACHINE_API (Automatica)
+- O sistema esta PROIBIDO de tentar buscar ou adivinhar o endereco no OpenStreetMap ou mapas locais.
+- Pegue o texto limpo da rua e do numero gerados pelo LLM, concatene dinamicamente a Cidade e Estado (limpe a barra "/" para o formato "Cidade - Estado").
+- ARRANQUE/DELETE por completo qualquer coordenada de lat/lng do JSON final. A geolocalizacao_origem deve conter APENAS o endereco em texto formatado: "Rua Nome, Numero, ${cidade} - ${estado}".
+- Se for rua/numero invalido ou local nao identificado: use o fallback fixo "${fallbackAddr}".
+- Se for um local informal conhecido (ex: "Pesqueiro do DIU"): envie apenas o nome puro do local SEM cidade/estado para a corrida subir como destino aberto (por KM/Taximetro).` : `MOTOR ATUAL: DESPACHO_MANUAL (Suporte/Operador)
+- O sistema esta autorizado a usar o OpenStreetMap para encontrar e fixar coordenadas geograficas reais.
+- Para ruas oficiais, extraia o endereco completo com cidade/estado para que o backend faca a geocodificacao.
+- Para locais informais, preserve o nome em MAIUSCULAS para que o backend tente geolocalizar.`}
 
 ### REGRA 1: TRATAMENTO DE EMBARQUE POR CANAL (TOTEM VS BOT)
 
@@ -982,8 +1005,8 @@ ${isTotemFixo ? `- Endereco Real de Instalacao do Totem: "${fallbackAddr}"\n- No
 
 2. SE O CANAL FOR "BOT_WHATSAPP":
    - SE O INPUT FOR IMAGEM/FOTO: Atue com visao computacional. Identifique o letreiro ou fachada comercial (Ex: "CAIXA"). Formate o nome do local em MAIUSCULAS no campo texto_embarque_motorista (Ex: "AGENCIA DA CAIXA ECONOMICA FEDERAL") e defina a geolocalizacao_origem como o endereco de fallback ("${fallbackAddr}"). Defina origem_identificada_por_foto: true.
-   - SE O INPUT FOR LOCAL INFORMAL/APELIDO (Ex: "Amarelinha da Avenida", "Santa Casa", "Bar do Carlao"): Defina a geolocalizacao_origem como o endereco de fallback ("${fallbackAddr}"), mas preserve o termo original digitado em MAIUSCULAS no campo texto_embarque_motorista. Defina "eh_rua_oficial": false. O backend tentara geolocalizar o local no OpenStreetMap usando o nome + cidade da instancia; se nao encontrar, usara o endereco de fallback.
-   - SE O INPUT FOR APENAS RUA E NUMERO (Ex: "to na arthur mesquita numero 57"): Limpe os ruidos do texto e extraia apenas o logradouro e numero (Ex: "Rua Arthur Mesquita, 57, ${cidade} - ${estado}"). Defina "eh_rua_oficial": true para o backend consultar o OpenStreetMap, e salve o texto limpo em MAIUSCULAS em texto_embarque_motorista (Ex: "RUA ARTHUR MESQUITA, 57"). O backend completara o bairro e cidade automaticamente via OpenStreetMap.
+   - SE O INPUT FOR LOCAL INFORMAL/APELIDO (Ex: "Amarelinha da Avenida", "Santa Casa", "Bar do Carlao"): Defina a geolocalizacao_origem como o endereco de fallback ("${fallbackAddr}"), mas preserve o termo original digitado em MAIUSCULAS no campo texto_embarque_motorista. Defina "eh_rua_oficial": false. ${isMachineMode ? "O backend nao consultara mapas — apenas enviara o texto para a Machine API." : "O backend tentara geolocalizar o local no OpenStreetMap usando o nome + cidade da instancia."}
+   - SE O INPUT FOR APENAS RUA E NUMERO (Ex: "to na arthur mesquita numero 57"): Limpe os ruidos do texto e extraia apenas o logradouro e numero (Ex: "Rua Arthur Mesquita, 57, ${cidade} - ${estado}"). Defina "eh_rua_oficial": true. Salve o texto limpo em MAIUSCULAS em texto_embarque_motorista (Ex: "RUA ARTHUR MESQUITA, 57"). ${isMachineMode ? "A Machine API completara o bairro automaticamente." : "O backend completara o bairro e cidade automaticamente via OpenStreetMap."}
 
 ### REGRA 2: TRATAMENTO DE DESTINO E CALCULO POR KM
 1. NUNCA tente geolocalizar o destino no mapa. A propriedade geolocalizacao_destino deve ser OBRIGATORIAMENTE configurada como null em todos os casos para forcar a Machine a calcular o valor da corrida por KM rodado (taximetro) com base na categoria escolhida.
@@ -1871,6 +1894,50 @@ async function decryptWhatsAppAudio(
   }
 }
 
+async function fetchDriverGenderFromMachine(companyId: string, machineDriverId: string): Promise<string | null> {
+  try {
+    const { data: credentials } = await supabase
+      .from("company_credentials")
+      .select("machine_api_url, machine_api_key, taximetro_username, taximetro_password")
+      .eq("company_id", companyId)
+      .maybeSingle();
+    const { data: tenantRows } = await supabase
+      .from("tenant_secrets")
+      .select("secret_name, secret_value")
+      .eq("tenant_id", companyId);
+    const tenantMap = new Map(
+      (tenantRows ?? []).map((r: { secret_name: string; secret_value: string }) => [r.secret_name, r.secret_value])
+    );
+    const baseUrl = (credentials?.machine_api_url || "https://api.taximachine.com.br").replace(/\/+$/, "");
+    const apiKey = tenantMap.get("MACHINE_API_KEY") || credentials?.machine_api_key || "";
+    const user = tenantMap.get("TAXIMETRO_USER") || credentials?.taximetro_username || "";
+    const pass = tenantMap.get("TAXIMETRO_PASSWORD") || credentials?.taximetro_password || "";
+    if (!apiKey || !user || !pass) return null;
+
+    const resp = await fetch(`${baseUrl}/api/v2/integracao/condutores/${machineDriverId}`, {
+      method: "GET",
+      headers: {
+        "Content-Type": "application/json",
+        "api-key": apiKey,
+        "Authorization": `Basic ${btoa(`${user}:${pass}`)}`,
+      },
+    });
+    if (!resp.ok) return null;
+    const json = await resp.json();
+    const driver = Array.isArray(json?.data) ? json.data[0] : json?.data;
+    if (!driver) return null;
+    const extrasStr = driver.dados_extras;
+    if (extrasStr) {
+      try {
+        const extras = JSON.parse(extrasStr);
+        if (extras.sexo) return String(extras.sexo).toUpperCase().startsWith("F") ? "F" : "M";
+      } catch { /* not JSON */ }
+    }
+    if (driver.sexo) return String(driver.sexo).toUpperCase().startsWith("F") ? "F" : "M";
+    return null;
+  } catch { return null; }
+}
+
 async function transcribeAudio(audioBase64OrUrl: string, mimetype: string, companyId?: string): Promise<string | null> {
   // Try per-company transcription config first
   let apiKey: string | undefined;
@@ -2580,6 +2647,36 @@ async function handleBotMessage(
   image?: { data: string; mimetype: string } | null,
 ): Promise<void> {
   companyIdForGeocoding = companyId;
+
+  // ── Universal Audio-to-Text Layer ──────────────────────────────────────
+  // Any incoming audio (from passenger OR driver) is transcribed ONCE here and
+  // injected into the text pipeline. This guarantees NO audio message ever
+  // bypasses the LLM — every downstream state handler already processes text.
+  if (audio && !text) {
+    try {
+      const transcribed = await transcribeAudio(audio.data, audio.mimetype, companyId);
+      if (transcribed && transcribed.trim()) {
+        text = transcribed.trim();
+        await supabase.from("admin_logs").insert({
+          company_id: companyId, source: "whatsapp_webhook", level: "info",
+          message: `AUDIO TRANSCRIBED (universal layer): "${text.slice(0, 200)}"`,
+        });
+      } else {
+        await sendBotMessage(companyId, cleanPhone, connectionId, "Nao consegui transcrever o audio. Por favor, digite o endereco ou envie sua localizacao.");
+        return;
+      }
+    } catch (err) {
+      const errMsg = err instanceof Error ? err.message : String(err);
+      await supabase.from("admin_logs").insert({
+        company_id: companyId, source: "whatsapp_webhook", level: "error",
+        message: `Universal audio transcription failed: ${errMsg.slice(0, 300)}`,
+      });
+      await sendBotMessage(companyId, cleanPhone, connectionId, "Nao consegui transcrever o audio. Por favor, digite o endereco ou envie sua localizacao.");
+      return;
+    }
+    audio = null; // Prevent downstream handlers from re-transcribing
+  }
+
   // Load custom messages for this connection
   let customMessages: Record<string, string> = {};
   let flow: FlowSettings = { ...FLOW_DEFAULTS };
@@ -3033,31 +3130,26 @@ As mensagens do passageiro serao encaminhadas a partir de agora.`;
         addressText = normalizePlaceText(realText) ?? reversed ?? "Localizacao compartilhada pelo passageiro";
         originReference = normalizePlaceText(realText) ?? normalizePlaceText(reversed) ?? normalizePlaceText(addressText);
       } else {
-        // Unified NLU pipeline: audio and text messages go through the same LLM parsing.
-        // Audio is transcribed first, then the text is fed to the LLM like a typed message.
+        // Unified NLU pipeline: text messages (including transcribed audio) go through LLM parsing.
         let inputText: string | null = null;
-        if (audio) {
-          const transcribed = await transcribeAudio(audio.data, audio.mimetype, companyId);
-          if (!transcribed || !transcribed.trim()) {
-            await sendBotMessage(companyId, cleanPhone, connectionId, "Nao consegui transcrever o audio. Por favor, digite o endereco de embarque ou envie sua localizacao.");
-            return;
-          }
-          inputText = transcribed.trim();
-          await supabase.from("admin_logs").insert({
-            company_id: companyId, source: "whatsapp_webhook", level: "info",
-            message: `AUDIO TRANSCRIBED: "${inputText.slice(0, 200)}"`,
-          });
-        } else if (text) {
+        if (text) {
           inputText = text.trim();
         }
         if (inputText) {
           const combined = parseCombinedAddress(inputText);
           const llmCtx = await getCompanyLocationInfo(companyId, connectionId);
+          const { data: llmSettings } = await supabase
+            .from("company_settings")
+            .select("integration_mode")
+            .eq("company_id", companyId)
+            .maybeSingle();
+          const llmIntegrationMode = (llmSettings as { integration_mode?: string } | null)?.integration_mode ?? "machine";
           const llmResult = await interpretMessageWithLLM(inputText, companyId, {
             city: llmCtx.city,
             state: llmCtx.state,
             totemReference: llmCtx.pickupAddress || llmCtx.totemName,
             isTotemFixo: !!llmCtx.pickupAddress,
+            integrationMode: llmIntegrationMode,
           });
           if (llmResult && llmResult.texto_embarque_motorista) {
             await supabase.from("admin_logs").insert({
@@ -3286,14 +3378,6 @@ As mensagens do passageiro serao encaminhadas a partir de agora.`;
             const reversed = await reverseGeocode(destLat, destLng);
             const realText = text && !text.startsWith("[Localizacao:") ? text : null;
             destText = normalizePlaceText(realText) ?? reversed ?? "Localizacao compartilhada pelo passageiro";
-          } else if (audio) {
-            const transcribed = await transcribeAudio(audio.data, audio.mimetype, companyId);
-            if (transcribed) {
-              destText = normalizePlaceText(transcribed);
-            } else {
-              await sendBotMessage(companyId, cleanPhone, connectionId, "Nao consegui transcrever o audio. Por favor, digite o endereco de destino.");
-              return;
-            }
           } else if (text) {
             destText = normalizePlaceText(text);
           }
@@ -3303,8 +3387,6 @@ As mensagens do passageiro serao encaminhadas a partir de agora.`;
             return;
           }
 
-          // Machine API flow: no OSM geocoding — keep text only for text/audio.
-          // WhatsApp location pins provide real GPS coordinates, so keep those.
           let finalDestLat: number | null = null;
           let finalDestLng: number | null = null;
           let finalDestAddress = destText;
@@ -3346,14 +3428,6 @@ As mensagens do passageiro serao encaminhadas a partir de agora.`;
         const reversed = await reverseGeocode(destLat, destLng);
         const realText = text && !text.startsWith("[Localizacao:") ? text : null;
         destText = normalizePlaceText(realText) ?? reversed ?? "Localizacao compartilhada pelo passageiro";
-      } else if (audio) {
-        const transcribed = await transcribeAudio(audio.data, audio.mimetype, companyId);
-        if (transcribed) {
-          destText = normalizePlaceText(transcribed);
-        } else {
-          await sendBotMessage(companyId, cleanPhone, connectionId, "Nao consegui transcrever o audio. Por favor, digite o endereco de destino.");
-          return;
-        }
       } else if (text) {
         destText = normalizePlaceText(text);
       }
@@ -3399,11 +3473,18 @@ As mensagens do passageiro serao encaminhadas a partir de agora.`;
       // If exact match failed, try LLM-based intent detection for typo tolerance
       if (!isSim && !isNao && text && text.trim().length > 0) {
         const llmCtx = await getCompanyLocationInfo(companyId, connectionId);
+        const { data: confirmSettings } = await supabase
+          .from("company_settings")
+          .select("integration_mode")
+          .eq("company_id", companyId)
+          .maybeSingle();
+        const confirmIntegrationMode = (confirmSettings as { integration_mode?: string } | null)?.integration_mode ?? "machine";
         const llmResult = await interpretMessageWithLLM(text.trim(), companyId, {
           city: llmCtx.city,
           state: llmCtx.state,
           totemReference: llmCtx.pickupAddress || llmCtx.totemName,
           isTotemFixo: !!llmCtx.pickupAddress,
+          integrationMode: confirmIntegrationMode,
         });
         if (llmResult?.intencao_usuario === "SIM") {
           // LLM detected confirmation intent (e.g. "si", "comcerteza", "pode mandar")
@@ -4327,16 +4408,43 @@ Deno.serve(async (req: Request) => {
 
       // Send WhatsApp notification to passenger if a global provider is configured
       if (data.passenger_phone) {
-        const statusMessages: Record<string, string> = {
-          accepted: "\u2705 Seu motorista aceitou a corrida! Esta a caminho do ponto de partida.",
-          en_route: "\u{1F697} Seu motorista chegou ao local de embarque! Procure pelo veiculo.",
-          in_progress: "\u{1F695} Sua viagem esta em andamento.",
-          completed: "\u{1F4AF} Sua viagem foi concluida. Obrigado!",
-        };
+        const cleanPhone = toBrazilianWhatsAppNumber(String(data.passenger_phone));
+        const driverName = data.driver_name ? String(data.driver_name) : null;
+        const vehicleModel = data.vehicle_model ? String(data.vehicle_model) : null;
+        const vehiclePlate = data.vehicle_plate ? String(data.vehicle_plate) : null;
+        const vehicleColor = data.vehicle_color ? String(data.vehicle_color) : null;
 
-        const message = statusMessages[newStatus];
+        // Fetch driver gender from Machine API to use the correct emoji
+        let driverGender: string | null = null;
+        const machineDriverId = data.driver_id ? String(data.driver_id) : null;
+        if (machineDriverId && waInstance?.company_id) {
+          driverGender = await fetchDriverGenderFromMachine(waInstance.company_id, machineDriverId);
+        }
+
+        // Build the status message with driver details for "accepted" status
+        let message: string | null = null;
+        if (newStatus === "accepted") {
+          const driverEmoji = driverGender === "F" ? "\u{1F935}\u{1F3FC}\u200D\u2640\uFE0F" : "\u{1F468}\u{1F3FB}\u200D\u{1F4BC}";
+          message = "\u2705 Seu motorista aceitou a corrida! Esta a caminho do ponto de partida.";
+          if (driverName) {
+            message += `\n${driverEmoji}: ${driverName}`;
+            if (vehicleModel) message += `\n\u{1F695}: ${vehicleModel}`;
+            if (vehicleColor) message += `\n\u{1F3A8}: ${vehicleColor}`;
+            if (vehiclePlate) message += `\n\u{1F524}: ${vehiclePlate}`;
+          }
+          message += `\n\n\u{1F4AC} Chat com Motorista esta ativo\n\nPara cancelar, responda "cancelar" e confirme.`;
+        } else if (newStatus === "en_route") {
+          message = "\u{1F697} Seu motorista chegou ao local de embarque! Procure pelo veiculo.";
+          if (vehicleModel && vehiclePlate) {
+            message += `\n\u{1F695}: ${vehicleModel} - ${vehiclePlate}`;
+          }
+        } else if (newStatus === "in_progress") {
+          message = "\u{1F695} Sua viagem esta em andamento.";
+        } else if (newStatus === "completed") {
+          message = "\u{1F4AF} Sua viagem foi concluida. Obrigado!";
+        }
+
         if (message) {
-          const cleanPhone = toBrazilianWhatsAppNumber(String(data.passenger_phone));
           try {
             const { provider, fields: f } = await getCompanyWhatsAppConfig(waInstance.company_id);
             await sendWhatsAppMessageWithProvider(provider, f, cleanPhone, message);
