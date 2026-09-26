@@ -89,11 +89,10 @@ async function requestQr(config: WhatsAppConfig): Promise<Record<string, unknown
     try { connectData = JSON.parse(connectRaw) as Record<string, unknown>; } catch { /* not json */ }
 
     if (connectResp.status === 404) {
-      const createResp = await fetch(`${baseUrl}/instance/create`, {
+      const createResp = await fetch(`${baseUrl}/instance/create/${encodeURIComponent(instance)}`, {
         method: "POST",
         headers: authHeaders,
         body: JSON.stringify({
-          instanceName: instance,
           qrcode: true,
           integration: "WHATSAPP-BAILEYS",
         }),

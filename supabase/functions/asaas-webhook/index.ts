@@ -174,6 +174,12 @@ Deno.serve(async (req: Request) => {
       CONFIRMED_EVENTS.includes(event) || CONFIRMED_STATUSES.includes(asaasStatus);
 
     if (isConfirmed) {
+      if (subInvoice.status === "paid") {
+        return new Response(JSON.stringify({ message: "Invoice already paid" }), {
+          status: 200,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
       // Mark invoice as paid
       await supabase
         .from("subscription_invoices")

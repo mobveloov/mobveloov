@@ -104,7 +104,7 @@ export async function cancelRide(
       }),
     });
 
-    const data = await response.json();
+    const data = await response.json().catch(() => ({}));
     return { success: data.success ?? data.canceled ?? false };
   } catch {
     return { success: false };
@@ -137,7 +137,7 @@ export async function pollRideStatus(
       }),
     });
 
-    const data = await response.json();
+    const data = await response.json().catch(() => ({}));
     return {
       success: data.success ?? false,
       status: data.status,

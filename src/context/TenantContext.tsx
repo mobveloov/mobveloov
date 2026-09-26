@@ -192,6 +192,8 @@ export function TenantProvider({ children }: { children: ReactNode }) {
       const fingerprint = getDeviceFingerprint();
       if (loc.device_fingerprint && loc.device_fingerprint !== fingerprint) {
         setDeviceLocked(true);
+      } else if (!loc.device_fingerprint) {
+        setDeviceLocked(false);
       }
     }, 15000);
     return () => clearInterval(interval);

@@ -81,7 +81,7 @@ export function IdentifyScreen({ onIdentify, origin, destination, onDestinationC
         `https://photon.komoot.io/api/?q=${encodeURIComponent(trimmedQuery)}&limit=6&lang=pt`,
       );
       if (!photonResponse.ok) {
-        setDestResults([]);
+        setDestResults(addressResults);
         return;
       }
 

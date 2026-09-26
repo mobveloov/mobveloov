@@ -402,7 +402,7 @@ async function fetchDriverPositionFromMachine(
         lat: driverLat,
         lng: driverLng,
         updated_at: new Date().toISOString(),
-      }).eq("ride_id", rideId);
+      }, { onConflict: "ride_id" });
       return { lat: driverLat, lng: driverLng };
     }
   } catch { /* best-effort */ }

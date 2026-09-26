@@ -1,4 +1,5 @@
 // send-chat-message edge function — v2: verify_jwt disabled, uses service key internally
+import { createClient } from "npm:@supabase/supabase-js@2.57.4";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",

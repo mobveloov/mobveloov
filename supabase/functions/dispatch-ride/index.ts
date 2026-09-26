@@ -13,12 +13,12 @@ const supabaseServiceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
 const supabase = createClient(supabaseUrl, supabaseServiceKey);
 
 async function saveChatMessage(
-  _companyId: string,
-  _phone: string,
-  _direction: "incoming" | "outgoing",
-  _body: string,
+  companyId: string,
+  phone: string,
+  direction: "incoming" | "outgoing",
+  body: string,
 ): Promise<void> {
-  return;
+  if (!phone || !body) return;
   const cleanPhone = phone.replace(/\D/g, "");
   const { data: chat } = await supabase
     .from("whatsapp_chats")
@@ -372,7 +372,7 @@ async function dispatchToMachine(
       telefone: telefone,
       nome: data.passenger_name || "Passageiro",
     },
-    forma_pagamento: data.payment_method === "Cartao" ? "C" : data.payment_method === "Pix" ? "P" : "D",
+    forma_pagamento: data.payment_method === "Cartao" ? "C" : data.payment_method === "Pix" ? "X" : "D",
     partida: {
       endereco: data.origin?.address || "Endereço não informado",
       bairro: extractBairro(data.origin?.address) || "Centro",

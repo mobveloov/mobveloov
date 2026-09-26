@@ -180,10 +180,10 @@ Deno.serve(async (req: Request) => {
 
         try {
           // Try to create the instance — if it already exists, fall through to connect
-          const createResp = await fetch(`${cleanUrl}/instance/create`, {
+          const createResp = await fetch(`${cleanUrl}/instance/create/${encodeURIComponent(finalInstanceName)}`, {
             method: "POST",
             headers: { "Content-Type": "application/json", apikey: globalToken },
-            body: JSON.stringify({ instanceName: finalInstanceName, qrcode: true, integration: "WHATSAPP-BAILEYS" }),
+            body: JSON.stringify({ qrcode: true, integration: "WHATSAPP-BAILEYS" }),
           });
           const createBody = await createResp.text();
           let createData: unknown = null;
@@ -766,7 +766,7 @@ Deno.serve(async (req: Request) => {
         // Only Evolution API needs explicit logout; token-based providers just delete locally
         if (conn.provider === "evolution" || (!conn.provider && conn.evolution_api_url)) {
           try {
-            await fetch(`${conn.evolution_api_url}/instance/logout/${conn.instance_name}`, {
+            await fetch(`${conn.evolution_api_url}/instance/logout/${encodeURIComponent(conn.instance_name)}`, {
               method: "DELETE",
               headers: { apikey: conn.evolution_global_token },
             });

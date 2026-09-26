@@ -59,8 +59,8 @@ export function DispatchBoard() {
   };
 
   useEffect(() => {
-    loadData();
     if (!company) return;
+    loadData();
 
     const channel = supabase
       .channel(`dispatch-${company.id}`)

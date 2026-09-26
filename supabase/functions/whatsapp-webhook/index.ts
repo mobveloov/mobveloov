@@ -428,7 +428,6 @@ async function sendPollMessage(
   bodyText: string,
   buttons: InteractiveButton[],
 ): Promise<void> {
-  const options = buttons.map((b) => b.label);
   try {
     let provider: string;
     let f: Record<string, string>;
@@ -440,7 +439,7 @@ async function sendPollMessage(
       const c = await getCompanyWhatsAppConfig(companyId); provider = c.provider; f = c.fields;
     }
 
-    const sent = await sendPollWithProvider(provider, f, phone, bodyText, options);
+    const sent = await sendPollWithProvider(provider, f, phone, bodyText, buttons);
     if (sent) {
       const optionText = buttons.map((b) => `▶ ${b.label}`).join("\n");
       await saveMessage(companyId, phone, "outgoing", `${bodyText}\n${optionText}`);
@@ -464,7 +463,7 @@ async function sendPollWithProvider(
   f: Record<string, string>,
   cleanPhone: string,
   bodyText: string,
-  options: string[],
+  buttons: InteractiveButton[],
 ): Promise<boolean> {
   if (provider === "evolution" || provider === "veloov") {
     const url = f["evo_url"] ?? "";
@@ -474,15 +473,22 @@ async function sendPollWithProvider(
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 10000);
     let resp: Response;
+    // Use sendButtons instead of sendPoll: Evolution v2 delivers poll votes
+    // encrypted (pollUpdateMessage.vote.encPayload) which the webhook cannot
+    // decrypt, so poll clicks were silently ignored. Button replies arrive as
+    // plain buttonsResponseMessage.selectedDisplayText.
     try {
-      resp = await fetch(`${url}/message/sendPoll/${instance}`, {
+      resp = await fetch(`${url}/message/sendButtons/${instance}`, {
         method: "POST",
         headers: { "Content-Type": "application/json", apikey: token },
         body: JSON.stringify({
           number: cleanPhone,
-          name: bodyText,
-          selectableCount: 1,
-          values: options,
+          title: bodyText,
+          buttons: buttons.slice(0, 3).map((b) => ({
+            type: "reply",
+            displayText: b.label,
+            id: b.id,
+          })),
           delay: 1200,
         }),
         signal: controller.signal,
@@ -491,7 +497,7 @@ async function sendPollWithProvider(
       clearTimeout(timeout);
       await supabase.from("admin_logs").insert({
         source: "whatsapp_webhook", level: "error",
-        message: `sendPoll Evolution fetch error for ${cleanPhone}: ${fetchErr instanceof Error ? fetchErr.message.slice(0, 500) : String(fetchErr).slice(0, 500)}`,
+        message: `sendButtons Evolution fetch error for ${cleanPhone}: ${fetchErr instanceof Error ? fetchErr.message.slice(0, 500) : String(fetchErr).slice(0, 500)}`,
       });
       return false;
     }
@@ -500,7 +506,7 @@ async function sendPollWithProvider(
     if (!resp.ok) {
       await supabase.from("admin_logs").insert({
         source: "whatsapp_webhook", level: "error",
-        message: `sendPoll Evolution HTTP ${resp.status} for ${cleanPhone}: ${respBody.slice(0, 500)}`,
+        message: `sendButtons Evolution HTTP ${resp.status} for ${cleanPhone}: ${respBody.slice(0, 500)}`,
       });
     }
     return resp.ok;
@@ -526,9 +532,9 @@ async function sendPollWithProvider(
             type: "button",
             body: { text: bodyText },
             action: {
-              buttons: options.slice(0, 3).map((label, i) => ({
+              buttons: buttons.slice(0, 3).map((b) => ({
                 type: "reply",
-                reply: { id: `poll_${i}`, title: label.slice(0, 20) },
+                reply: { id: b.id, title: b.label.slice(0, 20) },
               })),
             },
           },
@@ -643,6 +649,34 @@ async function sendBotMessage(companyId: string, phone: string, connectionId: st
 
 function deaccent(s: string): string {
   return s.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().trim();
+}
+
+// Evolution v2 button replies may carry the display text instead of the button id.
+// Map the display text back to the semantic id (conf_sim, cat_..., pay_...) so the
+// state machine can match it. Falls back to the raw id when no known label matches.
+function resolveButtonReply(buttonsResp: Record<string, unknown> | undefined): string | null {
+  if (!buttonsResp) return null;
+  const id = buttonsResp.selectedButtonId != null ? String(buttonsResp.selectedButtonId) : "";
+  const display = buttonsResp.selectedDisplayText != null ? String(buttonsResp.selectedDisplayText) : "";
+  const raw = display || id;
+  if (!raw) return null;
+  const d = deaccent(raw).replace(/[^a-z0-9\s]/g, "").replace(/\s+/g, " ").trim();
+  const labelMap: Record<string, string> = {
+    "sim": "conf_sim",
+    "nao": "conf_nao",
+    "digitar endereco": "dest_digitar",
+    "nao informar": "dest_nao_informar",
+    "dinheiro": "pay_dinheiro",
+    "pix": "pay_pix",
+    "cartao": "pay_cartao",
+    "solicitar corrida": "menu_corrida",
+    "suporte": "menu_suporte",
+    "sim cancelar": "btn_cancelar_sim",
+    "nao manter": "btn_cancelar_nao",
+  };
+  if (labelMap[d]) return labelMap[d];
+  if (id.startsWith("cat_") || id.startsWith("pay_") || id.startsWith("conf_") || id.startsWith("dest_") || id.startsWith("menu_") || id.startsWith("btn_") || id.startsWith("freq_")) return id;
+  return raw;
 }
 
 // Detect whether a transcribed text contains address-like content.
@@ -2515,7 +2549,9 @@ As mensagens do passageiro serao encaminhadas a partir de agora.`;
       // Also force geocoding when the text itself looks like "street + number".
       const looksOfficial = llmIsRuaOficial || looksLikeOfficialAddress(addressText ?? "");
       let suggestionMatch: { address_text: string; lat: number | null; lng: number | null } | null = null;
-      if (connectionId && looksOfficial) {
+      // Try nickname suggestions regardless of whether the text looks like an
+      // official street — suggestions are usually informal POI names.
+      if (connectionId) {
         suggestionMatch = await findAddressSuggestionFuzzy(connectionId, addressText);
       }
 
@@ -3398,8 +3434,9 @@ Deno.serve(async (req: Request) => {
           // Extract interactive button/list/poll replies (Evolution API format)
           if (!text) {
             const buttonsResp = msg?.buttonsResponseMessage as Record<string, unknown> | undefined;
-            if (buttonsResp?.selectedButtonId) {
-              text = String(buttonsResp.selectedButtonId);
+            const resolvedButton = resolveButtonReply(buttonsResp);
+            if (resolvedButton) {
+              text = resolvedButton;
             } else {
               const listResp = msg?.listResponseMessage as Record<string, unknown> | undefined;
               const singleSelect = listResp?.singleSelectReply as Record<string, unknown> | undefined;
@@ -3756,8 +3793,9 @@ async function handleIncomingMessage(companyId: string, data: Record<string, unk
   // Extract interactive button/list/poll replies (Evolution API v1/v2 format)
   if (!text && message) {
     const buttonsResp = message.buttonsResponseMessage as Record<string, unknown> | undefined;
-    if (buttonsResp?.selectedButtonId) {
-      text = String(buttonsResp.selectedButtonId);
+    const resolvedButton = resolveButtonReply(buttonsResp);
+    if (resolvedButton) {
+      text = resolvedButton;
     } else {
       const listResp = message.listResponseMessage as Record<string, unknown> | undefined;
       const singleSelect = listResp?.singleSelectReply as Record<string, unknown> | undefined;
