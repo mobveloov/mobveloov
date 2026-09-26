@@ -696,7 +696,7 @@ async function geocodePOI(
     const bottom = biasLat - delta;
     url += `&viewbox=${left},${top},${right},${bottom}&bounded=1`;
   }
-  for (let attempt = 0; attempt < 2; attempt++) {
+  for (let attempt = 0; attempt < 3; attempt++) {
     try {
       const resp = await fetch(url, { headers: { "User-Agent": "VeloovBot/1.0 (contato@veloov.com.br)" } });
       if (resp.ok) {
@@ -706,14 +706,29 @@ async function geocodePOI(
           const formatted = r.display_name ?? placeName;
           return { lat: parseFloat(r.lat), lng: parseFloat(r.lon), formatted };
         }
+        // No results with bounded viewbox — try unbounded on last attempt
+        if (attempt === 1 && biasLat != null && biasLng != null) {
+          const unboundedUrl = url.replace(/&viewbox=[^&]+&bounded=1/, "");
+          const resp2 = await fetch(unboundedUrl, { headers: { "User-Agent": "VeloovBot/1.0 (contato@veloov.com.br)" } });
+          if (resp2.ok) {
+            const results2 = await resp2.json();
+            if (Array.isArray(results2) && results2.length > 0) {
+              const r = results2[0];
+              const formatted = r.display_name ?? placeName;
+              return { lat: parseFloat(r.lat), lng: parseFloat(r.lon), formatted };
+            }
+          }
+        }
         return null;
       }
-      if (resp.status === 429 && attempt === 0) {
-        await new Promise((r) => setTimeout(r, 1100));
+      if (resp.status === 429 && attempt < 2) {
+        await new Promise((r) => setTimeout(r, 2200));
         continue;
       }
       return null;
-    } catch { /* retry on next attempt */ }
+    } catch {
+      if (attempt < 2) await new Promise((r) => setTimeout(r, 1100));
+    }
   }
 
   // 3. Photon fallback — different POI database, sometimes finds places Nominatim misses
@@ -1106,7 +1121,7 @@ async function geocodeAddress(address: string, city?: string, state?: string, bi
     const bottom = biasLat - delta;
     url += `&viewbox=${left},${top},${right},${bottom}&bounded=1`;
   }
-  for (let attempt = 0; attempt < 2; attempt++) {
+  for (let attempt = 0; attempt < 3; attempt++) {
     try {
       const resp = await fetch(url, { headers: { "User-Agent": "VeloovBot/1.0 (contato@veloov.com.br)" } });
       if (resp.ok) {
@@ -1114,7 +1129,6 @@ async function geocodeAddress(address: string, city?: string, state?: string, bi
         if (Array.isArray(results) && results.length > 0) {
           const r = results[0];
           let formatted = r.display_name ?? address;
-          // Preserve passenger's house number if not in the formatted result
           if (passengerHouseNumber && !formatted.toLowerCase().includes(passengerHouseNumber.toLowerCase())) {
             formatted = preserveHouseNumberInFormatted(formatted, passengerHouseNumber);
           }
@@ -1124,14 +1138,32 @@ async function geocodeAddress(address: string, city?: string, state?: string, bi
             formatted,
           };
         }
+        // No results with bounded viewbox — try unbounded on last attempt
+        if (attempt === 1 && biasLat != null && biasLng != null) {
+          const unboundedUrl = url.replace(/&viewbox=[^&]+&bounded=1/, "");
+          const resp2 = await fetch(unboundedUrl, { headers: { "User-Agent": "VeloovBot/1.0 (contato@veloov.com.br)" } });
+          if (resp2.ok) {
+            const results2 = await resp2.json();
+            if (Array.isArray(results2) && results2.length > 0) {
+              const r = results2[0];
+              let formatted = r.display_name ?? address;
+              if (passengerHouseNumber && !formatted.toLowerCase().includes(passengerHouseNumber.toLowerCase())) {
+                formatted = preserveHouseNumberInFormatted(formatted, passengerHouseNumber);
+              }
+              return { lat: parseFloat(r.lat), lng: parseFloat(r.lon), formatted };
+            }
+          }
+        }
         return null;
       }
-      if (resp.status === 429 && attempt === 0) {
-        await new Promise((r) => setTimeout(r, 1100));
+      if (resp.status === 429 && attempt < 2) {
+        await new Promise((r) => setTimeout(r, 2200));
         continue;
       }
       return null;
-    } catch { /* retry on next attempt */ }
+    } catch {
+      if (attempt < 2) await new Promise((r) => setTimeout(r, 1100));
+    }
   }
 
   // 3. Photon fallback — sometimes finds streets Nominatim misses
