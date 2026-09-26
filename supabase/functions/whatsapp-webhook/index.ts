@@ -2350,6 +2350,25 @@ async function createAndDispatchRide(
     return { rideId: "", success: false, error: "Failed to create ride" };
   }
 
+  // Look up the company's actual integration mode so we send the right payload.
+  // Machine API = text only (no coordinates); manual/webhook = coordinates OK.
+  const { data: settings } = await supabase
+    .from("company_settings")
+    .select("integration_mode")
+    .eq("company_id", companyId)
+    .maybeSingle();
+  const integrationMode = (settings as { integration_mode?: string } | null)?.integration_mode ?? "machine";
+
+  // For Machine API: strip coordinates — the Machine's internal geocoder reads
+  // only the address text + city/state. For manual/webhook: keep coordinates.
+  const textOnly = integrationMode === "machine";
+  const dispatchOrigin = textOnly
+    ? { lat: 0, lng: 0, address: origin.address }
+    : origin;
+  const dispatchDestination = destination
+    ? (textOnly ? { lat: 0, lng: 0, address: destination.address } : destination)
+    : undefined;
+
   try {
     const dispatchUrl = `${supabaseUrl}/functions/v1/dispatch-ride`;
     const dispatchResp = await fetch(dispatchUrl, {
@@ -2361,16 +2380,16 @@ async function createAndDispatchRide(
       body: JSON.stringify({
         companySlug,
         companyId,
-        integrationMode: "machine",
+        integrationMode,
         rideId: ride.id,
         passenger_name: passengerName,
         passenger_phone: passengerPhone,
-        origin,
+        origin: dispatchOrigin,
         category: machineCategoryId || categoryLabel,
         payment_method: paymentMethod ?? "",
         origin_reference: originReference ?? null,
         destination_reference: destinationReference ?? null,
-        ...(destination ? { destination } : {}),
+        ...(dispatchDestination ? { destination: dispatchDestination } : {}),
         city: city ?? undefined,
         state: state ?? undefined,
       }),
@@ -4786,38 +4805,57 @@ async function handleIncomingMessage(companyId: string, data: Record<string, unk
           .eq("id", companyId)
           .maybeSingle();
 
-        // Geocode the pickup address
+        // Determine the company's integration mode to decide whether to geocode.
+        // Machine API = text only (no OSM geocoding needed); manual = geocode via OSM.
+        const { data: botSettings } = await supabase
+          .from("company_settings")
+          .select("integration_mode")
+          .eq("company_id", companyId)
+          .maybeSingle();
+        const botIntegrationMode = (botSettings as { integration_mode?: string } | null)?.integration_mode ?? "machine";
+
         const companyLoc = await getCompanyLocationInfo(companyId, connectionId);
-        const pickupGeocoded = await geocodeAddress(pickupAddress, companyLoc.city ?? undefined, companyLoc.state ?? undefined, companyLoc.lat ?? undefined, companyLoc.lng ?? undefined);
+
         let originLat: number;
         let originLng: number;
         let originAddress: string;
-        if (pickupGeocoded) {
-          originLat = pickupGeocoded.lat;
-          originLng = pickupGeocoded.lng;
-          originAddress = pickupGeocoded.formatted;
-        } else if (companyLoc.lat != null && companyLoc.lng != null) {
-          originLat = companyLoc.lat;
-          originLng = companyLoc.lng;
-          originAddress = pickupAddress;
-        } else {
-          try {
-            const botConfig = await getBotConnectionConfig(connectionId);
-            if (botConfig) {
-              await sendWhatsAppMessageWithProvider(botConfig.provider, botConfig.fields, cleanPhone, `Nao foi possivel geocodificar o endereco de embarque: ${pickupAddress}. Verifique se o endereco esta correto.`);
-            }
-          } catch { /* best-effort */ }
-          return;
-        }
-
-        // Geocode destination if provided
         let destination: { lat: number; lng: number; address: string } | null = null;
-        if (destAddress) {
-          const destGeocoded = await geocodeAddress(destAddress, companyLoc.city ?? undefined, companyLoc.state ?? undefined, companyLoc.lat ?? undefined, companyLoc.lng ?? undefined);
-          if (destGeocoded) {
-            destination = { lat: destGeocoded.lat, lng: destGeocoded.lng, address: destGeocoded.formatted };
+
+        if (botIntegrationMode === "machine") {
+          // Machine API: send only text — no OSM geocoding, no coordinates.
+          // The Machine's internal geocoder resolves the address string + city/state.
+          originLat = 0;
+          originLng = 0;
+          originAddress = pickupAddress;
+          if (destAddress) destination = { lat: 0, lng: 0, address: destAddress };
+        } else {
+          // Manual/webhook engine: geocode via OSM so coordinates are available.
+          const pickupGeocoded = await geocodeAddress(pickupAddress, companyLoc.city ?? undefined, companyLoc.state ?? undefined, companyLoc.lat ?? undefined, companyLoc.lng ?? undefined);
+          if (pickupGeocoded) {
+            originLat = pickupGeocoded.lat;
+            originLng = pickupGeocoded.lng;
+            originAddress = pickupGeocoded.formatted;
+          } else if (companyLoc.lat != null && companyLoc.lng != null) {
+            originLat = companyLoc.lat;
+            originLng = companyLoc.lng;
+            originAddress = pickupAddress;
           } else {
-            destination = { lat: originLat, lng: originLng, address: destAddress };
+            try {
+              const botConfig = await getBotConnectionConfig(connectionId);
+              if (botConfig) {
+                await sendWhatsAppMessageWithProvider(botConfig.provider, botConfig.fields, cleanPhone, `Nao foi possivel geocodificar o endereco de embarque: ${pickupAddress}. Verifique se o endereco esta correto.`);
+              }
+            } catch { /* best-effort */ }
+            return;
+          }
+
+          if (destAddress) {
+            const destGeocoded = await geocodeAddress(destAddress, companyLoc.city ?? undefined, companyLoc.state ?? undefined, companyLoc.lat ?? undefined, companyLoc.lng ?? undefined);
+            if (destGeocoded) {
+              destination = { lat: destGeocoded.lat, lng: destGeocoded.lng, address: destGeocoded.formatted };
+            } else {
+              destination = { lat: originLat, lng: originLng, address: destAddress };
+            }
           }
         }
 
@@ -5035,38 +5073,56 @@ async function handleIncomingMessage(companyId: string, data: Record<string, unk
           .eq("company_id", companyId)
           .eq("phone", passengerPhone);
 
-        // Geocode the pickup address
+        // Determine the company's integration mode to decide whether to geocode.
+        // Machine API = text only (no OSM geocoding needed); manual = geocode via OSM.
+        const { data: supportSettings } = await supabase
+          .from("company_settings")
+          .select("integration_mode")
+          .eq("company_id", companyId)
+          .maybeSingle();
+        const supportIntegrationMode = (supportSettings as { integration_mode?: string } | null)?.integration_mode ?? "machine";
+
         const companyLoc = await getCompanyLocationInfo(companyId, connectionId);
-        const pickupGeocoded = await geocodeAddress(pickupAddress, companyLoc.city ?? undefined, companyLoc.state ?? undefined, companyLoc.lat ?? undefined, companyLoc.lng ?? undefined);
+
         let originLat: number;
         let originLng: number;
         let originAddress: string;
-        if (pickupGeocoded) {
-          originLat = pickupGeocoded.lat;
-          originLng = pickupGeocoded.lng;
-          originAddress = pickupGeocoded.formatted;
-        } else if (companyLoc.lat != null && companyLoc.lng != null) {
-          originLat = companyLoc.lat;
-          originLng = companyLoc.lng;
-          originAddress = pickupAddress;
-        } else {
-          try {
-            const { provider, fields: f } = await getCompanyWhatsAppConfig(companyId);
-            const errMsg = `Nao foi possivel geocodificar o endereco de embarque: ${pickupAddress}. Verifique se o endereco esta correto.`;
-            await sendWhatsAppMessageWithProvider(provider, f, supportPhone, errMsg);
-            await saveMessage(companyId, supportPhone, "outgoing", errMsg);
-          } catch { /* best-effort */ }
-          return;
-        }
-
-        // Geocode destination if provided
         let destination: { lat: number; lng: number; address: string } | null = null;
-        if (destAddress) {
-          const destGeocoded = await geocodeAddress(destAddress, companyLoc.city ?? undefined, companyLoc.state ?? undefined, companyLoc.lat ?? undefined, companyLoc.lng ?? undefined);
-          if (destGeocoded) {
-            destination = { lat: destGeocoded.lat, lng: destGeocoded.lng, address: destGeocoded.formatted };
+
+        if (supportIntegrationMode === "machine") {
+          // Machine API: send only text — no OSM geocoding, no coordinates.
+          originLat = 0;
+          originLng = 0;
+          originAddress = pickupAddress;
+          if (destAddress) destination = { lat: 0, lng: 0, address: destAddress };
+        } else {
+          // Manual/webhook engine: geocode via OSM so coordinates are available.
+          const pickupGeocoded = await geocodeAddress(pickupAddress, companyLoc.city ?? undefined, companyLoc.state ?? undefined, companyLoc.lat ?? undefined, companyLoc.lng ?? undefined);
+          if (pickupGeocoded) {
+            originLat = pickupGeocoded.lat;
+            originLng = pickupGeocoded.lng;
+            originAddress = pickupGeocoded.formatted;
+          } else if (companyLoc.lat != null && companyLoc.lng != null) {
+            originLat = companyLoc.lat;
+            originLng = companyLoc.lng;
+            originAddress = pickupAddress;
           } else {
-            destination = { lat: originLat, lng: originLng, address: destAddress };
+            try {
+              const { provider, fields: f } = await getCompanyWhatsAppConfig(companyId);
+              const errMsg = `Nao foi possivel geocodificar o endereco de embarque: ${pickupAddress}. Verifique se o endereco esta correto.`;
+              await sendWhatsAppMessageWithProvider(provider, f, supportPhone, errMsg);
+              await saveMessage(companyId, supportPhone, "outgoing", errMsg);
+            } catch { /* best-effort */ }
+            return;
+          }
+
+          if (destAddress) {
+            const destGeocoded = await geocodeAddress(destAddress, companyLoc.city ?? undefined, companyLoc.state ?? undefined, companyLoc.lat ?? undefined, companyLoc.lng ?? undefined);
+            if (destGeocoded) {
+              destination = { lat: destGeocoded.lat, lng: destGeocoded.lng, address: destGeocoded.formatted };
+            } else {
+              destination = { lat: originLat, lng: originLng, address: destAddress };
+            }
           }
         }
 
@@ -5323,6 +5379,10 @@ async function handleIncomingMessage(companyId: string, data: Record<string, unk
             machineCategoryId = catRow?.machine_category_id ?? null;
           }
 
+          // Machine API: strip coordinates — send only text + city/state.
+          // Manual/webhook: keep coordinates from the DB.
+          const textOnly = integrationMode === "machine";
+
           await fetch(`${supabaseUrl}/functions/v1/dispatch-ride`, {
             method: "POST",
             headers: {
@@ -5337,14 +5397,14 @@ async function handleIncomingMessage(companyId: string, data: Record<string, unk
               passenger_name: rideData.passenger_name ?? "",
               passenger_phone: rideData.passenger_phone ?? "",
               origin: {
-                lat: rideData.origin_lat,
-                lng: rideData.origin_lng,
+                lat: textOnly ? 0 : rideData.origin_lat,
+                lng: textOnly ? 0 : rideData.origin_lng,
                 address: rideData.origin_label ?? "",
               },
               ...(rideData.destination_lat != null && rideData.destination_lng != null ? {
                 destination: {
-                  lat: rideData.destination_lat,
-                  lng: rideData.destination_lng,
+                  lat: textOnly ? 0 : rideData.destination_lat,
+                  lng: textOnly ? 0 : rideData.destination_lng,
                   address: rideData.destination_label ?? "",
                 },
               } : {}),
