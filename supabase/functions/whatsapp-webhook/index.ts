@@ -680,6 +680,7 @@ async function geocodePOI(
 interface ParsedRideIntent {
   eh_rua_oficial: boolean;
   origem_identificada_por_foto: boolean;
+  intencao_usuario: "SIM" | "NAO" | "SOLICITAR_CORRIDA" | null;
   geolocalizacao_origem: string | null;
   texto_embarque_motorista: string | null;
   geolocalizacao_destino: null;
@@ -743,7 +744,9 @@ async function interpretMessageWithLLM(
   const fallbackAddr = refTotem ? `${refTotem}, ${cidade} - ${estado}` : `Rua Pernambuco, 402 - Vila Caroni, ${cidade} - ${estado}`;
   const nomeTotem = refTotem ? refTotem.toUpperCase() : "TOTEM CENTRAL";
 
-  const systemPrompt = `Voce e o cerebro unificado de Inteligencia Artificial, Visao Computacional e Engenharia Geografica de uma plataforma de mobilidade urbana profissional (que gerencia Bot de Corridas no WhatsApp e Totens Fisicos). Sua funcao e receber o input do passageiro (seja texto livre ou uma imagem), limpar o endereco, aplicar as regras de negocio de cada canal e estruturar o payload para a API da Machine.
+  const systemPrompt = `Voce e o modulo de Inteligencia Artificial, Visao Computacional e Engenharia Geografica Avancada de uma plataforma de mobilidade urbana profissional (Bot de Corridas no WhatsApp e Totens Fisicos). Sua principal especialidade e a Tolerancia a Falhas Textuais e Foneticas (NLU/Fuzzy Matching).
+
+Sua missao e interpretar a intencao real do passageiro, mesmo que ele escreva ou fale com graves erros de portugues, girias ou abreviacoes.
 
 ### CONTEXTO DA OPERACAO DESTA INSTANCIA (INJETADO DINAMICAMENTE)
 - Canal de Entrada: ${canal} (Valores possiveis: "BOT_WHATSAPP" ou "TOTEM_FIXO")
@@ -751,6 +754,23 @@ async function interpretMessageWithLLM(
 - Estado: ${estado}
 - Endereco de Fallback do Bot (Mapa): "${fallbackAddr}"
 ${isTotemFixo ? `- Endereco Real de Instalacao do Totem: "${fallbackAddr}"\n- Nome Identificador do Totem: "${nomeTotem}"\n` : ""}
+
+### DICIONARIO DE TOLERANCIA A FALHAS E INTERPRETACAO SEMANTICA:
+
+1. INTENCAO DE CONFIRMACAO (SIM):
+   - Variacoes aceitas: "sim", "si", "s", "sin", "comcerteza", "pode mandar", "manda", "bora", "ok", "confirmar", "comfima", "comfirma".
+   - Mapeamento intencao_usuario: "SIM"
+
+2. INTENCAO DE CANCELAMENTO / CORRECAO (NAO):
+   - Variacoes aceitas: "nao", "nn", "n", "canselar", "cancelar", "cancela", "mudei de ideia", "errado", "corrigir", "mudar", "parar".
+   - Mapeamento intencao_usuario: "NAO"
+
+3. CORRECAO FONETICA DE RUAS E BAIRROS LOCAIS:
+   - Se o usuario escrever nomes de ruas de forma errada, use aproximacao fonetica para deduzir a rua oficial (Ex: "artu mesquita" -> "Rua Arthur Mesquita"; "pernanbuco" -> "Rua Pernambuco"; "vila carone" -> "Vila Caroni"). Marque "eh_rua_oficial": true.
+
+4. CORRECAO DE LOCAIS INFORMAIS / APELIDOS:
+   - Trate girias e erros de digitacao de pontos turisticos comuns (Ex: "amarelina", "amarelinha da av", "amarelinha do centro" -> "AMARELINHA DA AVENIDA"; "prainha", "prainha de pitangueiras", "praninha" -> "PRAINHA").
+
 ### REGRA 1: TRATAMENTO DE EMBARQUE POR CANAL (TOTEM VS BOT)
 
 1. SE O CANAL FOR "TOTEM_FIXO":
@@ -771,11 +791,16 @@ ${isTotemFixo ? `- Endereco Real de Instalacao do Totem: "${fallbackAddr}"\n- No
 ### REGRA 3: FLUXO DE CONFIRMACAO VIA ENQUETE (POLL)
 O bot nao deve gerar textos explicativos intermedios ou botoes tradicionais quebrados. Estruture a pergunta e as opcoes de clique em formato de Enquete nativa do WhatsApp (Poll Options). A enquete permite apenas selecao unica.
 
+### REGRA DE OURO (SEM TRAVAMENTOS)
+1. NUNCA exiba mensagens de erro gramatical. Se o usuario digitar algo muito confuso, tente extrair o maximo de letras e jogue no Fallback ("${fallbackAddr}"), mas envie o texto original digitado em MAIUSCULO para a tela do motorista.
+2. A geolocalizacao_destino deve ser SEMPRE NULL para permitir o calculo livre por KM rodado da categoria.
+
 ### FORMATO DE SAIDA EXCLUSIVO (JSON)
 Retorne APENAS o objeto JSON valido abaixo, sem textos explicativos fora do bloco:
 {
   "dados_extraidos": {
     "canal_de_entrada": "${canal}",
+    "intencao_usuario": "SIM" ou "NAO" ou "SOLICITAR_CORRIDA",
     "eh_rua_oficial": true,
     "origem_identificada_por_foto": false,
     "geolocalizacao_origem": "Endereco estruturado para o mapa ou fallback/totem fixo",
@@ -792,37 +817,47 @@ Retorne APENAS o objeto JSON valido abaixo, sem textos explicativos fora do bloc
 
 ### EXEMPLOS DE COMPORTAMENTO:
 
-Exemplo 1 (BOT_WHATSAPP - Rua oficial):
+Exemplo 1 (BOT_WHATSAPP - Rua oficial com erro fonetico):
 Contexto: Canal="BOT_WHATSAPP", Cidade="${cidade}", Estado="${estado}"
-Input: "Estou aqui na arthur mesquita numero 57 perto da igreja e vou para o hospital"
-Output: {"dados_extraidos":{"canal_de_entrada":"BOT_WHATSAPP","eh_rua_oficial":true,"origem_identificada_por_foto":false,"geolocalizacao_origem":"Rua Arthur Mesquita, 57, ${cidade} - ${estado}","texto_embarque_motorista":"RUA ARTHUR MESQUITA, 57","geolocalizacao_destino":null,"texto_destino_motorista":"HOSPITAL"},"payload_enquete_whatsapp":{"name":"EMBARQUE: RUA ARTHUR MESQUITA, 57\nDESTINO: HOSPITAL\n\nConfirma os dados da sua corrida?","options":["SIM, CONFIRMAR","NAO, CORRIGIR"],"selectableOptionsCount":1}}
+Input: "Estou aqui na artu mesquita numero 57 perto da igreja e vou para o hospital"
+Output: {"dados_extraidos":{"canal_de_entrada":"BOT_WHATSAPP","intencao_usuario":"SOLICITAR_CORRIDA","eh_rua_oficial":true,"origem_identificada_por_foto":false,"geolocalizacao_origem":"Rua Arthur Mesquita, 57, ${cidade} - ${estado}","texto_embarque_motorista":"RUA ARTHUR MESQUITA, 57","geolocalizacao_destino":null,"texto_destino_motorista":"HOSPITAL"},"payload_enquete_whatsapp":{"name":"EMBARQUE: RUA ARTHUR MESQUITA, 57\nDESTINO: HOSPITAL\n\nConfirma os dados da sua corrida?","options":["SIM, CONFIRMAR","NAO, CORRIGIR"],"selectableOptionsCount":1}}
 Nota: O backend completara o bairro (ex: Jardim Santa Vitoria) automaticamente via OpenStreetMap.
 
-Exemplo 2 (BOT_WHATSAPP - Local informal):
+Exemplo 2 (BOT_WHATSAPP - Local informal com erro de digitacao):
 Contexto: Canal="BOT_WHATSAPP", Cidade="${cidade}", Estado="${estado}"
-Input: "Me pega na amarelinha da avenida e leva na prainha"
-Output: {"dados_extraidos":{"canal_de_entrada":"BOT_WHATSAPP","eh_rua_oficial":false,"origem_identificada_por_foto":false,"geolocalizacao_origem":"${fallbackAddr}","texto_embarque_motorista":"AMARELINHA DA AVENIDA","geolocalizacao_destino":null,"texto_destino_motorista":"PRAINHA"},"payload_enquete_whatsapp":{"name":"EMBARQUE: AMARELINHA DA AVENIDA\nDESTINO: PRAINHA\n\nConfirma os dados da sua corrida?","options":["SIM, CONFIRMAR","NAO, CORRIGIR"],"selectableOptionsCount":1}}
+Input: "Me pega na amarelina da av e leva na prainha"
+Output: {"dados_extraidos":{"canal_de_entrada":"BOT_WHATSAPP","intencao_usuario":"SOLICITAR_CORRIDA","eh_rua_oficial":false,"origem_identificada_por_foto":false,"geolocalizacao_origem":"${fallbackAddr}","texto_embarque_motorista":"AMARELINHA DA AVENIDA","geolocalizacao_destino":null,"texto_destino_motorista":"PRAINHA"},"payload_enquete_whatsapp":{"name":"EMBARQUE: AMARELINHA DA AVENIDA\nDESTINO: PRAINHA\n\nConfirma os dados da sua corrida?","options":["SIM, CONFIRMAR","NAO, CORRIGIR"],"selectableOptionsCount":1}}
 
 Exemplo 3 (BOT_WHATSAPP - Audio com "vou la no"):
 Contexto: Canal="BOT_WHATSAPP", Cidade="${cidade}", Estado="${estado}"
 Input: "Eu quero um carro aqui na amarelinha da avenida porque eu vou la no pesqueiro do diu"
-Output: {"dados_extraidos":{"canal_de_entrada":"BOT_WHATSAPP","eh_rua_oficial":false,"origem_identificada_por_foto":false,"geolocalizacao_origem":"${fallbackAddr}","texto_embarque_motorista":"AMARELINHA DA AVENIDA","geolocalizacao_destino":null,"texto_destino_motorista":"PESQUEIRO DO DIU"},"payload_enquete_whatsapp":{"name":"EMBARQUE: AMARELINHA DA AVENIDA\nDESTINO: PESQUEIRO DO DIU\n\nConfirma os dados da sua corrida?","options":["SIM, CONFIRMAR","NAO, CORRIGIR"],"selectableOptionsCount":1}}
+Output: {"dados_extraidos":{"canal_de_entrada":"BOT_WHATSAPP","intencao_usuario":"SOLICITAR_CORRIDA","eh_rua_oficial":false,"origem_identificada_por_foto":false,"geolocalizacao_origem":"${fallbackAddr}","texto_embarque_motorista":"AMARELINHA DA AVENIDA","geolocalizacao_destino":null,"texto_destino_motorista":"PESQUEIRO DO DIU"},"payload_enquete_whatsapp":{"name":"EMBARQUE: AMARELINHA DA AVENIDA\nDESTINO: PESQUEIRO DO DIU\n\nConfirma os dados da sua corrida?","options":["SIM, CONFIRMAR","NAO, CORRIGIR"],"selectableOptionsCount":1}}
 
 Exemplo 4 (BOT_WHATSAPP - Variacao "to no"):
 Contexto: Canal="BOT_WHATSAPP", Cidade="${cidade}", Estado="${estado}"
 Input: "to no bar do carlao e quero ir pro hospital"
-Output: {"dados_extraidos":{"canal_de_entrada":"BOT_WHATSAPP","eh_rua_oficial":false,"origem_identificada_por_foto":false,"geolocalizacao_origem":"${fallbackAddr}","texto_embarque_motorista":"BAR DO CARLAO","geolocalizacao_destino":null,"texto_destino_motorista":"HOSPITAL"},"payload_enquete_whatsapp":{"name":"EMBARQUE: BAR DO CARLAO\nDESTINO: HOSPITAL\n\nConfirma os dados da sua corrida?","options":["SIM, CONFIRMAR","NAO, CORRIGIR"],"selectableOptionsCount":1}}
+Output: {"dados_extraidos":{"canal_de_entrada":"BOT_WHATSAPP","intencao_usuario":"SOLICITAR_CORRIDA","eh_rua_oficial":false,"origem_identificada_por_foto":false,"geolocalizacao_origem":"${fallbackAddr}","texto_embarque_motorista":"BAR DO CARLAO","geolocalizacao_destino":null,"texto_destino_motorista":"HOSPITAL"},"payload_enquete_whatsapp":{"name":"EMBARQUE: BAR DO CARLAO\nDESTINO: HOSPITAL\n\nConfirma os dados da sua corrida?","options":["SIM, CONFIRMAR","NAO, CORRIGIR"],"selectableOptionsCount":1}}
 
 Exemplo 5 (BOT_WHATSAPP - Rua com numero sem destino):
 Contexto: Canal="BOT_WHATSAPP", Cidade="${cidade}", Estado="${estado}"
-Input: "rua pernambuco 402 centro"
-Output: {"dados_extraidos":{"canal_de_entrada":"BOT_WHATSAPP","eh_rua_oficial":true,"origem_identificada_por_foto":false,"geolocalizacao_origem":"Rua Pernambuco, 402, ${cidade} - ${estado}","texto_embarque_motorista":"RUA PERNAMBUCO, 402","geolocalizacao_destino":null,"texto_destino_motorista":"DEFINIR NO CARRO"},"payload_enquete_whatsapp":{"name":"EMBARQUE: RUA PERNAMBUCO, 402\nDESTINO: DEFINIR NO CARRO\n\nConfirma os dados da sua corrida?","options":["SIM, CONFIRMAR","NAO, CORRIGIR"],"selectableOptionsCount":1}}
+Input: "rua pernanbuco 402 centro"
+Output: {"dados_extraidos":{"canal_de_entrada":"BOT_WHATSAPP","intencao_usuario":"SOLICITAR_CORRIDA","eh_rua_oficial":true,"origem_identificada_por_foto":false,"geolocalizacao_origem":"Rua Pernambuco, 402, ${cidade} - ${estado}","texto_embarque_motorista":"RUA PERNAMBUCO, 402","geolocalizacao_destino":null,"texto_destino_motorista":"DEFINIR NO CARRO"},"payload_enquete_whatsapp":{"name":"EMBARQUE: RUA PERNAMBUCO, 402\nDESTINO: DEFINIR NO CARRO\n\nConfirma os dados da sua corrida?","options":["SIM, CONFIRMAR","NAO, CORRIGIR"],"selectableOptionsCount":1}}
 
-${isTotemFixo ? `Exemplo 6 (TOTEM_FIXO - Cliente so digita o destino):
+Exemplo 6 (BOT_WHATSAPP - Confirmacao com erro):
+Contexto: Canal="BOT_WHATSAPP", Cidade="${cidade}", Estado="${estado}"
+Input: "si pode mandar"
+Output: {"dados_extraidos":{"canal_de_entrada":"BOT_WHATSAPP","intencao_usuario":"SIM","eh_rua_oficial":false,"origem_identificada_por_foto":false,"geolocalizacao_origem":"${fallbackAddr}","texto_embarque_motorista":null,"geolocalizacao_destino":null,"texto_destino_motorista":null},"payload_enquete_whatsapp":{"name":"Confirma os dados da sua corrida?","options":["SIM, CONFIRMAR","NAO, CORRIGIR"],"selectableOptionsCount":1}}
+
+Exemplo 7 (BOT_WHATSAPP - Cancelamento com erro):
+Contexto: Canal="BOT_WHATSAPP", Cidade="${cidade}", Estado="${estado}"
+Input: "nn canselar"
+Output: {"dados_extraidos":{"canal_de_entrada":"BOT_WHATSAPP","intencao_usuario":"NAO","eh_rua_oficial":false,"origem_identificada_por_foto":false,"geolocalizacao_origem":"${fallbackAddr}","texto_embarque_motorista":null,"geolocalizacao_destino":null,"texto_destino_motorista":null},"payload_enquete_whatsapp":{"name":"Confirma os dados da sua corrida?","options":["SIM, CONFIRMAR","NAO, CORRIGIR"],"selectableOptionsCount":1}}
+
+${isTotemFixo ? `Exemplo 8 (TOTEM_FIXO - Cliente so digita o destino):
 Contexto: Canal="TOTEM_FIXO", Cidade="${cidade}", Estado="${estado}", Totem="${nomeTotem}", Fallback="${fallbackAddr}"
 Input: "Quero ir para o Hospital Sao Paulo"
-Output: {"dados_extraidos":{"canal_de_entrada":"TOTEM_FIXO","eh_rua_oficial":false,"origem_identificada_por_foto":false,"geolocalizacao_origem":"${fallbackAddr}","texto_embarque_motorista":"${nomeTotem}","geolocalizacao_destino":null,"texto_destino_motorista":"HOSPITAL SAO PAULO"},"payload_enquete_whatsapp":{"name":"EMBARQUE: ${nomeTotem}\nDESTINO: HOSPITAL SAO PAULO\n\nConfirma os dados da sua corrida?","options":["SIM, CONFIRMAR","NAO, CORRIGIR"],"selectableOptionsCount":1}}
-` : ""}`;
+Output: {"dados_extraidos":{"canal_de_entrada":"TOTEM_FIXO","intencao_usuario":"SOLICITAR_CORRIDA","eh_rua_oficial":false,"origem_identificada_por_foto":false,"geolocalizacao_origem":"${fallbackAddr}","texto_embarque_motorista":"${nomeTotem}","geolocalizacao_destino":null,"texto_destino_motorista":"HOSPITAL SAO PAULO"},"payload_enquete_whatsapp":{"name":"EMBARQUE: ${nomeTotem}\nDESTINO: HOSPITAL SAO PAULO\n\nConfirma os dados da sua corrida?","options":["SIM, CONFIRMAR","NAO, CORRIGIR"],"selectableOptionsCount":1}}
+` : ""}`
 
   try {
     const controller = new AbortController();
@@ -862,9 +897,11 @@ Output: {"dados_extraidos":{"canal_de_entrada":"TOTEM_FIXO","eh_rua_oficial":fal
     try {
       const raw = JSON.parse(content) as Record<string, unknown>;
       const dados = (raw.dados_extraidos ?? raw) as Record<string, unknown>;
+      const intencao = (dados.intencao_usuario as string | undefined)?.toUpperCase().trim();
       parsed = {
         eh_rua_oficial: !!dados.eh_rua_oficial,
         origem_identificada_por_foto: !!dados.origem_identificada_por_foto,
+        intencao_usuario: (intencao === "SIM" || intencao === "NAO" || intencao === "SOLICITAR_CORRIDA") ? intencao as "SIM" | "NAO" | "SOLICITAR_CORRIDA" : null,
         geolocalizacao_origem: (dados.geolocalizacao_origem as string) ?? null,
         texto_embarque_motorista: (dados.texto_embarque_motorista as string) ?? null,
         geolocalizacao_destino: null,
@@ -889,6 +926,7 @@ Output: {"dados_extraidos":{"canal_de_entrada":"TOTEM_FIXO","eh_rua_oficial":fal
     return {
       eh_rua_oficial: !!parsed.eh_rua_oficial,
       origem_identificada_por_foto: !!parsed.origem_identificada_por_foto,
+      intencao_usuario: parsed.intencao_usuario ?? null,
       geolocalizacao_origem: parsed.geolocalizacao_origem ?? null,
       texto_embarque_motorista: parsed.texto_embarque_motorista ?? null,
       geolocalizacao_destino: null,
@@ -2793,7 +2831,39 @@ As mensagens do passageiro serao encaminhadas a partir de agora.`;
     }
 
     case "aguardando_confirmacao": {
-      if (!flow.confirm_address || ["sim", "sim.", "s", "confirmo", "confirmar", "sim!", "conf_sim", "1"].includes(normalizedText)) {
+      // First try exact text matching, then fall back to LLM intent detection
+      const isSim = ["sim", "sim.", "s", "confirmo", "confirmar", "sim!", "conf_sim", "1"].includes(normalizedText);
+      const isNao = ["nao", "nao.", "n", "errado", "nao!", "conf_nao", "2"].includes(normalizedText);
+
+      // If exact match failed, try LLM-based intent detection for typo tolerance
+      if (!isSim && !isNao && text && text.trim().length > 0) {
+        const llmCtx = await getCompanyLocationInfo(companyId, connectionId);
+        const llmResult = await interpretMessageWithLLM(text.trim(), companyId, {
+          city: llmCtx.city,
+          state: llmCtx.state,
+          totemReference: llmCtx.pickupAddress || llmCtx.totemName,
+          isTotemFixo: !!llmCtx.pickupAddress,
+        });
+        if (llmResult?.intencao_usuario === "SIM") {
+          // LLM detected confirmation intent (e.g. "si", "comcerteza", "pode mandar")
+          const companyLoc = await getCompanyLocationInfo(companyId, connectionId);
+          if (!companyLoc.slug) {
+            await sendBotMessage(companyId, cleanPhone, connectionId, "Erro: empresa nao configurada corretamente. Tente novamente mais tarde.");
+            return;
+          }
+          await proceedAfterDestination(companyId, cleanPhone, connectionId, conv.id, msg, flow);
+          break;
+        } else if (llmResult?.intencao_usuario === "NAO") {
+          // LLM detected rejection/correction intent (e.g. "nn", "canselar", "errado")
+          await supabase.from("bot_conversas")
+            .update({ state: "aguardando_endereco", updated_at: new Date().toISOString() })
+            .eq("id", conv.id);
+          await sendBotMessage(companyId, cleanPhone, connectionId, msg("address_correction", "\u{1F504} Sem problema! Qual e o endereco correto de embarque? Voce pode digitar, enviar sua localizacao ou mandar um audio."));
+          break;
+        }
+      }
+
+      if (!flow.confirm_address || isSim) {
         const companyLoc = await getCompanyLocationInfo(companyId, connectionId);
         if (!companyLoc.slug) {
           await sendBotMessage(companyId, cleanPhone, connectionId, "Erro: empresa nao configurada corretamente. Tente novamente mais tarde.");
@@ -2801,7 +2871,7 @@ As mensagens do passageiro serao encaminhadas a partir de agora.`;
         }
 
         await proceedAfterDestination(companyId, cleanPhone, connectionId, conv.id, msg, flow);
-      } else if (["nao", "nao.", "n", "errado", "nao!", "conf_nao", "2"].includes(normalizedText)) {
+      } else if (isNao) {
         await supabase.from("bot_conversas")
           .update({ state: "aguardando_endereco", updated_at: new Date().toISOString() })
           .eq("id", conv.id);
