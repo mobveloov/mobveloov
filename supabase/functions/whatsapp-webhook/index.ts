@@ -738,7 +738,6 @@ function looksLikeAddress(text: string): boolean {
 function normalizePlaceText(value: string | null | undefined): string | null {
   if (typeof value !== "string") return null;
   let s = value.trim();
-  // Iteratively strip leading conversational prefixes until only the place name remains
   for (let i = 0; i < 3; i++) {
     const before = s;
     s = s
@@ -757,13 +756,37 @@ function normalizePlaceText(value: string | null | undefined): string | null {
       .trim();
     if (s === before) break;
   }
-  // Remove trailing punctuation and collapse spaces
   s = s.replace(/[.!?,;:]+$/g, "").replace(/\s+/g, " ").trim();
   return s ? s.toUpperCase() : null;
 }
 
+function normalizePickupForDispatch(value: string | null | undefined): string | null {
+  let normalized = normalizePlaceText(value);
+  if (!normalized) return null;
+
+  normalized = normalized
+    .replace(/\s*,?\s*EU\s*$/i, "")
+    .replace(/\s*,?\s*(?:NUMERO|N[º°]?|NRO)\s*(\d+[A-Z]?)\s*$/i, ", $1")
+    .replace(/\s*,\s*,/g, ",")
+    .replace(/[.!?,;:]+$/g, "")
+    .trim();
+
+  if (/\b\d{1,6}[A-Z]?\b/.test(normalized) && !/\b(?:RUA|AVENIDA|AV\.?|TRAVESSA|ALAMEDA|ESTRADA|RODOVIA|VIELA|BECO)\b/.test(normalized)) {
+    normalized = `RUA ${normalized}`;
+  }
+
+  return normalized;
+}
+
+function normalizeDestinationForDispatch(value: string | null | undefined): string | null {
+  const normalized = normalizePlaceText(value);
+  if (!normalized) return null;
+  return normalized.replace(/\bPESQUEIRO\s+DO\s+DIO\b/g, "PESQUEIRO DO DIU");
+}
+
 // NLU: Uses LLM (OpenAI/Groq chat completion) to extract structured ride intent from a free-form message.
 // Falls back to null if no LLM key is configured, letting the regex-based parseCombinedAddress handle it.
+// Updated: added post-LLM normalization to strip residual "EU" suffix and fix common transcription errors.
 interface ParsedRideIntent {
   eh_rua_oficial: boolean;
   origem_identificada_por_foto: boolean;
@@ -887,8 +910,8 @@ Output: {"dados_extraidos":{"canal_de_entrada":"BOT_WHATSAPP","eh_rua_oficial":f
 
 Exemplo 3 (BOT_WHATSAPP - Audio com "vou la no"):
 Contexto: Canal="BOT_WHATSAPP", Cidade="${cidade}", Estado="${estado}"
-Input: "Eu quero um carro aqui na amarelinha da avenida porque eu vou la no pesqueiro do dio"
-Output: {"dados_extraidos":{"canal_de_entrada":"BOT_WHATSAPP","eh_rua_oficial":false,"origem_identificada_por_foto":false,"geolocalizacao_origem":"${fallbackAddr}","texto_embarque_motorista":"AMARELINHA DA AVENIDA","geolocalizacao_destino":null,"texto_destino_motorista":"PESQUEIRO DO DIO"},"mensagem_whatsapp_cliente":"Confirma os dados da corrida?\\n\\nEmbarque: AMARELINHA DA AVENIDA\\nDestino: PESQUEIRO DO DIO"}
+Input: "Eu quero um carro aqui na amarelinha da avenida porque eu vou la no pesqueiro do diu"
+Output: {"dados_extraidos":{"canal_de_entrada":"BOT_WHATSAPP","eh_rua_oficial":false,"origem_identificada_por_foto":false,"geolocalizacao_origem":"${fallbackAddr}","texto_embarque_motorista":"AMARELINHA DA AVENIDA","geolocalizacao_destino":null,"texto_destino_motorista":"PESQUEIRO DO DIU"},"mensagem_whatsapp_cliente":"Confirma os dados da corrida?\\n\\nEmbarque: AMARELINHA DA AVENIDA\\nDestino: PESQUEIRO DO DIU"}
 
 Exemplo 4 (BOT_WHATSAPP - Variacao "to no"):
 Contexto: Canal="BOT_WHATSAPP", Cidade="${cidade}", Estado="${estado}"
@@ -2383,16 +2406,16 @@ As mensagens do passageiro serao encaminhadas a partir de agora.`;
             isTotemFixo: !!llmCtx.pickupAddress,
           });
           if (llmResult && llmResult.texto_embarque_motorista) {
-            const driverText = normalizePlaceText(llmResult.texto_embarque_motorista)!;
+            const driverText = normalizePickupForDispatch(llmResult.texto_embarque_motorista)!;
             originReference = driverText;
-            const llmDest = normalizePlaceText(llmResult.texto_destino_motorista);
+            const llmDest = normalizeDestinationForDispatch(llmResult.texto_destino_motorista);
             destinationReference = (llmDest && llmDest !== "DEFINIR NO CARRO") ? llmDest : null;
             combinedDest = destinationReference;
             llmIsRuaOficial = !!llmResult.eh_rua_oficial || (!!combined && looksLikeOfficialAddress(combined.pickup));
             if (llmIsRuaOficial && llmResult.geolocalizacao_origem) {
-              addressText = normalizePlaceText(llmResult.geolocalizacao_origem);
+              addressText = normalizePickupForDispatch(llmResult.geolocalizacao_origem) ?? driverText;
             } else if (combined && looksLikeOfficialAddress(combined.pickup)) {
-              addressText = normalizePlaceText(combined.pickup);
+              addressText = normalizePickupForDispatch(combined.pickup) ?? driverText;
             } else {
               addressText = driverText;
             }
@@ -2422,16 +2445,16 @@ As mensagens do passageiro serao encaminhadas a partir de agora.`;
           isTotemFixo: !!llmCtx.pickupAddress,
         });
         if (llmResult && llmResult.texto_embarque_motorista) {
-          const driverText = normalizePlaceText(llmResult.texto_embarque_motorista)!;
+          const driverText = normalizePickupForDispatch(llmResult.texto_embarque_motorista)!;
           originReference = driverText;
-          const llmDest = normalizePlaceText(llmResult.texto_destino_motorista);
+          const llmDest = normalizeDestinationForDispatch(llmResult.texto_destino_motorista);
           destinationReference = (llmDest && llmDest !== "DEFINIR NO CARRO") ? llmDest : null;
           combinedDest = destinationReference;
           llmIsRuaOficial = !!llmResult.eh_rua_oficial || (!!combined && looksLikeOfficialAddress(combined.pickup));
           if (llmIsRuaOficial && llmResult.geolocalizacao_origem) {
-            addressText = normalizePlaceText(llmResult.geolocalizacao_origem);
+            addressText = normalizePickupForDispatch(llmResult.geolocalizacao_origem) ?? driverText;
           } else if (combined && looksLikeOfficialAddress(combined.pickup)) {
-            addressText = normalizePlaceText(combined.pickup);
+            addressText = normalizePickupForDispatch(combined.pickup) ?? driverText;
           } else {
             addressText = driverText;
           }
