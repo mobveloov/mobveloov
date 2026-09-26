@@ -399,10 +399,11 @@ async function dispatchToMachine(
       ...(data.destination_reference ? { referencia: data.destination_reference } : {}),
     };
   } else if (data.destination_reference) {
-    // No geocoded destination — send only the reference text so the driver
-    // knows where the passenger wants to go, and the Machine API calculates
-    // the fare by KM (taximeter) instead of a fixed route.
+    // No geocoded destination — send the reference text as both endereco and
+    // referencia so the Machine API and driver know where to go, and the
+    // fare is calculated by KM (taximeter) instead of a fixed route.
     v2Payload.desejado = {
+      endereco: data.destination_reference,
       referencia: data.destination_reference,
     };
   }

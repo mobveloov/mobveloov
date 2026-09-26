@@ -650,6 +650,42 @@ async function geocodePOI(
   biasLat?: number,
   biasLng?: number,
 ): Promise<{ lat: number; lng: number; formatted: string } | null> {
+  // 1. Try Google Geocoding API if a key is configured (per-company or env)
+  let googleKey: string | undefined;
+  if (companyIdForGeocoding) {
+    const { data: config } = await supabase
+      .from("bot_transcription_config")
+      .select("additional_config")
+      .eq("company_id", companyIdForGeocoding)
+      .maybeSingle();
+    const extra = (config?.additional_config ?? {}) as Record<string, string>;
+    googleKey = extra.google_geocoding_key;
+  }
+  if (!googleKey) googleKey = Deno.env.get("GOOGLE_GEOCODING_API_KEY");
+
+  if (googleKey) {
+    try {
+      let googleUrl = `https://maps.googleapis.com/maps/api/geocode/json?address=${encodeURIComponent(placeName)}&language=pt-BR&region=br&key=${googleKey}`;
+      if (city) googleUrl += `&components=locality:${encodeURIComponent(city)}`;
+      if (biasLat != null && biasLng != null) {
+        googleUrl += `&bounds=${(biasLat - 0.45)},${(biasLng - 0.45)}|${(biasLat + 0.45)},${(biasLng + 0.45)}`;
+      }
+      const gResp = await fetch(googleUrl);
+      if (gResp.ok) {
+        const gData = await gResp.json();
+        if (gData?.results?.length > 0) {
+          const r = gData.results[0];
+          return {
+            lat: r.geometry.location.lat,
+            lng: r.geometry.location.lng,
+            formatted: r.formatted_address ?? placeName,
+          };
+        }
+      }
+    } catch { /* fall through to Nominatim */ }
+  }
+
+  // 2. Nominatim with viewbox bias
   const q = city ? `${placeName}, ${city}` : placeName;
   let url = `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(q)}&format=json&limit=1&countrycodes=br&addressdetails=1`;
   if (biasLat != null && biasLng != null) {
@@ -660,17 +696,46 @@ async function geocodePOI(
     const bottom = biasLat - delta;
     url += `&viewbox=${left},${top},${right},${bottom}&bounded=1`;
   }
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      const resp = await fetch(url, { headers: { "User-Agent": "VeloovBot/1.0 (contato@veloov.com.br)" } });
+      if (resp.ok) {
+        const results = await resp.json();
+        if (Array.isArray(results) && results.length > 0) {
+          const r = results[0];
+          const formatted = r.display_name ?? placeName;
+          return { lat: parseFloat(r.lat), lng: parseFloat(r.lon), formatted };
+        }
+        return null;
+      }
+      if (resp.status === 429 && attempt === 0) {
+        await new Promise((r) => setTimeout(r, 1100));
+        continue;
+      }
+      return null;
+    } catch { /* retry on next attempt */ }
+  }
+
+  // 3. Photon fallback — different POI database, sometimes finds places Nominatim misses
   try {
-    const resp = await fetch(url, { headers: { "User-Agent": "VeloovBot/1.0 (contato@veloov.com.br)" } });
-    if (resp.ok) {
-      const results = await resp.json();
-      if (Array.isArray(results) && results.length > 0) {
-        const r = results[0];
-        const formatted = r.display_name ?? placeName;
-        return { lat: parseFloat(r.lat), lng: parseFloat(r.lon), formatted };
+    let photonUrl = `https://photon.komoot.io/api/?q=${encodeURIComponent(placeName)}&limit=1`;
+    if (biasLat != null && biasLng != null) {
+      photonUrl += `&lat=${biasLat}&lon=${biasLng}&radius=20`;
+    }
+    const photonResp = await fetch(photonUrl);
+    if (photonResp.ok) {
+      const photon = await photonResp.json() as { features?: Array<{ geometry?: { coordinates?: [number, number] }; properties?: Record<string, unknown> }> };
+      const feat = photon.features?.[0];
+      if (feat?.geometry?.coordinates) {
+        const [lng, lat] = feat.geometry.coordinates;
+        const props = feat.properties ?? {};
+        const parts = [props.name, props.street, props.city, props.state, props.country].filter(Boolean).map(String);
+        const formatted = parts.join(", ") || placeName;
+        return { lat, lng, formatted };
       }
     }
   } catch { /* best-effort */ }
+
   return null;
 }
 
@@ -1068,6 +1133,34 @@ async function geocodeAddress(address: string, city?: string, state?: string, bi
       return null;
     } catch { /* retry on next attempt */ }
   }
+
+  // 3. Photon fallback — sometimes finds streets Nominatim misses
+  try {
+    let photonUrl = `https://photon.komoot.io/api/?q=${encodeURIComponent(address)}&limit=1`;
+    if (biasLat != null && biasLng != null) {
+      photonUrl += `&lat=${biasLat}&lon=${biasLng}&radius=20`;
+    }
+    const photonResp = await fetch(photonUrl);
+    if (photonResp.ok) {
+      const photon = await photonResp.json() as { features?: Array<{ geometry?: { coordinates?: [number, number] }; properties?: Record<string, unknown> }> };
+      const feat = photon.features?.[0];
+      if (feat?.geometry?.coordinates) {
+        const [lng, lat] = feat.geometry.coordinates;
+        const props = feat.properties ?? {};
+        let formatted = address;
+        const street = props.street ?? props.name;
+        if (street) {
+          const parts = [street, props.city, props.state].filter(Boolean).map(String);
+          formatted = parts.join(", ") || address;
+        }
+        if (passengerHouseNumber && !formatted.toLowerCase().includes(passengerHouseNumber.toLowerCase())) {
+          formatted = preserveHouseNumberInFormatted(formatted, passengerHouseNumber);
+        }
+        return { lat, lng, formatted };
+      }
+    }
+  } catch { /* best-effort */ }
+
   return null;
 }
 
