@@ -988,6 +988,7 @@ ${isTotemFixo ? `- Endereco Real de Instalacao do Totem: "${fallbackAddr}"\n- No
 ### REGRA 2: TRATAMENTO DE DESTINO E CALCULO POR KM
 1. NUNCA tente geolocalizar o destino no mapa. A propriedade geolocalizacao_destino deve ser OBRIGATORIAMENTE configurada como null em todos os casos para forcar a Machine a calcular o valor da corrida por KM rodado (taximetro) com base na categoria escolhida.
 2. Extraia o destino digitado pelo cliente para o campo texto_destino_motorista em MAIUSCULAS (Ex: "PRAINHA"). Se nao informado, use "DEFINIR NO CARRO".
+3. O destino pode aparecer APOS frases de intencao como "manda um carro... la no", "quero ir pro", "to na X e vou pra Y", "me leva na". Extraia SEMPRE o destino quando ele estiver presente, mesmo que o texto tenha ruido (saudacoes, girias, "manda um carro aqui para mim"). NUNCA retorne "DEFINIR NO CARRO" se o destino estiver explicito na mensagem.
 
 ### REGRA 3: FLUXO DE CONFIRMACAO VIA ENQUETE (POLL)
 O bot nao deve gerar textos explicativos intermedios ou botoes tradicionais quebrados. Estruture a pergunta e as opcoes de clique em formato de Enquete nativa do WhatsApp (Poll Options). A enquete permite apenas selecao unica.
@@ -1034,6 +1035,12 @@ Contexto: Canal="BOT_WHATSAPP", Cidade="${cidade}", Estado="${estado}"
 Input: "Eu quero um carro aqui na amarelinha da avenida porque eu vou la no pesqueiro do diu"
 Output: {"dados_extraidos":{"canal_de_entrada":"BOT_WHATSAPP","intencao_usuario":"SOLICITAR_CORRIDA","eh_rua_oficial":false,"origem_identificada_por_foto":false,"geolocalizacao_origem":"${fallbackAddr}","texto_embarque_motorista":"AMARELINHA DA AVENIDA","geolocalizacao_destino":null,"texto_destino_motorista":"PESQUEIRO DO DIU"},"payload_enquete_whatsapp":{"name":"EMBARQUE: AMARELINHA DA AVENIDA\nDESTINO: PESQUEIRO DO DIU\n\nConfirma os dados da sua corrida?","options":["SIM, CONFIRMAR","NAO, CORRIGIR"],"selectableOptionsCount":1}}
 
+Exemplo 3B (BOT_WHATSAPP - Audio transcrito com rua+numero e "manda um carro... la no"):
+Contexto: Canal="BOT_WHATSAPP", Cidade="${cidade}", Estado="${estado}"
+Input: "Oi, eu to aqui na rua Antonio da Costa, numero 95, manda um carro aqui para mim la no pesqueiro do diu"
+Output: {"dados_extraidos":{"canal_de_entrada":"BOT_WHATSAPP","intencao_usuario":"SOLICITAR_CORRIDA","eh_rua_oficial":true,"origem_identificada_por_foto":false,"geolocalizacao_origem":"Rua Antonio da Costa, 95, ${cidade} - ${estado}","texto_embarque_motorista":"RUA ANTONIO DA COSTA, 95","geolocalizacao_destino":null,"texto_destino_motorista":"PESQUEIRO DO DIU"},"payload_enquete_whatsapp":{"name":"EMBARQUE: RUA ANTONIO DA COSTA, 95\nDESTINO: PESQUEIRO DO DIU\n\nConfirma os dados da sua corrida?","options":["SIM, CONFIRMAR","NAO, CORRIGIR"],"selectableOptionsCount":1}}
+Nota: O passageiro misturou endereco de embarque (rua+numero) com intencao ("manda um carro") e destino ("la no pesqueiro do diu"). Extraia AMBOS corretamente.
+
 Exemplo 4 (BOT_WHATSAPP - Variacao "to no"):
 Contexto: Canal="BOT_WHATSAPP", Cidade="${cidade}", Estado="${estado}"
 Input: "to no bar do carlao e quero ir pro hospital"
@@ -1062,20 +1069,22 @@ Output: {"dados_extraidos":{"canal_de_entrada":"TOTEM_FIXO","intencao_usuario":"
 
   try {
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 15000);
+    const timeout = setTimeout(() => controller.abort(), 20000);
+    const requestBody: Record<string, unknown> = {
+      model,
+      messages: [
+        { role: "system", content: systemPrompt },
+        { role: "user", content: text },
+      ],
+      temperature: 0,
+      max_tokens: 400,
+    };
+    // Groq supports json_object mode for llama-3.3-70b; OpenAI supports it for gpt-4o-mini
+    requestBody.response_format = { type: "json_object" };
     const resp = await fetch(apiUrl, {
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}` },
-      body: JSON.stringify({
-        model,
-        messages: [
-          { role: "system", content: systemPrompt },
-          { role: "user", content: text },
-        ],
-        temperature: 0,
-        max_tokens: 400,
-        response_format: { type: "json_object" },
-      }),
+      body: JSON.stringify(requestBody),
       signal: controller.signal,
     });
     clearTimeout(timeout);
@@ -2099,6 +2108,10 @@ function parseCombinedAddress(rawText: string): { pickup: string; destination: s
     /\bvou na\b/i,
     /\bvou pro\b/i,
     /\bvou pra\b/i,
+    /\bme leva no\b/i,
+    /\bme leva na\b/i,
+    /\bme leva para\b/i,
+    /\bme leva pra\b/i,
     /\blevo no\b/i,
     /\blevo na\b/i,
     /\blevar no\b/i,
@@ -2111,6 +2124,10 @@ function parseCombinedAddress(rawText: string): { pickup: string; destination: s
     /\bir pra\b/i,
     /\bir no\b/i,
     /\bir na\b/i,
+    /\bla no\b/i,
+    /\bla na\b/i,
+    /\bla pro\b/i,
+    /\bla pra\b/i,
     /\bdestino\b/i,
     /\bpara a\b/i,
     /\bpara o\b/i,
@@ -2122,9 +2139,15 @@ function parseCombinedAddress(rawText: string): { pickup: string; destination: s
       const sepEnd = match.index + match[0].length;
       let pickup = deaccented.slice(0, match.index).trim();
       let destination = deaccented.slice(sepEnd).trim();
-      pickup = pickup.replace(/^(?:eu\s+)?(?:quero|preciso|gostaria)[\s\S]*?\b(?:aqui\s+)?(?:na|no|em)\s+/i, "").trim();
-      pickup = pickup.replace(/^(?:estou|to|estou aqui)\s+(?:na|no|em)\s+/i, "").trim();
+      // Strip leading greeting ("Oi, ", "Ola, ", "E ai, " etc.)
+      pickup = pickup.replace(/^(?:oi|ola|e ai|fala|bom dia|boa tarde|boa noite)[,!.\s]*/i, "").trim();
+      // Strip leading intent phrases ("eu quero", "eu preciso", "eu to", "estou", "to" etc.)
+      pickup = pickup.replace(/^(?:eu\s+)?(?:quero|preciso|gostaria|manda|mandei|quero que|preciso que)[\s\S]*?\b(?:aqui\s+)?(?:na|no|em)\s+/i, "").trim();
+      pickup = pickup.replace(/^(?:eu\s+)?(?:estou|to|estou aqui|to aqui)\s+(?:na|no|em)\s+/i, "").trim();
       pickup = pickup.replace(/^(?:aqui\s+)?(?:na|no|em)\s+/i, "").trim();
+      // Strip trailing intent phrases ("manda um carro", "manda um carro aqui para mim" etc.)
+      pickup = pickup.replace(/,\s*(?:manda|queria|quero|preciso|gostaria|pode|preciso que|quero que)[\s\S]*$/i, "").trim();
+      pickup = pickup.replace(/\s+(?:manda|queria|quero|preciso|gostaria|pode)[\s\S]*$/i, "").trim();
       destination = destination.replace(/^(?:la\s+|lá\s+)?(?:na|no|em|para|pra|pro)\s+/i, "").trim();
       if (pickup && destination) {
         return { pickup, destination };
@@ -2988,18 +3011,28 @@ As mensagens do passageiro serao encaminhadas a partir de agora.`;
         const realText = text && !text.startsWith("[Localizacao:") ? text : null;
         addressText = normalizePlaceText(realText) ?? reversed ?? "Localizacao compartilhada pelo passageiro";
         originReference = normalizePlaceText(realText) ?? normalizePlaceText(reversed) ?? normalizePlaceText(addressText);
-      } else if (audio) {
-        const transcribed = await transcribeAudio(audio.data, audio.mimetype, companyId);
-        if (transcribed) {
-          const audioText = transcribed.trim();
-          // Check if the transcription contains address-like content
-          if (!looksLikeAddress(audioText)) {
-            await sendBotMessage(companyId, cleanPhone, connectionId, `\u{1F3A4} Transcrevi: "${audioText}"\n\n\u{1F4CD} Nao consegui identificar um endereco. Por favor, digite o endereco de embarque ou envie sua localizacao.`);
+      } else {
+        // Unified NLU pipeline: audio and text messages go through the same LLM parsing.
+        // Audio is transcribed first, then the text is fed to the LLM like a typed message.
+        let inputText: string | null = null;
+        if (audio) {
+          const transcribed = await transcribeAudio(audio.data, audio.mimetype, companyId);
+          if (!transcribed || !transcribed.trim()) {
+            await sendBotMessage(companyId, cleanPhone, connectionId, "Nao consegui transcrever o audio. Por favor, digite o endereco de embarque ou envie sua localizacao.");
             return;
           }
-          const combined = parseCombinedAddress(audioText);
+          inputText = transcribed.trim();
+          await supabase.from("admin_logs").insert({
+            company_id: companyId, source: "whatsapp_webhook", level: "info",
+            message: `AUDIO TRANSCRIBED: "${inputText.slice(0, 200)}"`,
+          });
+        } else if (text) {
+          inputText = text.trim();
+        }
+        if (inputText) {
+          const combined = parseCombinedAddress(inputText);
           const llmCtx = await getCompanyLocationInfo(companyId, connectionId);
-          const llmResult = await interpretMessageWithLLM(audioText, companyId, {
+          const llmResult = await interpretMessageWithLLM(inputText, companyId, {
             city: llmCtx.city,
             state: llmCtx.state,
             totemReference: llmCtx.pickupAddress || llmCtx.totemName,
@@ -3008,7 +3041,7 @@ As mensagens do passageiro serao encaminhadas a partir de agora.`;
           if (llmResult && llmResult.texto_embarque_motorista) {
             await supabase.from("admin_logs").insert({
               company_id: companyId, source: "whatsapp_webhook", level: "info",
-              message: `LLM RESULT (audio): eh_rua=${llmResult.eh_rua_oficial} origem="${llmResult.geolocalizacao_origem}" embarque="${llmResult.texto_embarque_motorista}" destino="${llmResult.texto_destino_motorista}"`,
+              message: `LLM RESULT: eh_rua=${llmResult.eh_rua_oficial} origem="${llmResult.geolocalizacao_origem}" embarque="${llmResult.texto_embarque_motorista}" destino="${llmResult.texto_destino_motorista}"`,
             });
             const driverText = normalizePickupForDispatch(llmResult.texto_embarque_motorista)!;
             originReference = driverText;
@@ -3029,10 +3062,6 @@ As mensagens do passageiro serao encaminhadas a partir de agora.`;
             } else {
               addressText = driverText;
             }
-            await supabase.from("admin_logs").insert({
-              company_id: companyId, source: "whatsapp_webhook", level: "info",
-              message: `AUDIO PARSED: addressText="${addressText}" originRef="${originReference}" destRef="${destinationReference}" llmIsRuaOficial=${llmIsRuaOficial}`,
-            });
           } else if (combined) {
             addressText = normalizePickupForDispatch(combined.pickup) ?? normalizePlaceText(combined.pickup);
             combinedDest = normalizeDestinationForDispatch(combined.destination) ?? normalizePlaceText(combined.destination);
@@ -3040,53 +3069,9 @@ As mensagens do passageiro serao encaminhadas a partir de agora.`;
             destinationReference = combinedDest;
             llmIsRuaOficial = looksLikeOfficialAddress(combined.pickup);
           } else {
-            addressText = normalizePickupForDispatch(audioText) ?? normalizePlaceText(audioText);
-            originReference = normalizePickupForDispatch(audioText) ?? cleanPickupReference(audioText);
+            addressText = normalizePickupForDispatch(inputText) ?? normalizePlaceText(inputText);
+            originReference = normalizePickupForDispatch(inputText) ?? cleanPickupReference(inputText);
           }
-        } else {
-          await sendBotMessage(companyId, cleanPhone, connectionId, "Nao consegui transcrever o audio. Por favor, digite o endereco de embarque ou envie sua localizacao.");
-          return;
-        }
-      } else if (text) {
-        // Try LLM-based NLU first for richest parsing, fall back to regex
-        const inputText = text.trim();
-        const combined = parseCombinedAddress(inputText);
-        const llmCtx = await getCompanyLocationInfo(companyId, connectionId);
-        const llmResult = await interpretMessageWithLLM(inputText, companyId, {
-          city: llmCtx.city,
-          state: llmCtx.state,
-          totemReference: llmCtx.pickupAddress || llmCtx.totemName,
-          isTotemFixo: !!llmCtx.pickupAddress,
-        });
-        if (llmResult && llmResult.texto_embarque_motorista) {
-          const driverText = normalizePickupForDispatch(llmResult.texto_embarque_motorista)!;
-          originReference = driverText;
-          const llmDest = normalizeDestinationForDispatch(llmResult.texto_destino_motorista);
-          if (llmDest && llmDest !== "DEFINIR NO CARRO") {
-            destinationReference = llmDest;
-          } else if (combined && combined.destination) {
-            destinationReference = normalizeDestinationForDispatch(combined.destination) ?? normalizePlaceText(combined.destination);
-          } else {
-            destinationReference = null;
-          }
-          combinedDest = destinationReference;
-          llmIsRuaOficial = !!llmResult.eh_rua_oficial || (!!combined && looksLikeOfficialAddress(combined.pickup));
-          if (llmIsRuaOficial && llmResult.geolocalizacao_origem) {
-            addressText = normalizePickupForDispatch(llmResult.geolocalizacao_origem) ?? driverText;
-          } else if (combined && looksLikeOfficialAddress(combined.pickup)) {
-            addressText = normalizePickupForDispatch(combined.pickup) ?? driverText;
-          } else {
-            addressText = driverText;
-          }
-        } else if (combined) {
-          addressText = normalizePickupForDispatch(combined.pickup) ?? normalizePlaceText(combined.pickup);
-          combinedDest = normalizeDestinationForDispatch(combined.destination) ?? normalizePlaceText(combined.destination);
-          originReference = normalizePickupForDispatch(combined.pickup) ?? normalizePlaceText(combined.pickup);
-          destinationReference = combinedDest;
-          llmIsRuaOficial = looksLikeOfficialAddress(combined.pickup);
-        } else {
-          addressText = normalizePickupForDispatch(inputText) ?? normalizePlaceText(inputText);
-          originReference = normalizePickupForDispatch(inputText) ?? cleanPickupReference(inputText);
         }
       }
 
@@ -3397,10 +3382,6 @@ As mensagens do passageiro serao encaminhadas a partir de agora.`;
           } else if (audio) {
             const transcribed = await transcribeAudio(audio.data, audio.mimetype, companyId);
             if (transcribed) {
-              if (!looksLikeAddress(transcribed)) {
-                await sendBotMessage(companyId, cleanPhone, connectionId, `\u{1F3A4} Transcrevi: "${transcribed.trim()}"\n\n\u{1F4CD} Nao consegui identificar um endereco de destino. Por favor, digite o endereco ou envie sua localizacao.`);
-                return;
-              }
               destText = normalizePlaceText(transcribed);
             } else {
               await sendBotMessage(companyId, cleanPhone, connectionId, "Nao consegui transcrever o audio. Por favor, digite o endereco de destino.");
@@ -3470,10 +3451,6 @@ As mensagens do passageiro serao encaminhadas a partir de agora.`;
       } else if (audio) {
         const transcribed = await transcribeAudio(audio.data, audio.mimetype, companyId);
         if (transcribed) {
-          if (!looksLikeAddress(transcribed)) {
-            await sendBotMessage(companyId, cleanPhone, connectionId, `\u{1F3A4} Transcrevi: "${transcribed.trim()}"\n\n\u{1F4CD} Nao consegui identificar um endereco de destino. Por favor, digite o endereco ou envie sua localizacao.`);
-            return;
-          }
           destText = normalizePlaceText(transcribed);
         } else {
           await sendBotMessage(companyId, cleanPhone, connectionId, "Nao consegui transcrever o audio. Por favor, digite o endereco de destino.");
