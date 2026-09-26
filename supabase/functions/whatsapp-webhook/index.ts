@@ -440,13 +440,10 @@ async function sendPollMessage(
     }
 
     const sent = await sendPollWithProvider(provider, f, phone, bodyText, buttons);
-    if (sent) {
-      const optionText = buttons.map((b) => `▶ ${b.label}`).join("\n");
-      await saveMessage(companyId, phone, "outgoing", `${bodyText}\n${optionText}`);
-    } else {
-      const fallbackMsg = `${bodyText}\n\n${buttons.map((b, i) => `${i + 1} - ${b.label}`).join("\n")}\n\nResponda com o numero da opcao.`;
-      await sendBotMessage(companyId, phone, connectionId, fallbackMsg);
-    }
+    // Always send a text fallback with numbered options — poll votes may arrive
+    // encrypted and unreadable, so the passenger needs a way to reply by text.
+    const fallbackMsg = `${buttons.map((b, i) => `${i + 1} - ${b.label}`).join("\n")}\n\nResponda com o numero ou nome da opcao.`;
+    await sendBotMessage(companyId, phone, connectionId, fallbackMsg);
   } catch (err) {
     await supabase.from("admin_logs").insert({
       company_id: companyId,
@@ -473,22 +470,19 @@ async function sendPollWithProvider(
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 10000);
     let resp: Response;
-    // Use sendButtons instead of sendPoll: Evolution v2 delivers poll votes
-    // encrypted (pollUpdateMessage.vote.encPayload) which the webhook cannot
-    // decrypt, so poll clicks were silently ignored. Button replies arrive as
-    // plain buttonsResponseMessage.selectedDisplayText.
+    // WhatsApp native polls: selectableCount=1 means single vote, cannot be changed.
+    // Poll votes arrive encrypted (pollUpdateMessage.vote.encPayload) which we cannot
+    // decrypt without the Baileys session store. So we always send a text fallback
+    // after the poll so passengers can type their choice if the vote is encrypted.
     try {
-      resp = await fetch(`${url}/message/sendButtons/${instance}`, {
+      resp = await fetch(`${url}/message/sendPoll/${instance}`, {
         method: "POST",
         headers: { "Content-Type": "application/json", apikey: token },
         body: JSON.stringify({
           number: cleanPhone,
-          title: bodyText,
-          buttons: buttons.slice(0, 3).map((b) => ({
-            type: "reply",
-            displayText: b.label,
-            id: b.id,
-          })),
+          name: bodyText,
+          selectableCount: 1,
+          values: buttons.slice(0, 10).map((b) => b.label),
           delay: 1200,
         }),
         signal: controller.signal,
@@ -497,7 +491,7 @@ async function sendPollWithProvider(
       clearTimeout(timeout);
       await supabase.from("admin_logs").insert({
         source: "whatsapp_webhook", level: "error",
-        message: `sendButtons Evolution fetch error for ${cleanPhone}: ${fetchErr instanceof Error ? fetchErr.message.slice(0, 500) : String(fetchErr).slice(0, 500)}`,
+        message: `sendPoll Evolution fetch error for ${cleanPhone}: ${fetchErr instanceof Error ? fetchErr.message.slice(0, 500) : String(fetchErr).slice(0, 500)}`,
       });
       return false;
     }
@@ -506,7 +500,7 @@ async function sendPollWithProvider(
     if (!resp.ok) {
       await supabase.from("admin_logs").insert({
         source: "whatsapp_webhook", level: "error",
-        message: `sendButtons Evolution HTTP ${resp.status} for ${cleanPhone}: ${respBody.slice(0, 500)}`,
+        message: `sendPoll Evolution HTTP ${resp.status} for ${cleanPhone}: ${respBody.slice(0, 500)}`,
       });
     }
     return resp.ok;
@@ -2138,6 +2132,20 @@ async function handleBotMessage(
     "pix": "pay_pix",
     "cartao": "pay_cartao",
     "outro endereco": "freq_new",
+  };
+  // Number-to-option mapping for text fallback when poll votes are encrypted.
+  // Maps "1".."10" to the corresponding button ID based on conversation state.
+  const pollNumberMap: Record<string, string> = {
+    "1": "conf_sim",
+    "2": "conf_nao",
+  "3": "btn_cancelar_nao",
+    "4": "btn_cancelar_sim",
+  "5": "dest_digitar",
+    "6": "dest_nao_informar",
+    "7": "menu_corrida",
+    "8": "menu_suporte",
+    "9": "freq_new",
+    "10": "pay_dinheiro",
   };
   const rawText = (text ?? "").trim();
   const lowerRaw = rawText.toLowerCase();
@@ -4009,6 +4017,13 @@ async function handleIncomingMessage(companyId: string, data: Record<string, unk
   }
 
   if (!rawPhone) return;
+  // Encrypted poll vote: pollUpdateMessage exists but we couldn't extract text.
+  // Ask the passenger to type their choice so the bot can proceed.
+  if (!text && !location && !audio && !image && !imageSource && message?.pollUpdateMessage) {
+    await sendBotMessage(companyId, cleanPhone, connectionId, "Nao consegui ler seu voto na enquete. Por favor, digite o numero ou nome da opcao desejada.");
+    return;
+  }
+
   if (!text && !location && !audio && !image && !imageSource) {
     // Log when we receive an audioMessage but couldn't extract any audio data
     if (audioMessage && !audio) {
