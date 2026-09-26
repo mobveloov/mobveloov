@@ -3388,11 +3388,12 @@ Deno.serve(async (req: Request) => {
             });
           }
 
-          // Deduplicate by message ID
+          // Deduplicate by message ID + event type (poll votes share key.id with the original poll)
           const msgId = String(key?.id ?? data?.message_id ?? "");
-          if (msgId) {
+          const dedupId = msgId ? `${event}:${msgId}` : "";
+          if (dedupId) {
             const { error: dedupErr } = await supabase.from("whatsapp_processed_events")
-              .insert({ company_id: botConn.company_id, event_id: msgId });
+              .insert({ company_id: botConn.company_id, event_id: dedupId });
             if (dedupErr && dedupErr.code === "23505") {
               return new Response(JSON.stringify({ success: true, bot: true, skipped: "duplicate" }), {
                 headers: { ...corsHeaders, "Content-Type": "application/json" },
@@ -3572,11 +3573,12 @@ Deno.serve(async (req: Request) => {
         });
       }
 
-      // Deduplicate by message ID
+      // Deduplicate by message ID + event type (poll votes share key.id with the original poll)
       const msgId = String(key?.id ?? data?.message_id ?? "");
-      if (msgId) {
+      const dedupId = msgId ? `${event}:${msgId}` : "";
+      if (dedupId) {
         const { error: dedupErr } = await supabase.from("whatsapp_processed_events")
-          .insert({ company_id: waInstance.company_id, event_id: msgId });
+          .insert({ company_id: waInstance.company_id, event_id: dedupId });
         if (dedupErr && dedupErr.code === "23505") {
           return new Response(JSON.stringify({ success: true, skipped: "duplicate" }), {
             headers: { ...corsHeaders, "Content-Type": "application/json" },
@@ -3590,6 +3592,18 @@ Deno.serve(async (req: Request) => {
       let text: string | null = msg?.conversation ? String(msg.conversation) : (msg?.text ? String(msg.text) : null);
       if (typeof data?.body === "string") text = data.body;
       else if (data?.body && typeof data.body === "object") text = String((data.body as Record<string, unknown>).text ?? "");
+
+      // Extract poll vote from top-level data (Evolution API poll.update event)
+      if (!text) {
+        const pollVotes = data?.votes as Array<Record<string, unknown>> | undefined;
+        if (pollVotes && pollVotes.length > 0) {
+          text = String(pollVotes[0]?.optionName ?? pollVotes[0]?.name ?? "");
+        }
+        if (!text) {
+          const selectedOption = data?.selectedOption as Record<string, unknown> | undefined;
+          if (selectedOption?.name) text = String(selectedOption.name);
+        }
+      }
 
       // Extract location and audio for display in chat history
       if (!text && msg?.locationMessage) {
@@ -3704,6 +3718,16 @@ async function sendAudioFailureReply(companyId: string, phone: string, message: 
 }
 
 async function handleIncomingMessage(companyId: string, data: Record<string, unknown>, _instanceName?: string, connectionId?: string): Promise<void> {
+  // Diagnostic log: dump top-level keys to see what Evolution sends for poll.update events
+  const _topKeys = Object.keys(data ?? {}).join(",");
+  const _msgKeys = data?.message && typeof data.message === "object" ? Object.keys(data.message as Record<string, unknown>).join(",") : "none";
+  await supabase.from("admin_logs").insert({
+    company_id: companyId,
+    source: "whatsapp_webhook",
+    level: "info",
+    message: `handleIncomingMessage ENTER: topKeys=[${_topKeys}] msgKeys=[${_msgKeys}] vote=${JSON.stringify(data?.votes ?? data?.vote ?? data?.selectedOption ?? "none")}`,
+  });
+
   // Evolution API v1 sends: { key: { remoteJid: "5516999998888@s.whatsapp.net" }, message: { conversation: "cancelar" } }
   // Evolution API v2 sends: { message: { text: "cancelar" }, key: { remoteJid: "..." } }
   // Some versions: { from: "5516999998888", body: { text: "cancelar" } }
@@ -3732,6 +3756,21 @@ async function handleIncomingMessage(companyId: string, data: Record<string, unk
     text = data.body;
   }
 
+  // Extract poll vote from top-level data (Evolution API poll.update event format)
+  if (!text) {
+    const topVotes = data?.votes as Array<Record<string, unknown>> | undefined;
+    if (topVotes && topVotes.length > 0) {
+      text = String(topVotes[0]?.optionName ?? topVotes[0]?.name ?? "");
+    }
+    if (!text) {
+      const topSelected = data?.selectedOption as Record<string, unknown> | undefined;
+      if (topSelected?.name) text = String(topSelected.name);
+    }
+    if (!text && typeof data?.vote === "string") {
+      text = String(data.vote);
+    }
+  }
+
   // Extract interactive button/list/poll replies (Evolution API v1/v2 format)
   if (!text && message) {
     const buttonsResp = message.buttonsResponseMessage as Record<string, unknown> | undefined;
@@ -3752,7 +3791,6 @@ async function handleIncomingMessage(companyId: string, data: Record<string, unk
         if (votes && votes.length > 0) {
           const optionName = String(votes[0]?.optionName ?? votes[0]?.name ?? "");
           if (optionName) {
-            // Map the option text to a button id by matching known labels
             text = optionName;
           }
         } else {
