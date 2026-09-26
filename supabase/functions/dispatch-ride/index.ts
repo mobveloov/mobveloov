@@ -362,28 +362,35 @@ async function dispatchToMachine(
   // Machine API limits id_externo to 36 chars, so use first 8 chars of rideId + timestamp.
   const externalId = `${rideId.slice(0, 8)}${Date.now()}`;
 
-  // Resolve city/state: prefer the dispatch body, fall back to company credentials
-  const cidade = data.city || credentials?.city || undefined;
-  const estado = data.state || credentials?.state || undefined;
+  // Resolve city/state: prefer the dispatch body (passed by Bot or Totem),
+  // fall back to company credentials. Handle "Cidade/UF" → "Cidade - UF".
+  const rawCity = data.city || credentials?.city || undefined;
+  const rawState = data.state || credentials?.state || undefined;
+  const cidade = rawCity ? rawCity.replace(/\s*\/\s*/g, " - ").trim() : undefined;
+  const estado = rawState ? rawState.replace(/\s*\/\s*/g, " - ").trim() : undefined;
+
+  // Build the full region suffix: "Cidade - UF" (converting any "/" to " - ")
+  const regionSuffix = [cidade, estado].filter(Boolean).join(" - ");
 
   // Helper: append "- Cidade - UF" to an address string if it doesn't already
-  // contain the city/state context. This ensures the Machine API can geocode
-  // text-only addresses (no coordinates) using its internal search engine.
+  // contain the city/state context. This forces the Machine API to use its
+  // internal text-search engine instead of relying on coordinates.
   const ensureCityStateSuffix = (addr: string | undefined): string => {
     if (!addr) return "Endereço não informado";
-    if (!cidade && !estado) return addr;
-    // Check if the address already ends with a UF pattern like " - SP"
+    if (!regionSuffix) return addr;
     if (/\s-\s[A-Z]{2}$/i.test(addr)) return addr;
-    const suffix = [cidade, estado].filter(Boolean).join(" - ");
-    return suffix ? `${addr} - ${suffix}` : addr;
+    return `${addr}, ${regionSuffix}`;
   };
 
-  // Helper: only include lat/lng when they are real coordinates (non-zero).
-  // Sending lat: 0 / lng: 0 confuses the Machine's text-search fallback.
+  // Helper: check if destination has real coordinates (used to decide whether
+  // to append city/state suffix). Informal destinations (no coords) get raw text only.
   const hasRealCoords = (lat?: number | null, lng?: number | null): boolean =>
     lat != null && lng != null && (lat !== 0 || lng !== 0);
 
   // Build the v2 API payload per docs.machine.global spec
+  // IMPORTANT: lat/lng are intentionally OMITTED from partida and desejado.
+  // Sending coordinates makes the Machine API ignore the address text and
+  // use the fixed city coordinates instead, which freezes the map.
   const v2Payload: Record<string, unknown> = {
     id_externo: externalId,
     dados_cadastro: {
@@ -403,7 +410,6 @@ async function dispatchToMachine(
       bairro: extractBairro(data.origin?.address) || "Centro",
       ...(cidade ? { cidade } : {}),
       ...(estado ? { estado } : {}),
-      ...(hasRealCoords(data.origin?.lat, data.origin?.lng) ? { lat: data.origin!.lat, lng: data.origin!.lng } : {}),
       ...(data.origin_reference ? { referencia: data.origin_reference } : {}),
     },
   };
@@ -419,14 +425,13 @@ async function dispatchToMachine(
   if (data.destination?.address) {
     const destHasCoords = hasRealCoords(data.destination.lat, data.destination.lng);
     v2Payload.desejado = {
-      // Only append city/state suffix when we have real coordinates.
+      // Only append city/state suffix when we have real coordinates (structured address).
       // For informal destinations (no coords), send the raw text so the Machine
       // registers the ride for KM-based fare without breaking its text search.
       endereco: destHasCoords ? ensureCityStateSuffix(data.destination.address) : data.destination.address,
       bairro: extractBairro(data.destination.address) || "Centro",
       ...(destHasCoords && cidade ? { cidade } : {}),
       ...(destHasCoords && estado ? { estado } : {}),
-      ...(destHasCoords ? { lat: data.destination.lat, lng: data.destination.lng } : {}),
       ...(data.destination_reference ? { referencia: data.destination_reference } : {}),
     };
   } else if (data.destination_reference) {

@@ -118,6 +118,8 @@ export function TrackingScreen({ origin, destination, passengerName, passengerPh
         distance: 0,
         payment_method: selectedPaymentMethod,
         simulation_mode: settings?.simulation_mode ?? false,
+        city: location?.city ?? undefined,
+        state: location?.state ?? undefined,
       };
 
       const result = await dispatchRide(dispatchPayload);
