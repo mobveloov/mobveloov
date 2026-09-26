@@ -5545,32 +5545,28 @@ async function handleIncomingMessage(companyId: string, data: Record<string, unk
   }
 
   // Handle the cancel command and replies to the confirmation step.
-  const cancelReplyTexts = ["sim", "s", "1", "confirmar", "btn_cancelar_sim", "sim cancelar", "sim, cancelar", "nao", "n", "2", "btn_cancelar_nao", "nao manter", "nao, manter", "manter"];
   const { data: cancelConversation } = await supabase
     .from("bot_conversas")
     .select("id, state")
     .eq("company_id", companyId)
     .eq("phone", cleanPhone)
     .maybeSingle();
-  const isCancelReply = cancelConversation?.state === "aguardando_cancelamento" && cancelReplyTexts.includes(normalizedText);
+  const conv2 = cancelConversation;
+  const convState = conv2?.state ?? "";
+  const isCancelReply = convState === "aguardando_cancelamento"
+    && (isCancelConfirmation(text ?? "") || isCancelDenial(text ?? ""));
   if (!normalizedText.includes("cancel") && !isCancelReply) return;
 
   // If this is the first cancel request (not already waiting for confirmation),
   // ask the passenger to confirm before actually canceling.
-  const cancelConfirmTexts = ["sim", "s", "1", "confirmar", "btn_cancelar_sim", "sim cancelar", "sim, cancelar"];
-  const cancelDenyTexts = ["nao", "n", "2", "btn_cancelar_nao", "nao manter", "nao, manter", "manter"];
-  const conv2 = cancelConversation;
-  const convState = conv2?.state ?? "";
-
   if (convState === "aguardando_cancelamento") {
-    if (cancelDenyTexts.includes(normalizedText)) {
+    if (isCancelDenial(text ?? "")) {
       await supabase.from("bot_conversas").update({ state: "corrida_solicitada", updated_at: new Date().toISOString() }).eq("id", conv2.data!.id);
       const { provider, fields: f } = await getCompanyWhatsAppConfig(companyId);
       await sendWhatsAppMessageWithProvider(provider, f, cleanPhone, "\u2705 Cancelamento abortado. Sua corrida continua ativa.");
       return;
     }
-    if (!cancelConfirmTexts.includes(normalizedText)) {
-      // User typed something else — re-ask
+    if (!isCancelConfirmation(text ?? "")) {
       const { provider, fields: f } = await getCompanyWhatsAppConfig(companyId);
       await sendWhatsAppMessageWithProvider(provider, f, cleanPhone, "\u26A0\uFE0F Responda 1 para CONFIRMAR o cancelamento ou 2 para MANTER a corrida.");
       return;
