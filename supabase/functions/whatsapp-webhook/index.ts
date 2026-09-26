@@ -1110,14 +1110,34 @@ async function geocodeAddress(address: string, city?: string, state?: string, bi
     } catch { /* fall through to Nominatim */ }
   }
 
-  // 2. Fallback: Nominatim with viewbox bias
+  // 2. Fallback: Nominatim structured search (street + city) — most reliable for Brazilian streets
   const normalizedAddress = address.replace(/\s+/g, " ").replace(/\s*,\s*/g, ", ").trim();
+  if (city) {
+    const streetOnly = normalizedAddress.replace(/^rua\s+/i, "").replace(/,\s*\d+\s*$/, "").trim();
+    const structuredUrl = `https://nominatim.openstreetmap.org/search?street=${encodeURIComponent(streetOnly)}&city=${encodeURIComponent(city)}&state=${encodeURIComponent(state ?? "SP")}&countrycodes=br&format=json&limit=1&addressdetails=1`;
+    try {
+      const resp = await fetch(structuredUrl, { headers: { "User-Agent": "VeloovBot/1.0 (contato@veloov.com.br)" } });
+      if (resp.ok) {
+        const results = await resp.json();
+        if (Array.isArray(results) && results.length > 0) {
+          const r = results[0];
+          let formatted = r.display_name ?? address;
+          if (passengerHouseNumber && !formatted.toLowerCase().includes(passengerHouseNumber.toLowerCase())) {
+            formatted = preserveHouseNumberInFormatted(formatted, passengerHouseNumber);
+          }
+          return { lat: parseFloat(r.lat), lng: parseFloat(r.lon), formatted };
+        }
+      }
+    } catch { /* fall through to unstructured search */ }
+  }
+
+  // 3. Nominatim unstructured search with multiple query variants
   const queryCandidates = Array.from(new Set([
     city ? `${normalizedAddress}, ${city}, ${state ?? "SP"}` : normalizedAddress,
     city ? `${normalizedAddress.replace(/^rua\s+/i, "")}, ${city}, ${state ?? "SP"}` : normalizedAddress.replace(/^rua\s+/i, ""),
     city ? `${normalizedAddress.replace(/,\s*\d+\s*$/, "")}, ${city}, ${state ?? "SP"}` : normalizedAddress.replace(/,\s*\d+\s*$/, ""),
+    city ? `${normalizedAddress.replace(/^rua\s+/i, "").replace(/,\s*\d+\s*$/, "")}, ${city}, ${state ?? "SP"}` : normalizedAddress.replace(/^rua\s+/i, "").replace(/,\s*\d+\s*$/, ""),
   ]));
-  const q = queryCandidates[0];
 
   for (let candidateIdx = 0; candidateIdx < queryCandidates.length; candidateIdx++) {
     const candidateQ = queryCandidates[candidateIdx];
