@@ -2133,20 +2133,6 @@ async function handleBotMessage(
     "cartao": "pay_cartao",
     "outro endereco": "freq_new",
   };
-  // Number-to-option mapping for text fallback when poll votes are encrypted.
-  // Maps "1".."10" to the corresponding button ID based on conversation state.
-  const pollNumberMap: Record<string, string> = {
-    "1": "conf_sim",
-    "2": "conf_nao",
-  "3": "btn_cancelar_nao",
-    "4": "btn_cancelar_sim",
-  "5": "dest_digitar",
-    "6": "dest_nao_informar",
-    "7": "menu_corrida",
-    "8": "menu_suporte",
-    "9": "freq_new",
-    "10": "pay_dinheiro",
-  };
   const rawText = (text ?? "").trim();
   const lowerRaw = rawText.toLowerCase();
   if (rawText) {
@@ -2167,7 +2153,7 @@ async function handleBotMessage(
   // Global cancel handler — works in any bot state. Asks for confirmation before canceling.
   if (normalizedText.includes("cancel") || normalizedText === "cancelar" || normalizedText === "cancela" || normalizedText === "btn_cancelar") {
     // If already in confirmation state and user confirms, proceed with cancel
-    if (conv.state === "aguardando_cancelamento" && (normalizedText === "sim" || normalizedText === "btn_cancelar_sim" || normalizedText === "confirmar")) {
+    if (conv.state === "aguardando_cancelamento" && (normalizedText === "sim" || normalizedText === "btn_cancelar_sim" || normalizedText === "confirmar" || normalizedText === "1" || normalizedText === "s")) {
       // Find active ride for this passenger
       const { data: activeRide } = await supabase
         .from("rides")
@@ -2236,7 +2222,7 @@ async function handleBotMessage(
     }
 
     // If in confirmation state and user says no, abort cancel
-    if (conv.state === "aguardando_cancelamento" && (normalizedText === "nao" || normalizedText === "btn_cancelar_nao" || normalizedText === "n")) {
+    if (conv.state === "aguardando_cancelamento" && (normalizedText === "nao" || normalizedText === "btn_cancelar_nao" || normalizedText === "n" || normalizedText === "2")) {
       await supabase.from("bot_conversas")
         .update({ state: "corrida_solicitada", updated_at: new Date().toISOString() })
         .eq("id", conv.id);
