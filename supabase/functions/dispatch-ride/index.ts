@@ -366,6 +366,23 @@ async function dispatchToMachine(
   const cidade = data.city || credentials?.city || undefined;
   const estado = data.state || credentials?.state || undefined;
 
+  // Helper: append "- Cidade - UF" to an address string if it doesn't already
+  // contain the city/state context. This ensures the Machine API can geocode
+  // text-only addresses (no coordinates) using its internal search engine.
+  const ensureCityStateSuffix = (addr: string | undefined): string => {
+    if (!addr) return "Endereço não informado";
+    if (!cidade && !estado) return addr;
+    // Check if the address already ends with a UF pattern like " - SP"
+    if (/\s-\s[A-Z]{2}$/i.test(addr)) return addr;
+    const suffix = [cidade, estado].filter(Boolean).join(" - ");
+    return suffix ? `${addr} - ${suffix}` : addr;
+  };
+
+  // Helper: only include lat/lng when they are real coordinates (non-zero).
+  // Sending lat: 0 / lng: 0 confuses the Machine's text-search fallback.
+  const hasRealCoords = (lat?: number | null, lng?: number | null): boolean =>
+    lat != null && lng != null && (lat !== 0 || lng !== 0);
+
   // Build the v2 API payload per docs.machine.global spec
   const v2Payload: Record<string, unknown> = {
     id_externo: externalId,
@@ -382,12 +399,11 @@ async function dispatchToMachine(
     },
     forma_pagamento: data.payment_method === "Cartao" ? "C" : data.payment_method === "Pix" ? "X" : "D",
     partida: {
-      endereco: data.origin?.address || "Endereço não informado",
+      endereco: ensureCityStateSuffix(data.origin?.address),
       bairro: extractBairro(data.origin?.address) || "Centro",
       ...(cidade ? { cidade } : {}),
       ...(estado ? { estado } : {}),
-      ...(data.origin?.lat != null ? { lat: data.origin.lat } : {}),
-      ...(data.origin?.lng != null ? { lng: data.origin.lng } : {}),
+      ...(hasRealCoords(data.origin?.lat, data.origin?.lng) ? { lat: data.origin!.lat, lng: data.origin!.lng } : {}),
       ...(data.origin_reference ? { referencia: data.origin_reference } : {}),
     },
   };
@@ -402,12 +418,11 @@ async function dispatchToMachine(
 
   if (data.destination?.address) {
     v2Payload.desejado = {
-      endereco: data.destination.address,
+      endereco: ensureCityStateSuffix(data.destination.address),
       bairro: extractBairro(data.destination.address) || "Centro",
       ...(cidade ? { cidade } : {}),
       ...(estado ? { estado } : {}),
-      ...(data.destination.lat != null ? { lat: data.destination.lat } : {}),
-      ...(data.destination.lng != null ? { lng: data.destination.lng } : {}),
+      ...(hasRealCoords(data.destination.lat, data.destination.lng) ? { lat: data.destination.lat, lng: data.destination.lng } : {}),
       ...(data.destination_reference ? { referencia: data.destination_reference } : {}),
     };
   } else if (data.destination_reference) {
@@ -415,7 +430,7 @@ async function dispatchToMachine(
     // referencia so the Machine API and driver know where to go, and the
     // fare is calculated by KM (taximeter) instead of a fixed route.
     v2Payload.desejado = {
-      endereco: data.destination_reference,
+      endereco: ensureCityStateSuffix(data.destination_reference),
       ...(cidade ? { cidade } : {}),
       ...(estado ? { estado } : {}),
       referencia: data.destination_reference,

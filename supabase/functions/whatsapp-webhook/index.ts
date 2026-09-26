@@ -2277,6 +2277,8 @@ async function createAndDispatchRide(
   destination?: { lat: number; lng: number; address: string } | null,
   originReference?: string | null,
   destinationReference?: string | null,
+  city?: string | null,
+  state?: string | null,
 ): Promise<{ rideId: string; success: boolean; error?: string; machineMessage?: string }> {
   const { data: ride, error: rideErr } = await supabase
     .from("rides")
@@ -2328,6 +2330,8 @@ async function createAndDispatchRide(
         origin_reference: originReference ?? null,
         destination_reference: destinationReference ?? null,
         ...(destination ? { destination } : {}),
+        city: city ?? undefined,
+        state: state ?? undefined,
       }),
     });
 
@@ -2419,6 +2423,7 @@ async function dispatchRideFromConversation(
     companyId, companyLoc.slug, passengerName, cleanPhone,
     origin, categoryLabel, machineCategoryId, paymentMethod,
     destination, originReference, destinationReference,
+    companyLoc.city, companyLoc.state,
   );
 
   if (result.success) {
@@ -4939,6 +4944,10 @@ async function handleIncomingMessage(companyId: string, data: Record<string, unk
           machineCategoryId,
           null,
           destination,
+          undefined,
+          undefined,
+          companyLoc.city,
+          companyLoc.state,
         );
 
         // Update the conversation with the ride ID
@@ -5184,6 +5193,10 @@ async function handleIncomingMessage(companyId: string, data: Record<string, unk
           machineCategoryId,
           null,
           destination,
+          undefined,
+          undefined,
+          companyLoc.city,
+          companyLoc.state,
         );
 
         // Update the conversation with the ride ID
