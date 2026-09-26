@@ -5560,18 +5560,21 @@ async function handleIncomingMessage(companyId: string, data: Record<string, unk
   // If this is the first cancel request (not already waiting for confirmation),
   // ask the passenger to confirm before actually canceling.
   if (convState === "aguardando_cancelamento") {
-    if (isCancelDenial(text ?? "")) {
+    // Check confirmation FIRST — "cancelar" is in both lists, but when the user
+    // is already in the confirmation state and says "cancelar" or "1", they
+    // mean "yes, cancel it", not "no, don't cancel".
+    if (isCancelConfirmation(text ?? "")) {
+      // Confirmed — proceed to cancel below
+    } else if (isCancelDenial(text ?? "")) {
       await supabase.from("bot_conversas").update({ state: "corrida_solicitada", updated_at: new Date().toISOString() }).eq("id", conv2.data!.id);
       const { provider, fields: f } = await getCompanyWhatsAppConfig(companyId);
       await sendWhatsAppMessageWithProvider(provider, f, cleanPhone, "\u2705 Cancelamento abortado. Sua corrida continua ativa.");
       return;
-    }
-    if (!isCancelConfirmation(text ?? "")) {
+    } else {
       const { provider, fields: f } = await getCompanyWhatsAppConfig(companyId);
       await sendWhatsAppMessageWithProvider(provider, f, cleanPhone, "\u26A0\uFE0F Responda 1 para CONFIRMAR o cancelamento ou 2 para MANTER a corrida.");
       return;
     }
-    // Confirmed — proceed to cancel below
   } else {
     // First cancel request — ask for confirmation
     if (conv2.data?.id) {
