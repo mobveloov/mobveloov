@@ -1,4 +1,4 @@
-// WhatsApp webhook: Evolution API events + bot ride-request flow — v9.1 with faster audio retries + LLM timeout
+// WhatsApp webhook: Evolution API events + bot ride-request flow — v9.2 with flow settings toggles (welcome menu, destination, confirmation, category, payment)
 // v8.2: bot conversation resets on ride end (cancel/complete) so passengers can request again. Cancel ride on dispatch failure.
 // v8.3: fix "volta pro inicio" — reuse passenger's message when transitioning from corrida_solicitada; detect ride-details in menu_inicial.
 import { createClient } from "npm:@supabase/supabase-js@2.57.4";
@@ -1869,16 +1869,114 @@ async function createAndDispatchRide(
   }
 }
 
+type FlowSettings = {
+  show_welcome_menu: boolean;
+  ask_destination: boolean;
+  ask_payment: boolean;
+  ask_category: boolean;
+  confirm_address: boolean;
+};
+
+const FLOW_DEFAULTS: FlowSettings = {
+  show_welcome_menu: true,
+  ask_destination: true,
+  ask_payment: true,
+  ask_category: true,
+  confirm_address: true,
+};
+
+async function dispatchRideFromConversation(
+  companyId: string,
+  cleanPhone: string,
+  connectionId: string | undefined,
+  conv: BotConversation,
+  msg: (key: string, fallback: string) => string,
+  paymentMethod: string | null,
+): Promise<void> {
+  const companyLoc = await getCompanyLocationInfo(companyId, connectionId);
+  if (!companyLoc.slug) {
+    await sendBotMessage(companyId, cleanPhone, connectionId, "Erro: empresa nao configurada corretamente. Tente novamente mais tarde.");
+    return;
+  }
+
+  let categoryLabel = "Padrao";
+  let machineCategoryId: string | null = null;
+  if (conv.selected_category_id) {
+    const { data: cat } = await supabase
+      .from("vehicle_categories")
+      .select("label, machine_category_id")
+      .eq("id", conv.selected_category_id)
+      .maybeSingle();
+    if (cat) {
+      categoryLabel = cat.label;
+      machineCategoryId = cat.machine_category_id;
+    }
+  }
+
+  const passengerName = conv.passenger_name || "Passageiro";
+  const origin = {
+    lat: conv.address_lat!,
+    lng: conv.address_lng!,
+    address: conv.address_formatted || conv.address_text || "Endereco nao informado",
+  };
+  const originReference = conv.origin_reference ?? null;
+  const destinationReference = conv.destination_reference ?? null;
+
+  const destination = conv.destination_lat != null && conv.destination_lng != null
+    ? { lat: conv.destination_lat, lng: conv.destination_lng, address: conv.destination_formatted || conv.destination_text || "" }
+    : null;
+
+  const result = await createAndDispatchRide(
+    companyId, companyLoc.slug, passengerName, cleanPhone,
+    origin, categoryLabel, machineCategoryId, paymentMethod,
+    destination, originReference, destinationReference,
+  );
+
+  if (result.success) {
+    await supabase.from("bot_conversas")
+      .update({ state: "corrida_solicitada", ride_id: result.rideId, selected_payment_method: paymentMethod, updated_at: new Date().toISOString() })
+      .eq("id", conv.id);
+
+    try {
+      const addrText = conv.address_text || "";
+      if (addrText) {
+        const { data: existing } = await supabase.from("passenger_frequent_addresses").select("id, use_count").eq("company_id", companyId).eq("phone", cleanPhone).ilike("address_text", addrText).maybeSingle();
+        if (existing) {
+          await supabase.from("passenger_frequent_addresses").update({ use_count: (existing.use_count || 0) + 1, last_used_at: new Date().toISOString(), address_formatted: conv.address_formatted ?? null, address_lat: conv.address_lat ?? null, address_lng: conv.address_lng ?? null, origin_reference: conv.origin_reference ?? null }).eq("id", existing.id);
+        } else {
+          await supabase.from("passenger_frequent_addresses").insert({ company_id: companyId, phone: cleanPhone, address_text: addrText, address_formatted: conv.address_formatted ?? null, address_lat: conv.address_lat ?? null, address_lng: conv.address_lng ?? null, origin_reference: conv.origin_reference ?? null, use_count: 1, last_used_at: new Date().toISOString() });
+        }
+      }
+    } catch { /* best-effort */ }
+
+    let successMsg = result.machineMessage;
+    if (successMsg) {
+      successMsg = successMsg.replace(/(?:passageiro|nome|cliente)\s*:\s*[^\n]+/gi, "").replace(/(?:telefone|fone|whatsapp|celular)\s*:\s*\+?\d[\d\s\-()]{6,}/gi, "").replace(/\b\d{10,13}\b/g, (m) => m.length >= 10 && m.length <= 13 && /^\d+$/.test(m) ? "" : m).replace(/\n{3,}/g, "\n\n").trim();
+      if (!successMsg) successMsg = null;
+    }
+    const payInfo = paymentMethod ? ` Pagamento: ${paymentMethod}.` : "";
+    successMsg = successMsg || msg("ride_success", `\u2705 Corrida solicitada com sucesso!${payInfo} Um motorista vai aceitar em breve. Aguarde.`);
+    await sendBotMessage(companyId, cleanPhone, connectionId, successMsg);
+
+    await supabase.from("admin_logs").insert({ company_id: companyId, source: "whatsapp_bot", level: "info", message: `Corrida solicitada via bot por ${passengerName} (${cleanPhone}) \u2014 categoria: ${categoryLabel}${paymentMethod ? `, pagamento: ${paymentMethod}` : ""}, endereco: ${origin.address}${destination ? `, destino: ${destination.address}` : ""}`, ride_id: result.rideId });
+  } else {
+    if (result.rideId) await supabase.from("rides").update({ status: "canceled", updated_at: new Date().toISOString() }).eq("id", result.rideId);
+    await sendBotMessage(companyId, cleanPhone, connectionId, msg("ride_error", `\u274C Houve um erro ao solicitar a corrida: ${result.error ?? "erro desconhecido"}.\n\nPara tentar novamente, envie uma mensagem.`));
+    await supabase.from("bot_conversas").update({ state: "menu_inicial", ride_id: null, updated_at: new Date().toISOString() }).eq("id", conv.id);
+  }
+}
+
 async function proceedAfterDestination(
   companyId: string,
   cleanPhone: string,
   connectionId: string | undefined,
   convId: string,
   msg: (key: string, fallback: string) => string,
+  flow: FlowSettings,
 ): Promise<void> {
   const categories = await getCategoriesForConnection(companyId, connectionId);
 
-  if (categories.length > 1) {
+  if (flow.ask_category && categories.length > 1) {
     await supabase.from("bot_conversas")
       .update({ state: "aguardando_categoria", updated_at: new Date().toISOString() })
       .eq("id", convId);
@@ -1890,6 +1988,14 @@ async function proceedAfterDestination(
   }
 
   const category = categories[0] ?? null;
+
+  if (!flow.ask_payment) {
+    await supabase.from("bot_conversas").update({ selected_category_id: category?.id ?? null, updated_at: new Date().toISOString() }).eq("id", convId);
+    const { data: freshConv } = await supabase.from("bot_conversas").select("*").eq("id", convId).maybeSingle();
+    if (freshConv) await dispatchRideFromConversation(companyId, cleanPhone, connectionId, freshConv as BotConversation, msg, null);
+    return;
+  }
+
   await supabase.from("bot_conversas")
     .update({
       state: "aguardando_pagamento",
@@ -1920,13 +2026,15 @@ async function handleBotMessage(
   companyIdForGeocoding = companyId;
   // Load custom messages for this connection
   let customMessages: Record<string, string> = {};
+  let flow: FlowSettings = { ...FLOW_DEFAULTS };
   if (connectionId) {
     const { data: conn } = await supabase
       .from("bot_whatsapp_conexoes")
-      .select("bot_custom_messages")
+      .select("bot_custom_messages, bot_flow_settings")
       .eq("id", connectionId)
       .maybeSingle();
     if (conn?.bot_custom_messages) customMessages = conn.bot_custom_messages as Record<string, string>;
+    if (conn?.bot_flow_settings) flow = { ...FLOW_DEFAULTS, ...(conn.bot_flow_settings as Record<string, boolean>) };
   }
   const msg = (key: string, fallback: string): string => customMessages[key] || fallback;
 
@@ -1953,7 +2061,12 @@ async function handleBotMessage(
     conv = newConv as BotConversation;
 
     if (!text && !location && !audio && !image) {
-      await sendPollMessage(companyId, cleanPhone, connectionId, msg("welcome_menu", "\u{1F44B} Ola! Como podemos ajudar?"), [{ id: "menu_corrida", label: "Solicitar corrida \u{1F695}" }, { id: "menu_suporte", label: "Suporte \u{1F4AC}" }]);
+      if (flow.show_welcome_menu) {
+        await sendPollMessage(companyId, cleanPhone, connectionId, msg("welcome_menu", "\u{1F44B} Ola! Como podemos ajudar?"), [{ id: "menu_corrida", label: "Solicitar corrida \u{1F695}" }, { id: "menu_suporte", label: "Suporte \u{1F4AC}" }]);
+      } else {
+        await supabase.from("bot_conversas").update({ state: "aguardando_endereco", updated_at: new Date().toISOString() }).eq("id", conv.id);
+        await sendBotMessage(companyId, cleanPhone, connectionId, msg("ask_address", "\u{1F4CD} Ola! Qual e o endereco de embarque? Voce pode digitar o endereco, enviar sua localizacao ou mandar um audio."));
+      }
       return;
     }
   }
@@ -2267,6 +2380,9 @@ As mensagens do passageiro serao encaminhadas a partir de agora.`;
           .update({ state: "corrida_solicitada", updated_at: new Date().toISOString() })
           .eq("id", conv.id);
         await sendBotMessage(companyId, cleanPhone, connectionId, msg("decline", "\u{1F44D} Tudo bem! Quando precisar de uma corrida, e so nos mandar uma mensagem."));
+      } else if (!flow.show_welcome_menu) {
+        await supabase.from("bot_conversas").update({ state: "aguardando_endereco", updated_at: new Date().toISOString() }).eq("id", conv.id);
+        await sendBotMessage(companyId, cleanPhone, connectionId, msg("ask_address", "\u{1F4CD} Qual e o endereco de embarque? Voce pode digitar o endereco, enviar sua localizacao ou mandar um audio."));
       } else {
         await sendPollMessage(companyId, cleanPhone, connectionId, msg("welcome_repeat", "\u{1F44B} Como podemos ajudar?"), [{ id: "menu_corrida", label: "Solicitar corrida \u{1F695}" }, { id: "menu_suporte", label: "Suporte \u{1F4AC}" }]);
       }
@@ -2562,6 +2678,16 @@ As mensagens do passageiro serao encaminhadas a partir de agora.`;
     }
 
     case "aguardando_destino": {
+      if (!flow.ask_destination) {
+        if (flow.confirm_address) {
+          const pickupAddr = conv.address_formatted || conv.address_text || "";
+          await supabase.from("bot_conversas").update({ state: "aguardando_confirmacao", updated_at: new Date().toISOString() }).eq("id", conv.id);
+          await sendPollMessage(companyId, cleanPhone, connectionId, msg("confirm_address", `\u2705 Confirma o endereco de embarque?\n\n\u{1F4CD} ${pickupAddr}`), [{ id: "conf_sim", label: "SIM \u2705" }, { id: "conf_nao", label: "NAO \u{1F504}" }]);
+        } else {
+          await proceedAfterDestination(companyId, cleanPhone, connectionId, conv.id, msg, flow);
+        }
+        break;
+      }
       const noDestPhrases = ["2", "nao", "nao informar", "nao informar destino", "nao quero informar", "sem destino", "dest_nao_informar"];
       const deaccented = normalizedText.normalize("NFD").replace(/[\u0300-\u036f]/g, "");
       if (noDestPhrases.includes(deaccented) || noDestPhrases.includes(normalizedText)) {
@@ -2708,14 +2834,14 @@ As mensagens do passageiro serao encaminhadas a partir de agora.`;
     }
 
     case "aguardando_confirmacao": {
-      if (["sim", "sim.", "s", "confirmo", "confirmar", "sim!", "conf_sim"].includes(normalizedText)) {
+      if (!flow.confirm_address || ["sim", "sim.", "s", "confirmo", "confirmar", "sim!", "conf_sim"].includes(normalizedText)) {
         const companyLoc = await getCompanyLocationInfo(companyId, connectionId);
         if (!companyLoc.slug) {
           await sendBotMessage(companyId, cleanPhone, connectionId, "Erro: empresa nao configurada corretamente. Tente novamente mais tarde.");
           return;
         }
 
-        await proceedAfterDestination(companyId, cleanPhone, connectionId, conv.id, msg);
+        await proceedAfterDestination(companyId, cleanPhone, connectionId, conv.id, msg, flow);
       } else if (["nao", "nao.", "n", "errado", "nao!", "conf_nao"].includes(normalizedText)) {
         await supabase.from("bot_conversas")
           .update({ state: "aguardando_endereco", updated_at: new Date().toISOString() })
@@ -2731,13 +2857,10 @@ As mensagens do passageiro serao encaminhadas a partir de agora.`;
       const categories = await getCategoriesForConnection(companyId, connectionId);
       if (categories.length === 0) {
         await sendBotMessage(companyId, cleanPhone, connectionId, msg("ride_error", "\u274C Nenhuma categoria disponivel. Tente novamente mais tarde."));
-        await supabase.from("bot_conversas")
-          .update({ state: "aguardando_endereco", updated_at: new Date().toISOString() })
-          .eq("id", conv.id);
+        await supabase.from("bot_conversas").update({ state: "aguardando_endereco", updated_at: new Date().toISOString() }).eq("id", conv.id);
         return;
       }
 
-      // Parse the passenger's choice (button id, number, or label)
       let chosenCat: { id: string; label: string; machine_category_id: string | null } | null = null;
       if (normalizedText.startsWith("cat_")) {
         const catId = normalizedText.slice(4);
@@ -2759,14 +2882,14 @@ As mensagens do passageiro serao encaminhadas a partir de agora.`;
         return;
       }
 
-      // Category chosen — ask payment method
-      await supabase.from("bot_conversas")
-        .update({
-          state: "aguardando_pagamento",
-          selected_category_id: chosenCat.id,
-          updated_at: new Date().toISOString(),
-        })
-        .eq("id", conv.id);
+      await supabase.from("bot_conversas").update({ selected_category_id: chosenCat.id, updated_at: new Date().toISOString() }).eq("id", conv.id);
+      if (!flow.ask_payment) {
+        const { data: freshConv } = await supabase.from("bot_conversas").select("*").eq("id", conv.id).maybeSingle();
+        if (freshConv) await dispatchRideFromConversation(companyId, cleanPhone, connectionId, freshConv as BotConversation, msg, null);
+        return;
+      }
+
+      await supabase.from("bot_conversas").update({ state: "aguardando_pagamento", updated_at: new Date().toISOString() }).eq("id", conv.id);
       await sendPollMessage(companyId, cleanPhone, connectionId,
         msg("ask_payment", "\u{1F4B0} Qual a forma de pagamento?"),
         [
@@ -2805,136 +2928,7 @@ As mensagens do passageiro serao encaminhadas a partir de agora.`;
         return;
       }
 
-      const companyLoc = await getCompanyLocationInfo(companyId, connectionId);
-      if (!companyLoc.slug) {
-        await sendBotMessage(companyId, cleanPhone, connectionId, "Erro: empresa nao configurada corretamente. Tente novamente mais tarde.");
-        return;
-      }
-
-      // Get the selected category
-      let categoryLabel = "Padrao";
-      let machineCategoryId: string | null = null;
-      if (conv.selected_category_id) {
-        const { data: cat } = await supabase
-          .from("vehicle_categories")
-          .select("label, machine_category_id")
-          .eq("id", conv.selected_category_id)
-          .maybeSingle();
-        if (cat) {
-          categoryLabel = cat.label;
-          machineCategoryId = cat.machine_category_id;
-        }
-      }
-
-      const passengerName = conv.passenger_name || "Passageiro";
-      const origin = {
-        lat: conv.address_lat!,
-        lng: conv.address_lng!,
-        address: conv.address_formatted || conv.address_text || "Endereco nao informado",
-      };
-      const originReference = conv.origin_reference ?? null;
-      const destinationReference = conv.destination_reference ?? null;
-
-      const destination = conv.destination_lat != null && conv.destination_lng != null
-        ? { lat: conv.destination_lat, lng: conv.destination_lng, address: conv.destination_formatted || conv.destination_text || "" }
-        : null;
-
-      const result = await createAndDispatchRide(
-        companyId,
-        companyLoc.slug,
-        passengerName,
-        cleanPhone,
-        origin,
-        categoryLabel,
-        machineCategoryId,
-        paymentMethod,
-        destination,
-        originReference,
-        destinationReference,
-      );
-
-      if (result.success) {
-        await supabase.from("bot_conversas")
-          .update({
-            state: "corrida_solicitada",
-            ride_id: result.rideId,
-            selected_payment_method: paymentMethod,
-            updated_at: new Date().toISOString(),
-          })
-          .eq("id", conv.id);
-
-        // Record/update frequent address for this passenger
-        try {
-          const addrText = conv.address_text || "";
-          if (addrText) {
-            const { data: existing } = await supabase
-              .from("passenger_frequent_addresses")
-              .select("id, use_count")
-              .eq("company_id", companyId)
-              .eq("phone", cleanPhone)
-              .ilike("address_text", addrText)
-              .maybeSingle();
-            if (existing) {
-              await supabase.from("passenger_frequent_addresses")
-                .update({
-                  use_count: (existing.use_count || 0) + 1,
-                  last_used_at: new Date().toISOString(),
-                  address_formatted: conv.address_formatted ?? null,
-                  address_lat: conv.address_lat ?? null,
-                  address_lng: conv.address_lng ?? null,
-                  origin_reference: conv.origin_reference ?? null,
-                })
-                .eq("id", existing.id);
-            } else {
-              await supabase.from("passenger_frequent_addresses")
-                .insert({
-                  company_id: companyId,
-                  phone: cleanPhone,
-                  address_text: addrText,
-                  address_formatted: conv.address_formatted ?? null,
-                  address_lat: conv.address_lat ?? null,
-                  address_lng: conv.address_lng ?? null,
-                  origin_reference: conv.origin_reference ?? null,
-                  use_count: 1,
-                  last_used_at: new Date().toISOString(),
-                });
-            }
-          }
-        } catch { /* best-effort */ }
-
-        // Sanitize machineMessage: strip raw passenger data (name/phone) that the Machine API
-        // might include in its response, preventing data leak to the passenger's chat.
-        let successMsg = result.machineMessage;
-        if (successMsg) {
-          successMsg = successMsg
-            .replace(/(?:passageiro|nome|cliente)\s*:\s*[^\n]+/gi, "")
-            .replace(/(?:telefone|fone|whatsapp|celular)\s*:\s*\+?\d[\d\s\-()]{6,}/gi, "")
-            .replace(/\b\d{10,13}\b/g, (m) => m.length >= 10 && m.length <= 13 && /^\d+$/.test(m) ? "" : m)
-            .replace(/\n{3,}/g, "\n\n")
-            .trim();
-          if (!successMsg) successMsg = null;
-        }
-        successMsg = successMsg || msg("ride_success", `\u2705 Corrida solicitada com sucesso! Pagamento: ${paymentMethod}. Um motorista vai aceitar em breve. Aguarde.`);
-        await sendBotMessage(companyId, cleanPhone, connectionId, successMsg);
-
-        await supabase.from("admin_logs").insert({
-          company_id: companyId,
-          source: "whatsapp_bot",
-          level: "info",
-          message: `Corrida solicitada via bot por ${passengerName} (${cleanPhone}) — categoria: ${categoryLabel}, pagamento: ${paymentMethod}, endereco: ${origin.address}${destination ? `, destino: ${destination.address}` : ""}`,
-          ride_id: result.rideId,
-        });
-      } else {
-        if (result.rideId) {
-          await supabase.from("rides")
-            .update({ status: "canceled", updated_at: new Date().toISOString() })
-            .eq("id", result.rideId);
-        }
-        await sendBotMessage(companyId, cleanPhone, connectionId, msg("ride_error", `\u274C Houve um erro ao solicitar a corrida: ${result.error ?? "erro desconhecido"}.\n\nPara tentar novamente, envie uma mensagem.`));
-        await supabase.from("bot_conversas")
-          .update({ state: "menu_inicial", ride_id: null, updated_at: new Date().toISOString() })
-          .eq("id", conv.id);
-      }
+      await dispatchRideFromConversation(companyId, cleanPhone, connectionId, conv, msg, paymentMethod);
       break;
     }
 
