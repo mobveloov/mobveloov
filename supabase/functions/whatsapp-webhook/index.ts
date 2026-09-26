@@ -641,6 +641,39 @@ function extractBairroFromFormatted(formatted: string): string | null {
   return null;
 }
 
+// Search Nominatim for informal place names (POIs) like "Santa Casa", "Amarelinha Supermercados"
+// within the city/area of the bot connection. Returns coordinates + formatted address.
+async function geocodePOI(
+  placeName: string,
+  city?: string,
+  state?: string,
+  biasLat?: number,
+  biasLng?: number,
+): Promise<{ lat: number; lng: number; formatted: string } | null> {
+  const q = city ? `${placeName}, ${city}` : placeName;
+  let url = `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(q)}&format=json&limit=1&countrycodes=br&addressdetails=1`;
+  if (biasLat != null && biasLng != null) {
+    const delta = 0.45;
+    const left = biasLng - delta;
+    const right = biasLng + delta;
+    const top = biasLat + delta;
+    const bottom = biasLat - delta;
+    url += `&viewbox=${left},${top},${right},${bottom}&bounded=1`;
+  }
+  try {
+    const resp = await fetch(url, { headers: { "User-Agent": "VeloovBot/1.0 (contato@veloov.com.br)" } });
+    if (resp.ok) {
+      const results = await resp.json();
+      if (Array.isArray(results) && results.length > 0) {
+        const r = results[0];
+        const formatted = r.display_name ?? placeName;
+        return { lat: parseFloat(r.lat), lng: parseFloat(r.lon), formatted };
+      }
+    }
+  } catch { /* best-effort */ }
+  return null;
+}
+
 // NLU: Uses LLM (OpenAI/Groq chat completion) to extract structured ride intent from a free-form message.
 // Falls back to null if no LLM key is configured, letting the regex-based parseCombinedAddress handle it.
 // Updated: added post-LLM normalization to strip residual "EU" suffix and fix common transcription errors.
@@ -728,8 +761,8 @@ ${isTotemFixo ? `- Endereco Real de Instalacao do Totem: "${fallbackAddr}"\n- No
 
 2. SE O CANAL FOR "BOT_WHATSAPP":
    - SE O INPUT FOR IMAGEM/FOTO: Atue com visao computacional. Identifique o letreiro ou fachada comercial (Ex: "CAIXA"). Formate o nome do local em MAIUSCULAS no campo texto_embarque_motorista (Ex: "AGENCIA DA CAIXA ECONOMICA FEDERAL") e defina a geolocalizacao_origem como o endereco de fallback ("${fallbackAddr}"). Defina origem_identificada_por_foto: true.
-   - SE O INPUT FOR LOCAL INFORMAL/APELIDO (Ex: "Amarelinha da Avenida"): Defina a geolocalizacao_origem como o endereco de fallback ("${fallbackAddr}"), mas preserve o termo original digitado em MAIUSCULAS no campo texto_embarque_motorista. Defina "eh_rua_oficial": false.
-   - SE O INPUT FOR APENAS RUA E NUMERO (Ex: "to na arthur mesquita numero 57"): Limpe os ruidos do texto e extraia apenas o logradouro e numero (Ex: "Rua Arthur Mesquita, 57, ${cidade} - ${estado}"). Defina "eh_rua_oficial": true para o backend consultar o OpenStreetMap, e salve o texto limpo em MAIUSCULAS em texto_embarque_motorista (Ex: "RUA ARTHUR MESQUITA, 57").
+   - SE O INPUT FOR LOCAL INFORMAL/APELIDO (Ex: "Amarelinha da Avenida", "Santa Casa", "Bar do Carlao"): Defina a geolocalizacao_origem como o endereco de fallback ("${fallbackAddr}"), mas preserve o termo original digitado em MAIUSCULAS no campo texto_embarque_motorista. Defina "eh_rua_oficial": false. O backend tentara geolocalizar o local no OpenStreetMap usando o nome + cidade da instancia; se nao encontrar, usara o endereco de fallback.
+   - SE O INPUT FOR APENAS RUA E NUMERO (Ex: "to na arthur mesquita numero 57"): Limpe os ruidos do texto e extraia apenas o logradouro e numero (Ex: "Rua Arthur Mesquita, 57, ${cidade} - ${estado}"). Defina "eh_rua_oficial": true para o backend consultar o OpenStreetMap, e salve o texto limpo em MAIUSCULAS em texto_embarque_motorista (Ex: "RUA ARTHUR MESQUITA, 57"). O backend completara o bairro e cidade automaticamente via OpenStreetMap.
 
 ### REGRA 2: TRATAMENTO DE DESTINO E CALCULO POR KM
 1. NUNCA tente geolocalizar o destino no mapa. A propriedade geolocalizacao_destino deve ser OBRIGATORIAMENTE configurada como null em todos os casos para forcar a Machine a calcular o valor da corrida por KM rodado (taximetro) com base na categoria escolhida.
@@ -763,6 +796,7 @@ Exemplo 1 (BOT_WHATSAPP - Rua oficial):
 Contexto: Canal="BOT_WHATSAPP", Cidade="${cidade}", Estado="${estado}"
 Input: "Estou aqui na arthur mesquita numero 57 perto da igreja e vou para o hospital"
 Output: {"dados_extraidos":{"canal_de_entrada":"BOT_WHATSAPP","eh_rua_oficial":true,"origem_identificada_por_foto":false,"geolocalizacao_origem":"Rua Arthur Mesquita, 57, ${cidade} - ${estado}","texto_embarque_motorista":"RUA ARTHUR MESQUITA, 57","geolocalizacao_destino":null,"texto_destino_motorista":"HOSPITAL"},"payload_enquete_whatsapp":{"name":"EMBARQUE: RUA ARTHUR MESQUITA, 57\nDESTINO: HOSPITAL\n\nConfirma os dados da sua corrida?","options":["SIM, CONFIRMAR","NAO, CORRIGIR"],"selectableOptionsCount":1}}
+Nota: O backend completara o bairro (ex: Jardim Santa Vitoria) automaticamente via OpenStreetMap.
 
 Exemplo 2 (BOT_WHATSAPP - Local informal):
 Contexto: Canal="BOT_WHATSAPP", Cidade="${cidade}", Estado="${estado}"
@@ -2517,9 +2551,21 @@ As mensagens do passageiro serao encaminhadas a partir de agora.`;
           return;
         }
       } else {
-        // Informal place — skip geocoding, use fallback coordinates directly
+        // Informal place (POI) — try OSM geocoding with the place name + city bias.
+        // If found, use the real coordinates and formatted address. If not found,
+        // fall back to the bot connection's default coordinates and keep the
+        // place name as the display text.
         const companyLoc = await getCompanyLocationInfo(companyId, connectionId);
-        if (companyLoc.lat != null && companyLoc.lng != null) {
+        const poiGeocoded = await geocodePOI(addressText, companyLoc.city ?? undefined, companyLoc.state ?? undefined, companyLoc.lat ?? undefined, companyLoc.lng ?? undefined);
+        if (poiGeocoded) {
+          finalLat = poiGeocoded.lat;
+          finalLng = poiGeocoded.lng;
+          finalAddress = poiGeocoded.formatted;
+          const bairro = extractBairroFromFormatted(poiGeocoded.formatted);
+          if (bairro && originReference && !originReference.includes(bairro.toUpperCase())) {
+            originReference = `${originReference}, ${bairro.toUpperCase()}`;
+          }
+        } else if (companyLoc.lat != null && companyLoc.lng != null) {
           finalLat = companyLoc.lat;
           finalLng = companyLoc.lng;
           finalAddress = addressText;
@@ -2636,7 +2682,9 @@ As mensagens do passageiro serao encaminhadas a partir de agora.`;
             return;
           }
 
-          // For text/audio destinations, keep lat/lng null so Machine API calculates by KM
+          // For text/audio destinations, try POI/street geocoding with city bias.
+          // If found, use real coordinates + formatted address. If not, keep
+          // lat/lng null so Machine API calculates by KM (taximeter).
           let finalDestLat: number | null = null;
           let finalDestLng: number | null = null;
           let finalDestAddress = destText;
@@ -2645,6 +2693,14 @@ As mensagens do passageiro serao encaminhadas a partir de agora.`;
             finalDestLat = destLat!;
             finalDestLng = destLng!;
             finalDestAddress = destText;
+          } else {
+            const companyLoc = await getCompanyLocationInfo(companyId, connectionId);
+            const destGeocoded = await geocodePOI(destText, companyLoc.city ?? undefined, companyLoc.state ?? undefined, companyLoc.lat ?? undefined, companyLoc.lng ?? undefined);
+            if (destGeocoded) {
+              finalDestLat = destGeocoded.lat;
+              finalDestLng = destGeocoded.lng;
+              finalDestAddress = destGeocoded.formatted;
+            }
           }
 
           const pickupAddr = normalizePlaceText(conv.origin_reference || conv.address_formatted || conv.address_text || "Endereco nao informado");
@@ -2699,7 +2755,9 @@ As mensagens do passageiro serao encaminhadas a partir de agora.`;
         return;
       }
 
-      // For text/audio destinations, keep lat/lng null so Machine API calculates by KM
+      // For text/audio destinations, try POI/street geocoding with city bias.
+      // If found, use real coordinates + formatted address. If not, keep
+      // lat/lng null so Machine API calculates by KM (taximeter).
       let finalDestLat: number | null = null;
       let finalDestLng: number | null = null;
       let finalDestAddress = destText;
@@ -2708,6 +2766,14 @@ As mensagens do passageiro serao encaminhadas a partir de agora.`;
         finalDestLat = destLat!;
         finalDestLng = destLng!;
         finalDestAddress = destText;
+      } else {
+        const companyLoc = await getCompanyLocationInfo(companyId, connectionId);
+        const destGeocoded = await geocodePOI(destText, companyLoc.city ?? undefined, companyLoc.state ?? undefined, companyLoc.lat ?? undefined, companyLoc.lng ?? undefined);
+        if (destGeocoded) {
+          finalDestLat = destGeocoded.lat;
+          finalDestLng = destGeocoded.lng;
+          finalDestAddress = destGeocoded.formatted;
+        }
       }
 
       const pickupAddr = normalizePlaceText(conv.origin_reference || conv.address_formatted || conv.address_text || "Endereco nao informado");
