@@ -3551,10 +3551,10 @@ Deno.serve(async (req: Request) => {
       // Send WhatsApp notification to passenger if a global provider is configured
       if (data.passenger_phone) {
         const statusMessages: Record<string, string> = {
-          accepted: "Seu motorista aceitou a corrida! Esta a caminho do ponto de partida.",
-          en_route: "Seu motorista chegou ao local de embarque! Procure pelo veiculo.",
-          in_progress: "Sua viagem esta em andamento.",
-          completed: "Sua viagem foi concluida. Obrigado!",
+          accepted: "\u2705 Seu motorista aceitou a corrida! Esta a caminho do ponto de partida.",
+          en_route: "\u{1F697} Seu motorista chegou ao local de embarque! Procure pelo veiculo.",
+          in_progress: "\u{1F695} Sua viagem esta em andamento.",
+          completed: "\u{1F4AF} Sua viagem foi concluida. Obrigado!",
         };
 
         const message = statusMessages[newStatus];
