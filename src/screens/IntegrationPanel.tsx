@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { Plug, Save, Loader2, CheckCircle2, AlertCircle, Hand, Cpu, Webhook } from 'lucide-react';
+import { Plug, Save, Loader2, CheckCircle2, AlertCircle, Hand, Cpu, Webhook, MapPin, RefreshCw } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 import { useAuth } from '@/context/AuthContext';
 import { CityAutocomplete } from '@/components/CityAutocomplete';
@@ -35,6 +35,8 @@ export function IntegrationPanel() {
   const [error, setError] = useState<string | null>(null);
   const [simulationMode, setSimulationMode] = useState(false);
   const [requirePrice, setRequirePrice] = useState(false);
+  const [addressImporting, setAddressImporting] = useState(false);
+  const [addressImportStatus, setAddressImportStatus] = useState<'pending' | 'processing' | 'completed' | 'failed'>('pending');
 
   useEffect(() => {
     if (!company) return;
@@ -71,6 +73,27 @@ export function IntegrationPanel() {
         setState(cred.state || '');
         setLat(cred.lat?.toString() || '');
         setLng(cred.lng?.toString() || '');
+
+        // Check address base import status
+        if (cred.city && cred.state) {
+          const { data: estadoData } = await supabase
+            .from('estados')
+            .select('id')
+            .eq('sigla', cred.state.toUpperCase())
+            .maybeSingle();
+          if (estadoData) {
+            const { data: cidadeData } = await supabase
+              .from('cidades')
+              .select('import_status')
+              .eq('estado_id', estadoData.id)
+              .eq('nome', cred.city)
+              .maybeSingle();
+            if (cidadeData) {
+              const s = cidadeData.import_status;
+              setAddressImportStatus(s === 'completed' ? 'completed' : s === 'processing' ? 'processing' : s === 'pending' ? 'pending' : 'failed');
+            }
+          }
+        }
       }
 
       setLoading(false);
@@ -143,6 +166,54 @@ export function IntegrationPanel() {
     setSaved(true);
     setSaving(false);
     setTimeout(() => setSaved(false), 3000);
+  };
+
+  const handleAddressImport = async () => {
+    if (!company || !city || !state) return;
+    setAddressImporting(true);
+    setAddressImportStatus('processing');
+    try {
+      const { data: estadoData } = await supabase
+        .from('estados')
+        .select('id')
+        .eq('sigla', state.toUpperCase())
+        .maybeSingle();
+      if (!estadoData) {
+        setAddressImportStatus('failed');
+        setAddressImporting(false);
+        return;
+      }
+      let { data: cidadeData } = await supabase
+        .from('cidades')
+        .select('id, import_status')
+        .eq('estado_id', estadoData.id)
+        .eq('nome', city)
+        .maybeSingle();
+      if (!cidadeData) {
+        const { data: newCidade } = await supabase
+          .from('cidades')
+          .insert({ estado_id: estadoData.id, nome: city, import_status: 'pending' })
+          .select('id, import_status')
+          .single();
+        cidadeData = newCidade;
+      }
+      if (!cidadeData) {
+        setAddressImportStatus('failed');
+        setAddressImporting(false);
+        return;
+      }
+      const { error: fnError } = await supabase.functions.invoke('osm-city-import', {
+        body: { cidade_id: cidadeData.id, cidade_nome: city, estado_sigla: state.toUpperCase(), force: true },
+      });
+      if (fnError) {
+        setAddressImportStatus('failed');
+      } else {
+        setAddressImportStatus('completed');
+      }
+    } catch {
+      setAddressImportStatus('failed');
+    }
+    setAddressImporting(false);
   };
 
   if (loading) {
@@ -380,6 +451,59 @@ export function IntegrationPanel() {
               <p className="text-xs text-neutral-500 dark:text-neutral-400">Quando ativo, o passageiro não consegue solicitar a corrida se a cotação em tempo real falhar. Desative para permitir corridas com valor a confirmar pelo motorista.</p>
             </div>
           </label>
+        </div>
+
+        <div className="card p-5 space-y-4 border-t-2 border-gold-500/20">
+          <h3 className="text-sm font-bold text-neutral-700 dark:text-neutral-300 flex items-center gap-2">
+            <MapPin className="h-4 w-4 text-gold-500" />
+            Base de Enderecos da Cidade (OpenStreetMap)
+          </h3>
+          <p className="text-xs text-neutral-500 dark:text-neutral-400">
+            Importa ruas, bairros e numeros da sua cidade a partir do OpenStreetMap para correcao automatica de enderecos digitados com erro.
+          </p>
+          {city && state ? (
+            <div className="space-y-2">
+              <div className="flex items-center gap-2 text-xs">
+                <span className="text-neutral-500">Cidade:</span>
+                <span className="font-semibold text-neutral-700 dark:text-neutral-300">{city} - {state}</span>
+              </div>
+              {addressImportStatus === "processing" && (
+                <div className="flex items-center gap-2 text-xs text-blue-500">
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                  Preparando base de enderecos...
+                </div>
+              )}
+              {addressImportStatus === "completed" && (
+                <div className="flex items-center gap-2 text-xs text-success-500">
+                  <CheckCircle2 className="h-3.5 w-3.5" />
+                  Base de enderecos carregada
+                </div>
+              )}
+              {addressImportStatus === "pending" && (
+                <div className="flex items-center gap-2 text-xs text-neutral-400">
+                  <AlertCircle className="h-3.5 w-3.5" />
+                  Ainda nao importado
+                </div>
+              )}
+              {addressImportStatus === "failed" && (
+                <div className="flex items-center gap-2 text-xs text-error-500">
+                  <AlertCircle className="h-3.5 w-3.5" />
+                  Falha na importacao. Tente novamente.
+                </div>
+              )}
+              <button
+                type="button"
+                onClick={handleAddressImport}
+                disabled={addressImporting}
+                className="flex items-center gap-2 rounded-lg border border-gold-500/30 bg-gold-500/10 px-3 py-2 text-xs font-bold text-gold-700 dark:text-gold-300 hover:bg-gold-500/20 transition-colors disabled:opacity-50"
+              >
+                  {addressImporting ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />}
+                  {addressImporting ? "Importando..." : "Reprocessar base de enderecos"}
+                </button>
+            </div>
+          ) : (
+            <p className="text-xs text-neutral-400">Defina a cidade da central na configuracao do Machine API acima.</p>
+          )}
         </div>
 
         <button type="submit" disabled={saving} className="btn-primary w-full flex items-center justify-center gap-2">

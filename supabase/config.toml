@@ -51,3 +51,7 @@ entrypoint = "./functions/bot-whatsapp-manage/index.ts"
 [functions.configure-whatsapp-webhook]
 verify_jwt = false
 entrypoint = "./functions/configure-whatsapp-webhook/index.ts"
+
+[functions.osm-city-import]
+verify_jwt = false
+entrypoint = "./functions/osm-city-import/index.ts"
