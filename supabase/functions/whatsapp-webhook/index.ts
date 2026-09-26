@@ -723,7 +723,7 @@ interface ParsedRideIntent {
   texto_embarque_motorista: string | null;
   geolocalizacao_destino: null;
   texto_destino_motorista: string | null;
-  mensagem_whatsapp_cliente: string | null;
+  payload_enquete_whatsapp: { name: string; options: string[]; selectableOptionsCount: number } | null;
   // Compatibility fields derived from dados_extraidos
   endereco_origem: string | null;
   endereco_destino: null;
@@ -807,8 +807,8 @@ ${isTotemFixo ? `- Endereco Real de Instalacao do Totem: "${fallbackAddr}"\n- No
 1. NUNCA tente geolocalizar o destino no mapa. A propriedade geolocalizacao_destino deve ser OBRIGATORIAMENTE configurada como null em todos os casos para forcar a Machine a calcular o valor da corrida por KM rodado (taximetro) com base na categoria escolhida.
 2. Extraia o destino digitado pelo cliente para o campo texto_destino_motorista em MAIUSCULAS (Ex: "PRAINHA"). Se nao informado, use "DEFINIR NO CARRO".
 
-### REGRA 3: FLUXO DIRETO (SEM INTERMEDIARIOS)
-Remova qualquer mensagem de transicao (Nao responda com "Entendi", "Validando...", etc.). Gere DIRETAMENTE o JSON contendo a mensagem final com emojis prontinha para o WhatsApp.
+### REGRA 3: FLUXO DE CONFIRMACAO VIA ENQUETE (POLL)
+O bot nao deve gerar textos explicativos intermedios ou botoes tradicionais quebrados. Estruture a pergunta e as opcoes de clique em formato de Enquete nativa do WhatsApp (Poll Options). A enquete permite apenas selecao unica.
 
 ### FORMATO DE SAIDA EXCLUSIVO (JSON)
 Retorne APENAS o objeto JSON valido abaixo, sem textos explicativos fora do bloco:
@@ -822,7 +822,11 @@ Retorne APENAS o objeto JSON valido abaixo, sem textos explicativos fora do bloc
     "geolocalizacao_destino": null,
     "texto_destino_motorista": "DESTINO EM MAIUSCULO PARA A TELA DO MOTORISTA"
   },
-  "mensagem_whatsapp_cliente": "Mensagem formatada com emojis para o WhatsApp"
+  "payload_enquete_whatsapp": {
+    "name": "EMBARQUE: {{texto_embarque_motorista}}\nDESTINO: {{texto_destino_motorista}}\n\nConfirma os dados da sua corrida?",
+    "options": ["SIM, CONFIRMAR", "NAO, CORRIGIR"],
+    "selectableOptionsCount": 1
+  }
 }
 
 ### EXEMPLOS DE COMPORTAMENTO:
@@ -830,32 +834,32 @@ Retorne APENAS o objeto JSON valido abaixo, sem textos explicativos fora do bloc
 Exemplo 1 (BOT_WHATSAPP - Rua oficial):
 Contexto: Canal="BOT_WHATSAPP", Cidade="${cidade}", Estado="${estado}"
 Input: "Estou aqui na arthur mesquita numero 57 perto da igreja e vou para o hospital"
-Output: {"dados_extraidos":{"canal_de_entrada":"BOT_WHATSAPP","eh_rua_oficial":true,"origem_identificada_por_foto":false,"geolocalizacao_origem":"Rua Arthur Mesquita, 57, ${cidade} - ${estado}","texto_embarque_motorista":"RUA ARTHUR MESQUITA, 57","geolocalizacao_destino":null,"texto_destino_motorista":"HOSPITAL"},"mensagem_whatsapp_cliente":"Confirma os dados da corrida?\\n\\nEmbarque: RUA ARTHUR MESQUITA, 57\\nDestino: HOSPITAL"}
+Output: {"dados_extraidos":{"canal_de_entrada":"BOT_WHATSAPP","eh_rua_oficial":true,"origem_identificada_por_foto":false,"geolocalizacao_origem":"Rua Arthur Mesquita, 57, ${cidade} - ${estado}","texto_embarque_motorista":"RUA ARTHUR MESQUITA, 57","geolocalizacao_destino":null,"texto_destino_motorista":"HOSPITAL"},"payload_enquete_whatsapp":{"name":"EMBARQUE: RUA ARTHUR MESQUITA, 57\nDESTINO: HOSPITAL\n\nConfirma os dados da sua corrida?","options":["SIM, CONFIRMAR","NAO, CORRIGIR"],"selectableOptionsCount":1}}
 
 Exemplo 2 (BOT_WHATSAPP - Local informal):
 Contexto: Canal="BOT_WHATSAPP", Cidade="${cidade}", Estado="${estado}"
 Input: "Me pega na amarelinha da avenida e leva na prainha"
-Output: {"dados_extraidos":{"canal_de_entrada":"BOT_WHATSAPP","eh_rua_oficial":false,"origem_identificada_por_foto":false,"geolocalizacao_origem":"${fallbackAddr}","texto_embarque_motorista":"AMARELINHA DA AVENIDA","geolocalizacao_destino":null,"texto_destino_motorista":"PRAINHA"},"mensagem_whatsapp_cliente":"Confirma os dados da corrida?\\n\\nEmbarque: AMARELINHA DA AVENIDA\\nDestino: PRAINHA"}
+Output: {"dados_extraidos":{"canal_de_entrada":"BOT_WHATSAPP","eh_rua_oficial":false,"origem_identificada_por_foto":false,"geolocalizacao_origem":"${fallbackAddr}","texto_embarque_motorista":"AMARELINHA DA AVENIDA","geolocalizacao_destino":null,"texto_destino_motorista":"PRAINHA"},"payload_enquete_whatsapp":{"name":"EMBARQUE: AMARELINHA DA AVENIDA\nDESTINO: PRAINHA\n\nConfirma os dados da sua corrida?","options":["SIM, CONFIRMAR","NAO, CORRIGIR"],"selectableOptionsCount":1}}
 
 Exemplo 3 (BOT_WHATSAPP - Audio com "vou la no"):
 Contexto: Canal="BOT_WHATSAPP", Cidade="${cidade}", Estado="${estado}"
 Input: "Eu quero um carro aqui na amarelinha da avenida porque eu vou la no pesqueiro do diu"
-Output: {"dados_extraidos":{"canal_de_entrada":"BOT_WHATSAPP","eh_rua_oficial":false,"origem_identificada_por_foto":false,"geolocalizacao_origem":"${fallbackAddr}","texto_embarque_motorista":"AMARELINHA DA AVENIDA","geolocalizacao_destino":null,"texto_destino_motorista":"PESQUEIRO DO DIU"},"mensagem_whatsapp_cliente":"Confirma os dados da corrida?\\n\\nEmbarque: AMARELINHA DA AVENIDA\\nDestino: PESQUEIRO DO DIU"}
+Output: {"dados_extraidos":{"canal_de_entrada":"BOT_WHATSAPP","eh_rua_oficial":false,"origem_identificada_por_foto":false,"geolocalizacao_origem":"${fallbackAddr}","texto_embarque_motorista":"AMARELINHA DA AVENIDA","geolocalizacao_destino":null,"texto_destino_motorista":"PESQUEIRO DO DIU"},"payload_enquete_whatsapp":{"name":"EMBARQUE: AMARELINHA DA AVENIDA\nDESTINO: PESQUEIRO DO DIU\n\nConfirma os dados da sua corrida?","options":["SIM, CONFIRMAR","NAO, CORRIGIR"],"selectableOptionsCount":1}}
 
 Exemplo 4 (BOT_WHATSAPP - Variacao "to no"):
 Contexto: Canal="BOT_WHATSAPP", Cidade="${cidade}", Estado="${estado}"
 Input: "to no bar do carlao e quero ir pro hospital"
-Output: {"dados_extraidos":{"canal_de_entrada":"BOT_WHATSAPP","eh_rua_oficial":false,"origem_identificada_por_foto":false,"geolocalizacao_origem":"${fallbackAddr}","texto_embarque_motorista":"BAR DO CARLAO","geolocalizacao_destino":null,"texto_destino_motorista":"HOSPITAL"},"mensagem_whatsapp_cliente":"Confirma os dados da corrida?\\n\\nEmbarque: BAR DO CARLAO\\nDestino: HOSPITAL"}
+Output: {"dados_extraidos":{"canal_de_entrada":"BOT_WHATSAPP","eh_rua_oficial":false,"origem_identificada_por_foto":false,"geolocalizacao_origem":"${fallbackAddr}","texto_embarque_motorista":"BAR DO CARLAO","geolocalizacao_destino":null,"texto_destino_motorista":"HOSPITAL"},"payload_enquete_whatsapp":{"name":"EMBARQUE: BAR DO CARLAO\nDESTINO: HOSPITAL\n\nConfirma os dados da sua corrida?","options":["SIM, CONFIRMAR","NAO, CORRIGIR"],"selectableOptionsCount":1}}
 
 Exemplo 5 (BOT_WHATSAPP - Rua com numero sem destino):
 Contexto: Canal="BOT_WHATSAPP", Cidade="${cidade}", Estado="${estado}"
 Input: "rua pernambuco 402 centro"
-Output: {"dados_extraidos":{"canal_de_entrada":"BOT_WHATSAPP","eh_rua_oficial":true,"origem_identificada_por_foto":false,"geolocalizacao_origem":"Rua Pernambuco, 402, ${cidade} - ${estado}","texto_embarque_motorista":"RUA PERNAMBUCO, 402","geolocalizacao_destino":null,"texto_destino_motorista":"DEFINIR NO CARRO"},"mensagem_whatsapp_cliente":"Confirma os dados da corrida?\\n\\nEmbarque: RUA PERNAMBUCO, 402\\nDestino: DEFINIR NO CARRO"}
+Output: {"dados_extraidos":{"canal_de_entrada":"BOT_WHATSAPP","eh_rua_oficial":true,"origem_identificada_por_foto":false,"geolocalizacao_origem":"Rua Pernambuco, 402, ${cidade} - ${estado}","texto_embarque_motorista":"RUA PERNAMBUCO, 402","geolocalizacao_destino":null,"texto_destino_motorista":"DEFINIR NO CARRO"},"payload_enquete_whatsapp":{"name":"EMBARQUE: RUA PERNAMBUCO, 402\nDESTINO: DEFINIR NO CARRO\n\nConfirma os dados da sua corrida?","options":["SIM, CONFIRMAR","NAO, CORRIGIR"],"selectableOptionsCount":1}}
 
 ${isTotemFixo ? `Exemplo 6 (TOTEM_FIXO - Cliente so digita o destino):
 Contexto: Canal="TOTEM_FIXO", Cidade="${cidade}", Estado="${estado}", Totem="${nomeTotem}", Fallback="${fallbackAddr}"
 Input: "Quero ir para o Hospital Sao Paulo"
-Output: {"dados_extraidos":{"canal_de_entrada":"TOTEM_FIXO","eh_rua_oficial":false,"origem_identificada_por_foto":false,"geolocalizacao_origem":"${fallbackAddr}","texto_embarque_motorista":"${nomeTotem}","geolocalizacao_destino":null,"texto_destino_motorista":"HOSPITAL SAO PAULO"},"mensagem_whatsapp_cliente":"Confirma os dados da corrida?\\n\\nEmbarque: ${nomeTotem}\\nDestino: HOSPITAL SAO PAULO"}
+Output: {"dados_extraidos":{"canal_de_entrada":"TOTEM_FIXO","eh_rua_oficial":false,"origem_identificada_por_foto":false,"geolocalizacao_origem":"${fallbackAddr}","texto_embarque_motorista":"${nomeTotem}","geolocalizacao_destino":null,"texto_destino_motorista":"HOSPITAL SAO PAULO"},"payload_enquete_whatsapp":{"name":"EMBARQUE: ${nomeTotem}\nDESTINO: HOSPITAL SAO PAULO\n\nConfirma os dados da sua corrida?","options":["SIM, CONFIRMAR","NAO, CORRIGIR"],"selectableOptionsCount":1}}
 ` : ""}`;
 
   try {
@@ -903,7 +907,7 @@ Output: {"dados_extraidos":{"canal_de_entrada":"TOTEM_FIXO","eh_rua_oficial":fal
         texto_embarque_motorista: (dados.texto_embarque_motorista as string) ?? null,
         geolocalizacao_destino: null,
         texto_destino_motorista: (dados.texto_destino_motorista as string) ?? null,
-        mensagem_whatsapp_cliente: (raw.mensagem_whatsapp_cliente as string) ?? null,
+        payload_enquete_whatsapp: (raw.payload_enquete_whatsapp as { name: string; options: string[]; selectableOptionsCount: number }) ?? null,
         endereco_origem: (dados.geolocalizacao_origem as string) ?? null,
         endereco_destino: null,
       };
@@ -927,7 +931,7 @@ Output: {"dados_extraidos":{"canal_de_entrada":"TOTEM_FIXO","eh_rua_oficial":fal
       texto_embarque_motorista: parsed.texto_embarque_motorista ?? null,
       geolocalizacao_destino: null,
       texto_destino_motorista: parsed.texto_destino_motorista ?? null,
-      mensagem_whatsapp_cliente: parsed.mensagem_whatsapp_cliente ?? null,
+      payload_enquete_whatsapp: parsed.payload_enquete_whatsapp ?? null,
       endereco_origem: parsed.geolocalizacao_origem ?? null,
       endereco_destino: null,
     } as ParsedRideIntent;
