@@ -284,7 +284,7 @@ async function processWebhook(body: Record<string, unknown>): Promise<void> {
         const passengerPhone = toBrazilianWhatsAppNumber(ride.passenger_phone);
         if (passengerPhone) {
           const { provider, fields: f } = await getCompanyWhatsAppConfig(ride.company_id);
-          const cancelMsg = "O motorista cancelou a corrida. Estamos procurando um novo motorista para voce. Aguarde.";
+          const cancelMsg = "\u{26A0}\u{FE0F} O motorista cancelou a corrida. Estamos procurando um novo motorista para voce. Aguarde.";
           await sendWhatsAppMessage(provider, f, passengerPhone, cancelMsg);
           await saveChatMessage(ride.company_id, passengerPhone, "outgoing", cancelMsg);
         }
@@ -510,14 +510,14 @@ async function sendPassengerInfoToDriver(
   const cleanDriverPhone = toBrazilianWhatsAppNumber(driverPhone);
   if (!cleanDriverPhone) return;
 
-  let message = `Passageiro: ${passengerName}\nEmbarque: ${pickupAddress}`;
+  let message = `\u{1F465} Passageiro: ${passengerName}\n\u{1F4CD} Embarque: ${pickupAddress}`;
   if (destinationAddress) {
-    message += `\nDesembarque: ${destinationAddress}`;
+    message += `\n\u{1F3C1} Desembarque: ${destinationAddress}`;
   }
   if (paymentMethod) {
-    message += `\nPagamento: ${paymentMethod}`;
+    message += `\n\u{1F4B3} Pagamento: ${paymentMethod}`;
   }
-  message += `\n\nChat com Passageiro esta ativo\n\nPara cancelar, responda "cancelar" e confirme.`;
+  message += `\n\n\u{1F4AC} Chat com Passageiro esta ativo\n\nPara cancelar, responda \"cancelar\" e confirme.`;
 
   const { provider, fields: f } = await getCompanyWhatsAppConfig(companyId);
 
@@ -631,7 +631,7 @@ async function handleMachineDriverMessage(
   // Forward to passenger via WhatsApp
   const { provider, fields: f } = await getCompanyWhatsAppConfig(ride.company_id);
   const cleanPhone = toBrazilianWhatsAppNumber(ride.passenger_phone);
-  const fwdContent = `Mensagem do Motorista: ${content}`;
+  const fwdContent = `\u{1F697}\u{FE0F} Mensagem do Motorista: ${content}`;
   let delivered = false;
   try {
     delivered = await sendWhatsAppMessage(provider, f, cleanPhone, fwdContent);
