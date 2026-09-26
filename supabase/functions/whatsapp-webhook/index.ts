@@ -2254,36 +2254,9 @@ async function handleBotMessage(
         break;
       }
 
-      // If passenger sent an image, treat it as a ride request with facade recognition.
+      // If passenger sent an image, ask for a typed address instead (photos are not processed).
       if (image) {
-        const companyLoc = await getCompanyLocationInfo(companyId, connectionId);
-        const visionResult = await interpretImageWithVision(image.data, image.mimetype, companyId, {
-          city: companyLoc.city,
-          state: companyLoc.state,
-          fallbackAddress: companyLoc.pickupAddress || companyLoc.totemName || null,
-          caption: text,
-        });
-        if (visionResult) {
-          const establishmentName = visionResult.establishment_name;
-          await supabase.from("bot_conversas")
-            .update({
-              state: "aguardando_destino",
-              address_text: companyLoc.pickupAddress || `${companyLoc.city} - ${companyLoc.state}`,
-              address_lat: companyLoc.lat,
-              address_lng: companyLoc.lng,
-              address_formatted: companyLoc.pickupAddress || `${companyLoc.city} - ${companyLoc.state}`,
-              address_is_fallback: true,
-              origin_reference: establishmentName,
-              updated_at: new Date().toISOString(),
-            })
-            .eq("id", conv.id);
-          await sendPollMessage(companyId, cleanPhone, connectionId, `\u{1F4F7} Identifiquei: ${establishmentName}\n\n\u{1F3AF} Para onde voce vai?`, [{ id: "dest_digitar", label: "Digitar Endereco \u{1F4DD}" }, { id: "dest_nao_informar", label: "Nao informar \u{1F6AB}" }]);
-        } else {
-          await supabase.from("bot_conversas")
-            .update({ state: "aguardando_endereco", updated_at: new Date().toISOString() })
-            .eq("id", conv.id);
-          await sendBotMessage(companyId, cleanPhone, connectionId, msg("ask_address", "\u{1F4CD} Perfeito! Qual e o endereco de embarque? Voce pode digitar o endereco, enviar sua localizacao ou mandar um audio."));
-        }
+        await sendBotMessage(companyId, cleanPhone, connectionId, "\u{1F4F7} Nao consigo usar fotos. Por favor, digite o endereco de embarque ou envie sua localizacao (clipe \u{1F4CE} > Localizacao).");
         break;
       }
 
@@ -2438,25 +2411,9 @@ As mensagens do passageiro serao encaminhadas a partir de agora.`;
       let llmIsRuaOficial = false;
 
       if (image) {
-        // Image sent as pickup — use vision to identify the establishment
-        const companyLoc = await getCompanyLocationInfo(companyId, connectionId);
-        const visionResult = await interpretImageWithVision(image.data, image.mimetype, companyId, {
-          city: companyLoc.city,
-          state: companyLoc.state,
-          fallbackAddress: companyLoc.pickupAddress || companyLoc.totemName || null,
-          caption: text,
-        });
-        if (visionResult) {
-          addressText = companyLoc.pickupAddress || `${companyLoc.city} - ${companyLoc.state}`;
-          originReference = visionResult.establishment_name;
-          // Use fallback coordinates since we identified by photo, not by street
-          if (companyLoc.lat != null && companyLoc.lng != null) {
-            // Will be set in the fallback branch below
-          }
-        } else {
-          await sendBotMessage(companyId, cleanPhone, connectionId, "\u{1F4F7} Nao consegui identificar o local na foto. Por favor, digite o endereco de embarque ou envie sua localizacao.");
-          return;
-        }
+        // Photos are not stored or processed — ask for a typed address or location share.
+        await sendBotMessage(companyId, cleanPhone, connectionId, "\u{1F4F7} Nao consigo usar fotos. Por favor, digite o endereco de embarque ou envie sua localizacao (clipe \u{1F4CE} > Localizacao).");
+        return;
       } else if (location) {
         lat = location.lat;
         lng = location.lng;
@@ -2555,8 +2512,10 @@ As mensagens do passageiro serao encaminhadas a partir de agora.`;
       // If the LLM identified this as an informal place (not a real street),
       // skip geocoding entirely and use the fallback address. Only attempt OSM
       // validation when the LLM says it's a structured street address.
+      // Also force geocoding when the text itself looks like "street + number".
+      const looksOfficial = llmIsRuaOficial || looksLikeOfficialAddress(addressText ?? "");
       let suggestionMatch: { address_text: string; lat: number | null; lng: number | null } | null = null;
-      if (connectionId && llmIsRuaOficial) {
+      if (connectionId && looksOfficial) {
         suggestionMatch = await findAddressSuggestionFuzzy(connectionId, addressText);
       }
 
@@ -2606,7 +2565,7 @@ As mensagens do passageiro serao encaminhadas a partir de agora.`;
         finalLat = lat!;
         finalLng = lng!;
         finalAddress = addressText;
-      } else if (llmIsRuaOficial) {
+      } else if (looksOfficial) {
         // Official street — try OSM geocoding
         const companyLoc = await getCompanyLocationInfo(companyId, connectionId);
         const geocoded = await geocodeAddress(addressText, companyLoc.city ?? undefined, companyLoc.state ?? undefined, companyLoc.lat ?? undefined, companyLoc.lng ?? undefined);
@@ -3329,6 +3288,21 @@ Deno.serve(async (req: Request) => {
 
     const { event, instance, data } = body;
 
+    // Diagnostic: log every non-connection event to see what Evolution sends for poll votes
+    if (event && event !== "connection.update" && event !== "CONNECTION_UPDATE" && event !== "status.connect") {
+      const diagKeys = data && typeof data === "object" ? Object.keys(data as Record<string, unknown>).join(",") : "none";
+      const diagMsg = data?.message && typeof data.message === "object" ? Object.keys(data.message as Record<string, unknown>).join(",") : "none";
+      const diagPoll = data?.message?.pollUpdateMessage ? JSON.stringify(data.message.pollUpdateMessage).slice(0, 400) : "no-poll";
+      try {
+        await supabase.from("admin_logs").insert({
+          company_id: "00000000-0000-0000-0000-000000000000",
+          source: "whatsapp_webhook",
+          level: "info",
+          message: `EVENT DIAG: event=${event} instance=${instance} dataKeys=[${diagKeys}] msgKeys=[${diagMsg}] poll=${diagPoll}`,
+        });
+      } catch { /* best-effort */ }
+    }
+
     // Find the whatsapp instance by instance_name
     let { data: waInstance } = await supabase
       .from("whatsapp_instances")
@@ -3437,14 +3411,20 @@ Deno.serve(async (req: Request) => {
             if (!text) {
               const pollResp = msg?.pollUpdateMessage as Record<string, unknown> | undefined;
               if (pollResp) {
-                const votes = pollResp.votes as Array<Record<string, unknown>> | undefined;
-                if (votes && votes.length > 0) {
-                  text = String(votes[0]?.optionName ?? votes[0]?.name ?? "");
-                } else {
-                  const selectedOption = pollResp.selectedOption as Record<string, unknown> | undefined;
-                  if (selectedOption?.name) {
-                    text = String(selectedOption.name);
+                const vote = pollResp.vote as Record<string, unknown> | undefined;
+                const selectedOptions = vote?.selectedOptions as Array<Record<string, unknown>> | undefined;
+                if (selectedOptions && selectedOptions.length > 0) {
+                  text = String(selectedOptions[0]?.name ?? selectedOptions[0]?.optionName ?? "");
+                }
+                if (!text) {
+                  const votes = pollResp.votes as Array<Record<string, unknown>> | undefined;
+                  if (votes && votes.length > 0) {
+                    text = String(votes[0]?.optionName ?? votes[0]?.name ?? "");
                   }
+                }
+                if (!text) {
+                  const selectedOption = pollResp.selectedOption as Record<string, unknown> | undefined;
+                  if (selectedOption?.name) text = String(selectedOption.name);
                 }
               }
             }
@@ -3718,14 +3698,16 @@ async function sendAudioFailureReply(companyId: string, phone: string, message: 
 }
 
 async function handleIncomingMessage(companyId: string, data: Record<string, unknown>, _instanceName?: string, connectionId?: string): Promise<void> {
-  // Diagnostic log: dump top-level keys to see what Evolution sends for poll.update events
+  // Diagnostic log: dump the full pollUpdateMessage to see the exact vote structure
   const _topKeys = Object.keys(data ?? {}).join(",");
-  const _msgKeys = data?.message && typeof data.message === "object" ? Object.keys(data.message as Record<string, unknown>).join(",") : "none";
+  const _msg = (data?.message ?? {}) as Record<string, unknown>;
+  const _msgKeys = Object.keys(_msg).join(",");
+  const _poll = _msg.pollUpdateMessage as Record<string, unknown> | undefined;
   await supabase.from("admin_logs").insert({
     company_id: companyId,
     source: "whatsapp_webhook",
     level: "info",
-    message: `handleIncomingMessage ENTER: topKeys=[${_topKeys}] msgKeys=[${_msgKeys}] vote=${JSON.stringify(data?.votes ?? data?.vote ?? data?.selectedOption ?? "none")}`,
+    message: `POLL DIAG: msgKeys=[${_msgKeys}] pollUpdateMessage=${JSON.stringify(_poll ?? "none")}`,
   });
 
   // Evolution API v1 sends: { key: { remoteJid: "5516999998888@s.whatsapp.net" }, message: { conversation: "cancelar" } }
@@ -3783,21 +3765,24 @@ async function handleIncomingMessage(companyId: string, data: Record<string, unk
         text = String(singleSelect.selectedRowId);
       }
     }
-    // Evolution API poll vote: pollUpdateMessage with selected option(s)
+    // Evolution API poll vote: pollUpdateMessage.vote.selectedOptions[0].name
     if (!text) {
       const pollResp = message.pollUpdateMessage as Record<string, unknown> | undefined;
       if (pollResp) {
-        const votes = pollResp.votes as Array<Record<string, unknown>> | undefined;
-        if (votes && votes.length > 0) {
-          const optionName = String(votes[0]?.optionName ?? votes[0]?.name ?? "");
-          if (optionName) {
-            text = optionName;
+        const vote = pollResp.vote as Record<string, unknown> | undefined;
+        const selectedOptions = vote?.selectedOptions as Array<Record<string, unknown>> | undefined;
+        if (selectedOptions && selectedOptions.length > 0) {
+          text = String(selectedOptions[0]?.name ?? selectedOptions[0]?.optionName ?? "");
+        }
+        if (!text) {
+          const votes = pollResp.votes as Array<Record<string, unknown>> | undefined;
+          if (votes && votes.length > 0) {
+            text = String(votes[0]?.optionName ?? votes[0]?.name ?? "");
           }
-        } else {
+        }
+        if (!text) {
           const selectedOption = pollResp.selectedOption as Record<string, unknown> | undefined;
-          if (selectedOption?.name) {
-            text = String(selectedOption.name);
-          }
+          if (selectedOption?.name) text = String(selectedOption.name);
         }
       }
     }
@@ -3969,74 +3954,24 @@ async function handleIncomingMessage(companyId: string, data: Record<string, unk
     audio = { data: audioDataStr, mimetype: audioMimeType };
   }
 
-  // Extract image data (for facade/landmark recognition)
+  // Photos are not processed or stored — we only keep the caption (if any).
   let image: { data: string; mimetype: string } | null = null;
   const imageMessage = message?.imageMessage as Record<string, unknown> | undefined;
   const genericImage = message?.image as Record<string, unknown> | undefined;
   const imageSource = imageMessage ?? genericImage;
-
-  let imageData = imageSource?.base64 ?? imageSource?.data ?? imageSource?.buffer ?? null;
-  const imageMimeType = String(imageSource?.mimetype ?? imageSource?.mimeType ?? "image/jpeg");
-
-  if (imageMessage && connectionId && !imageData) {
-    // Try Evolution getBase64FromMediaMessage for images (same as audio)
-    try {
-      const botConfig = await getBotConnectionConfig(connectionId);
-      if (botConfig && (botConfig.provider === "evolution" || botConfig.provider === "veloov")) {
-        const evoUrl = botConfig.fields["evo_url"];
-        const evoToken = botConfig.fields["evo_token"];
-        const evoInstance = botConfig.fields["evo_instance"];
-        if (evoUrl && evoToken && evoInstance) {
-          const msgKeyId = key?.id ? String(key.id) : (data?.message_id ? String(data.message_id) : "");
-          if (msgKeyId) {
-            const requestBody = {
-              message: {
-                key: {
-                  remoteJid: key?.remoteJid ? String(key.remoteJid) : undefined,
-                  fromMe: false,
-                  id: msgKeyId,
-                },
-              },
-            };
-            const delays = [500, 1000];
-            let mediaResp: Response | null = null;
-            for (let attempt = 0; attempt <= delays.length; attempt++) {
-              if (attempt > 0) await new Promise((r) => setTimeout(r, delays[attempt - 1]));
-              mediaResp = await fetch(`${evoUrl}/chat/getBase64FromMediaMessage/${evoInstance}`, {
-                method: "POST",
-                headers: { "Content-Type": "application/json", apikey: evoToken },
-                body: JSON.stringify(requestBody),
-              });
-              if (mediaResp.ok) break;
-            }
-            if (mediaResp && mediaResp.ok) {
-              const mediaData = await mediaResp.json() as Record<string, unknown>;
-              const imgBase64 = mediaData.base64 ?? mediaData.base64Media ?? null;
-              if (imgBase64) {
-                imageData = imgBase64;
-              }
-            }
-          }
-        }
-      }
-    } catch { /* best-effort */ }
-  }
 
   // Also extract caption from imageMessage (text accompanying the photo)
   if (!text && imageSource?.caption) {
     text = String(imageSource.caption);
   }
 
-  if (imageData && (typeof imageData === "string" || imageData instanceof String)) {
-    let imageDataStr = String(imageData);
-    if (imageDataStr.startsWith("data:")) {
-      imageDataStr = imageDataStr.split(",")[1] ?? imageDataStr;
-    }
-    image = { data: imageDataStr, mimetype: imageMimeType };
+  // Mark that a photo was received so the bot can ask for a typed address.
+  if (imageSource && !text) {
+    image = { data: "", mimetype: "" };
   }
 
   if (!rawPhone) return;
-  if (!text && !location && !audio && !image) {
+  if (!text && !location && !audio && !image && !imageSource) {
     // Log when we receive an audioMessage but couldn't extract any audio data
     if (audioMessage && !audio) {
       await supabase.from("admin_logs").insert({
