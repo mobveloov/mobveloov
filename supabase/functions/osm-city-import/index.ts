@@ -14,12 +14,40 @@ const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
 const serviceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
 const supabase = createClient(supabaseUrl, serviceKey);
 
-// R2 config (read from env, never hardcoded)
-const R2_ENDPOINT = Deno.env.get("R2_ENDPOINT") ?? "";
-const R2_ACCESS_KEY_ID = Deno.env.get("R2_ACCESS_KEY_ID") ?? "";
-const R2_SECRET_ACCESS_KEY = Deno.env.get("R2_SECRET_ACCESS_KEY") ?? "";
-const R2_BUCKET = Deno.env.get("R2_BUCKET") ?? "mobveloov";
-const R2_FILE_KEY = Deno.env.get("R2_FILE_KEY") ?? "brazil-260925.osm.pbf";
+// R2 config — read from integration_credentials table (global, tenant_id = NULL)
+// Falls back to env vars if not found in DB
+let R2_ENDPOINT = "";
+let R2_ACCESS_KEY_ID = "";
+let R2_SECRET_ACCESS_KEY = "";
+let R2_BUCKET = "mobveloov";
+let R2_FILE_KEY = "brazil-260925.osm.pbf";
+
+async function loadR2Config(): Promise<void> {
+  const { data } = await supabase
+    .from("integration_credentials")
+    .select("credentials")
+    .is("tenant_id", null)
+    .eq("category", "storage")
+    .eq("provider", "cloudflare_r2")
+    .eq("is_active", true)
+    .order("priority")
+    .limit(1)
+    .maybeSingle();
+  if (data?.credentials) {
+    const c = data.credentials as Record<string, string>;
+    R2_ENDPOINT = c.R2_ENDPOINT || "";
+    R2_ACCESS_KEY_ID = c.R2_ACCESS_KEY_ID || "";
+    R2_SECRET_ACCESS_KEY = c.R2_SECRET_ACCESS_KEY || "";
+    R2_BUCKET = c.R2_BUCKET || "mobveloov";
+    R2_FILE_KEY = c.R2_FILE_KEY || "brazil-260925.osm.pbf";
+  }
+  // Fallback to env vars
+  R2_ENDPOINT = R2_ENDPOINT || Deno.env.get("R2_ENDPOINT") || "";
+  R2_ACCESS_KEY_ID = R2_ACCESS_KEY_ID || Deno.env.get("R2_ACCESS_KEY_ID") || "";
+  R2_SECRET_ACCESS_KEY = R2_SECRET_ACCESS_KEY || Deno.env.get("R2_SECRET_ACCESS_KEY") || "";
+  R2_BUCKET = R2_BUCKET || Deno.env.get("R2_BUCKET") || "mobveloov";
+  R2_FILE_KEY = R2_FILE_KEY || Deno.env.get("R2_FILE_KEY") || "brazil-260925.osm.pbf";
+}
 
 interface CityJob {
   cidade_id: string;
@@ -213,6 +241,7 @@ async function processCityData(
 }
 
 async function handleImport(req: Request): Promise<Response> {
+  await loadR2Config();
   const body = await req.json().catch(() => ({})) as { cidade_id?: string; cidade_nome?: string; estado_sigla?: string; force?: boolean };
   const cidadeId = body.cidade_id;
   const cidadeNome = body.cidade_nome;
