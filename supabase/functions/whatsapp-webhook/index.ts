@@ -2128,6 +2128,7 @@ async function handleBotMessage(
         .from("rides")
         .select("id, status, machine_order_id, passenger_name, company_id")
         .eq("company_id", companyId)
+        .eq("passenger_phone", cleanPhone)
         .in("status", ["pending", "accepted", "en_route", "in_progress"])
         .order("created_at", { ascending: false })
         .limit(1)
@@ -2199,11 +2200,12 @@ async function handleBotMessage(
       return;
     }
 
-    // First cancel request — check if there's an active ride, then ask for confirmation
+    // First cancel request — check if there's an active ride for THIS passenger, then ask for confirmation
     const { data: activeRide } = await supabase
       .from("rides")
       .select("id, status")
       .eq("company_id", companyId)
+      .eq("passenger_phone", cleanPhone)
       .in("status", ["pending", "accepted", "en_route", "in_progress"])
       .order("created_at", { ascending: false })
       .limit(1)
@@ -3047,14 +3049,79 @@ As mensagens do passageiro serao encaminhadas a partir de agora.`;
     }
 
     case "aguardando_cancelamento": {
-      // Any message other than confirm/deny resets to the previous state
-      if (normalizedText === "sim" || normalizedText === "btn_cancelar_sim" || normalizedText === "confirmar") {
-        // Re-trigger the cancel handler by falling through to the global handler
-        // This is handled by the global cancel handler above
-      } else if (normalizedText === "nao" || normalizedText === "btn_cancelar_nao" || normalizedText === "n") {
-        // Also handled by the global cancel handler above
+      const cancelConfirm = ["sim", "s", "1", "confirmar", "btn_cancelar_sim", "sim cancelar", "sim, cancelar"].includes(normalizedText);
+      const cancelDeny = ["nao", "n", "2", "btn_cancelar_nao", "nao manter", "nao, manter", "manter"].includes(normalizedText);
+
+      if (cancelConfirm) {
+        // Find and cancel the active ride for THIS passenger
+        const { data: activeRide } = await supabase
+          .from("rides")
+          .select("id, status, machine_order_id, passenger_name, company_id")
+          .eq("company_id", companyId)
+          .eq("passenger_phone", cleanPhone)
+          .in("status", ["pending", "accepted", "en_route", "in_progress"])
+          .order("created_at", { ascending: false })
+          .limit(1)
+          .maybeSingle();
+
+        if (activeRide) {
+          if (activeRide.machine_order_id) {
+            const { data: credentials } = await supabase
+              .from("company_credentials")
+              .select("machine_api_url, machine_api_key, taximetro_username, taximetro_password")
+              .eq("company_id", companyId)
+              .maybeSingle();
+            const { data: tenantRows } = await supabase
+              .from("tenant_secrets")
+              .select("secret_name, secret_value")
+              .eq("tenant_id", companyId);
+            const tenantMap = new Map(
+              (tenantRows ?? []).map((r: { secret_name: string; secret_value: string }) => [r.secret_name, r.secret_value])
+            );
+            const baseUrl = (credentials?.machine_api_url || "https://api.taximachine.com.br").replace(/\/+$/, "");
+            const apiKey = tenantMap.get("MACHINE_API_KEY") || credentials?.machine_api_key || "";
+            const user = tenantMap.get("TAXIMETRO_USER") || credentials?.taximetro_username || "";
+            const pass = tenantMap.get("TAXIMETRO_PASSWORD") || credentials?.taximetro_password || "";
+            if (apiKey && user && pass) {
+              try {
+                await fetch(`${baseUrl}/api/v2/integracao/corridas/${activeRide.machine_order_id}/cancelar`, {
+                  method: "POST",
+                  headers: {
+                    "Content-Type": "application/json",
+                    "api-key": apiKey,
+                    "Authorization": `Basic ${btoa(`${user}:${pass}`)}`,
+                  },
+                  body: JSON.stringify({ motivo_id: 1 }),
+                });
+              } catch { /* best-effort */ }
+            }
+          }
+
+          await supabase.from("rides").update({
+            status: "canceled",
+            updated_at: new Date().toISOString(),
+          }).eq("id", activeRide.id);
+
+          await supabase.from("admin_logs").insert({
+            company_id: companyId,
+            source: "whatsapp_bot",
+            level: "info",
+            message: `Corrida ${activeRide.id.slice(0, 8)} cancelada via bot por ${activeRide.passenger_name} (${cleanPhone})`,
+            ride_id: activeRide.id,
+          });
+        }
+
+        await supabase.from("bot_conversas")
+          .update({ state: "menu_inicial", ride_id: null, address_text: null, address_lat: null, address_lng: null, address_formatted: null, destination_text: null, destination_lat: null, destination_lng: null, destination_formatted: null, selected_category_id: null, selected_payment_method: null, updated_at: new Date().toISOString() })
+          .eq("id", conv.id);
+
+        await sendBotMessage(companyId, cleanPhone, connectionId, "\u2705 Sua corrida foi cancelada com sucesso. Para solicitar uma nova viagem, envie uma mensagem.");
+      } else if (cancelDeny) {
+        await supabase.from("bot_conversas")
+          .update({ state: "corrida_solicitada", updated_at: new Date().toISOString() })
+          .eq("id", conv.id);
+        await sendBotMessage(companyId, cleanPhone, connectionId, "\u2705 Cancelamento abortado. Sua corrida continua ativa.");
       } else {
-        // Any other message in this state — re-ask for confirmation
         await sendPollMessage(companyId, cleanPhone, connectionId,
           "\u26A0\uFE0F Voce realmente deseja cancelar sua corrida?",
           [{ id: "btn_cancelar_sim", label: "Sim, cancelar \u2705" }, { id: "btn_cancelar_nao", label: "Nao, manter \u{1F695}" }],
