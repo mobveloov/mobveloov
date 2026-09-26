@@ -2437,6 +2437,10 @@ As mensagens do passageiro serao encaminhadas a partir de agora.`;
             isTotemFixo: !!llmCtx.pickupAddress,
           });
           if (llmResult && llmResult.texto_embarque_motorista) {
+            await supabase.from("admin_logs").insert({
+              company_id: companyId, source: "whatsapp_webhook", level: "info",
+              message: `LLM RESULT (audio): eh_rua=${llmResult.eh_rua_oficial} origem="${llmResult.geolocalizacao_origem}" embarque="${llmResult.texto_embarque_motorista}" destino="${llmResult.texto_destino_motorista}"`,
+            });
             const driverText = normalizePickupForDispatch(llmResult.texto_embarque_motorista)!;
             originReference = driverText;
             const llmDest = normalizeDestinationForDispatch(llmResult.texto_destino_motorista);
@@ -2450,6 +2454,10 @@ As mensagens do passageiro serao encaminhadas a partir de agora.`;
             } else {
               addressText = driverText;
             }
+            await supabase.from("admin_logs").insert({
+              company_id: companyId, source: "whatsapp_webhook", level: "info",
+              message: `AUDIO PARSED: addressText="${addressText}" originRef="${originReference}" destRef="${destinationReference}" llmIsRuaOficial=${llmIsRuaOficial}`,
+            });
           } else if (combined) {
             addressText = normalizePickupForDispatch(combined.pickup) ?? normalizePlaceText(combined.pickup);
             combinedDest = normalizeDestinationForDispatch(combined.destination) ?? normalizePlaceText(combined.destination);
@@ -2567,7 +2575,15 @@ As mensagens do passageiro serao encaminhadas a partir de agora.`;
       } else if (looksOfficial) {
         // Official street — try OSM geocoding
         const companyLoc = await getCompanyLocationInfo(companyId, connectionId);
+        await supabase.from("admin_logs").insert({
+          company_id: companyId, source: "whatsapp_webhook", level: "info",
+          message: `GEOCODE DEBUG: addressText="${addressText}" city="${companyLoc.city}" state="${companyLoc.state}" bias=(${companyLoc.lat},${companyLoc.lng})`,
+        });
         const geocoded = await geocodeAddress(addressText, companyLoc.city ?? undefined, companyLoc.state ?? undefined, companyLoc.lat ?? undefined, companyLoc.lng ?? undefined);
+        await supabase.from("admin_logs").insert({
+          company_id: companyId, source: "whatsapp_webhook", level: "info",
+          message: `GEOCODE RESULT: ${geocoded ? `lat=${geocoded.lat} lng=${geocoded.lng} formatted="${geocoded.formatted.slice(0, 80)}"` : "NULL (not found)"}`,
+        });
         if (geocoded) {
           finalLat = geocoded.lat;
           finalLng = geocoded.lng;
@@ -2630,18 +2646,32 @@ As mensagens do passageiro serao encaminhadas a partir de agora.`;
         })
         .eq("id", conv.id);
 
-      // If the LLM or regex already extracted a destination, skip destination
-      // geocoding entirely — the driver sees the text, and the Machine API
-      // calculates the fare by KM (taximeter) with no mapped destination.
+      // If the LLM or regex already extracted a destination, geocode it as a POI
+      // so the Machine API gets real coordinates. If geocoding fails, keep text-only
+      // and the Machine API calculates by KM (taximeter).
       const extractedDest = destinationReference ?? combinedDest ?? null;
       if (extractedDest) {
+        let destLat: number | null = null;
+        let destLng: number | null = null;
+        let destFormatted: string | null = null;
+        const companyLoc = await getCompanyLocationInfo(companyId, connectionId);
+        const destGeocoded = await geocodePOI(extractedDest, companyLoc.city ?? undefined, companyLoc.state ?? undefined, companyLoc.lat ?? undefined, companyLoc.lng ?? undefined);
+        await supabase.from("admin_logs").insert({
+          company_id: companyId, source: "whatsapp_webhook", level: "info",
+          message: `DEST GEOCODE: dest="${extractedDest}" result=${destGeocoded ? `lat=${destGeocoded.lat} lng=${destGeocoded.lng}` : "NULL"}`,
+        });
+        if (destGeocoded) {
+          destLat = destGeocoded.lat;
+          destLng = destGeocoded.lng;
+          destFormatted = destGeocoded.formatted;
+        }
         await supabase.from("bot_conversas")
           .update({
             state: "aguardando_confirmacao",
             destination_text: extractedDest,
-            destination_lat: null,
-            destination_lng: null,
-            destination_formatted: null,
+            destination_lat: destLat,
+            destination_lng: destLng,
+            destination_formatted: destFormatted,
             destination_reference: extractedDest,
             updated_at: new Date().toISOString(),
           })
