@@ -640,6 +640,15 @@ function normalizePlaceText(value: string | null | undefined): string | null {
       .replace(/[,\s]+eu\s*$/i, "")
       .replace(/^eu\s+quero\s+um\s+carro\s+(?:aqui\s+)?(?:na|no|em)\s+/i, "")
       .replace(/^eu\s+/i, "")
+      .replace(/^manda\s+(?:um\s+)?carro\s+(?:aqui\s+)?(?:na|no|em)\s+/i, "")
+      .replace(/^manda\s+(?:um\s+)?carro\s+(?:aqui\s+)?$/i, "")
+      .replace(/^manda\s+(?:um\s+)?(?:carro\s+)?(?:aqui\s+)?$/i, "")
+      .replace(/^me\s+busca\s+(?:aqui\s+)?(?:na|no|em)\s+/i, "")
+      .replace(/^me\s+pega\s+(?:aqui\s+)?(?:na|no|em)\s+/i, "")
+      .replace(/^preciso\s+(?:de\s+)?(?:um\s+)?carro\s+(?:aqui\s+)?(?:na|no|em)\s+/i, "")
+      .replace(/^quero\s+(?:um\s+)?carro\s+(?:aqui\s+)?(?:na|no|em)\s+/i, "")
+      .replace(/^pode\s+(?:mandar|enviar)\s+(?:um\s+)?carro\s+(?:aqui\s+)?(?:na|no|em)\s+/i, "")
+      .replace(/^gostaria\s+(?:de\s+)?(?:um\s+)?carro\s+(?:aqui\s+)?(?:na|no|em)\s+/i, "")
       .trim();
     if (s === before) break;
   }
@@ -669,6 +678,15 @@ function normalizeDestinationForDispatch(value: string | null | undefined): stri
   const normalized = normalizePlaceText(value);
   if (!normalized) return null;
   return normalized.replace(/\bPESQUEIRO\s+DO\s+DIO\b/g, "PESQUEIRO DO DIU");
+}
+
+const DEFAULT_FALLBACK_ADDRESS = "Rua Pernambuco, 402 - Vila Caroni, Pitangueiras - SP";
+
+function hasValidStreetNumber(text: string | null | undefined): boolean {
+  if (!text) return false;
+  const hasStreet = /\b(?:RUA|AVENIDA|AV\.?|TRAVESSA|ALAMEDA|ESTRADA|RODOVIA|VIELA|BECO)\b/i.test(text);
+  const hasNumber = /\b\d{1,6}[A-Z]?\b/i.test(text);
+  return hasStreet && hasNumber;
 }
 
 function extractBairroFromFormatted(formatted: string): string | null {
@@ -3063,6 +3081,23 @@ As mensagens do passageiro serao encaminhadas a partir de agora.`;
       if (!addressText) {
         await sendBotMessage(companyId, cleanPhone, connectionId, msg("address_retry", "\u{1F4CD} Por favor, envie o endereco de embarque. Voce pode digitar, enviar sua localizacao, mandar um audio ou enviar uma foto da fachada."));
         return;
+      }
+
+      // If we couldn't extract a valid street + number from the message and there's
+      // no location/image, use the default fallback address so the ride still goes out.
+      if (!location && !image && !hasValidStreetNumber(addressText) && !looksLikeOfficialAddress(addressText)) {
+        const companyLoc = await getCompanyLocationInfo(companyId, connectionId);
+        const fallbackAddr = companyLoc.pickupAddress
+          ? `${companyLoc.pickupAddress}, ${companyLoc.city ?? ""} - ${companyLoc.state ?? ""}`.trim()
+          : DEFAULT_FALLBACK_ADDRESS;
+        await supabase.from("admin_logs").insert({
+          company_id: companyId, source: "whatsapp_webhook", level: "info",
+          message: `FALLBACK EMBARQUE: texto="${addressText}" nao continha rua+numero validos, usando fallback="${fallbackAddr}"`,
+        });
+        // Keep the original text as the driver-facing reference, but use the fallback
+        // for geocoding coordinates and the Machine API payload.
+        originReference = addressText;
+        addressText = fallbackAddr;
       }
 
       // If the LLM identified this as an informal place (not a real street),

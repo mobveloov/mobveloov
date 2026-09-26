@@ -417,22 +417,25 @@ async function dispatchToMachine(
   }
 
   if (data.destination?.address) {
+    const destHasCoords = hasRealCoords(data.destination.lat, data.destination.lng);
     v2Payload.desejado = {
-      endereco: ensureCityStateSuffix(data.destination.address),
+      // Only append city/state suffix when we have real coordinates.
+      // For informal destinations (no coords), send the raw text so the Machine
+      // registers the ride for KM-based fare without breaking its text search.
+      endereco: destHasCoords ? ensureCityStateSuffix(data.destination.address) : data.destination.address,
       bairro: extractBairro(data.destination.address) || "Centro",
-      ...(cidade ? { cidade } : {}),
-      ...(estado ? { estado } : {}),
-      ...(hasRealCoords(data.destination.lat, data.destination.lng) ? { lat: data.destination.lat, lng: data.destination.lng } : {}),
+      ...(destHasCoords && cidade ? { cidade } : {}),
+      ...(destHasCoords && estado ? { estado } : {}),
+      ...(destHasCoords ? { lat: data.destination.lat, lng: data.destination.lng } : {}),
       ...(data.destination_reference ? { referencia: data.destination_reference } : {}),
     };
   } else if (data.destination_reference) {
     // No geocoded destination — send the reference text as both endereco and
     // referencia so the Machine API and driver know where to go, and the
     // fare is calculated by KM (taximeter) instead of a fixed route.
+    // Do NOT append city/state for informal destinations.
     v2Payload.desejado = {
-      endereco: ensureCityStateSuffix(data.destination_reference),
-      ...(cidade ? { cidade } : {}),
-      ...(estado ? { estado } : {}),
+      endereco: data.destination_reference,
       referencia: data.destination_reference,
     };
   }
