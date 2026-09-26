@@ -1111,58 +1111,60 @@ async function geocodeAddress(address: string, city?: string, state?: string, bi
   }
 
   // 2. Fallback: Nominatim with viewbox bias
-  const q = city ? `${address}, ${city}` : address;
-  let url = `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(q)}&format=json&limit=1&countrycodes=br&addressdetails=1`;
-  if (biasLat != null && biasLng != null) {
-    const delta = 0.45; // ~50km
-    const left = biasLng - delta;
-    const right = biasLng + delta;
-    const top = biasLat + delta;
-    const bottom = biasLat - delta;
-    url += `&viewbox=${left},${top},${right},${bottom}&bounded=1`;
-  }
-  for (let attempt = 0; attempt < 3; attempt++) {
-    try {
-      const resp = await fetch(url, { headers: { "User-Agent": "VeloovBot/1.0 (contato@veloov.com.br)" } });
-      if (resp.ok) {
-        const results = await resp.json();
-        if (Array.isArray(results) && results.length > 0) {
-          const r = results[0];
-          let formatted = r.display_name ?? address;
-          if (passengerHouseNumber && !formatted.toLowerCase().includes(passengerHouseNumber.toLowerCase())) {
-            formatted = preserveHouseNumberInFormatted(formatted, passengerHouseNumber);
+  const normalizedAddress = address.replace(/\s+/g, " ").replace(/\s*,\s*/g, ", ").trim();
+  const queryCandidates = Array.from(new Set([
+    city ? `${normalizedAddress}, ${city}, ${state ?? "SP"}` : normalizedAddress,
+    city ? `${normalizedAddress.replace(/^rua\s+/i, "")}, ${city}, ${state ?? "SP"}` : normalizedAddress.replace(/^rua\s+/i, ""),
+    city ? `${normalizedAddress.replace(/,\s*\d+\s*$/, "")}, ${city}, ${state ?? "SP"}` : normalizedAddress.replace(/,\s*\d+\s*$/, ""),
+  ]));
+  const q = queryCandidates[0];
+
+  for (let candidateIdx = 0; candidateIdx < queryCandidates.length; candidateIdx++) {
+    const candidateQ = queryCandidates[candidateIdx];
+    let candidateUrl = `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(candidateQ)}&format=json&limit=1&countrycodes=br&addressdetails=1`;
+    if (biasLat != null && biasLng != null) {
+      const delta = 0.45;
+      candidateUrl += `&viewbox=${biasLng - delta},${biasLat + delta},${biasLng + delta},${biasLat - delta}&bounded=1`;
+    }
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        const resp = await fetch(candidateUrl, { headers: { "User-Agent": "VeloovBot/1.0 (contato@veloov.com.br)" } });
+        if (resp.ok) {
+          const results = await resp.json();
+          if (Array.isArray(results) && results.length > 0) {
+            const r = results[0];
+            let formatted = r.display_name ?? address;
+            if (passengerHouseNumber && !formatted.toLowerCase().includes(passengerHouseNumber.toLowerCase())) {
+              formatted = preserveHouseNumberInFormatted(formatted, passengerHouseNumber);
+            }
+            return { lat: parseFloat(r.lat), lng: parseFloat(r.lon), formatted };
           }
-          return {
-            lat: parseFloat(r.lat),
-            lng: parseFloat(r.lon),
-            formatted,
-          };
-        }
-        if (biasLat != null && biasLng != null) {
-          // No results with bounded viewbox — retry without boundary restriction
-          const unboundedUrl = url.replace(/&viewbox=[^&]+&bounded=1/, "");
-          const resp2 = await fetch(unboundedUrl, { headers: { "User-Agent": "VeloovBot/1.0 (contato@veloov.com.br)" } });
-          if (resp2.ok) {
-            const results2 = await resp2.json();
-            if (Array.isArray(results2) && results2.length > 0) {
-              const r = results2[0];
-              let formatted = r.display_name ?? address;
-              if (passengerHouseNumber && !formatted.toLowerCase().includes(passengerHouseNumber.toLowerCase())) {
-                formatted = preserveHouseNumberInFormatted(formatted, passengerHouseNumber);
+          // No results with bounded viewbox — try unbounded
+          if (biasLat != null && biasLng != null) {
+            const unboundedUrl = candidateUrl.replace(/&viewbox=[^&]+&bounded=1/, "");
+            const resp2 = await fetch(unboundedUrl, { headers: { "User-Agent": "VeloovBot/1.0 (contato@veloov.com.br)" } });
+            if (resp2.ok) {
+              const results2 = await resp2.json();
+              if (Array.isArray(results2) && results2.length > 0) {
+                const r = results2[0];
+                let formatted = r.display_name ?? address;
+                if (passengerHouseNumber && !formatted.toLowerCase().includes(passengerHouseNumber.toLowerCase())) {
+                  formatted = preserveHouseNumberInFormatted(formatted, passengerHouseNumber);
+                }
+                return { lat: parseFloat(r.lat), lng: parseFloat(r.lon), formatted };
               }
-              return { lat: parseFloat(r.lat), lng: parseFloat(r.lon), formatted };
             }
           }
+          break; // try next candidate
         }
-        return null;
+        if (resp.status === 429 && attempt === 0) {
+          await new Promise((r) => setTimeout(r, 2200));
+          continue;
+        }
+        break;
+      } catch {
+        if (attempt === 0) await new Promise((r) => setTimeout(r, 1100));
       }
-      if (resp.status === 429 && attempt < 2) {
-        await new Promise((r) => setTimeout(r, 2200));
-        continue;
-      }
-      return null;
-    } catch {
-      if (attempt < 2) await new Promise((r) => setTimeout(r, 1100));
     }
   }
 
@@ -5058,15 +5060,23 @@ async function handleIncomingMessage(companyId: string, data: Record<string, unk
     return;
   }
 
-  // Only handle "cancelar" (and variations like "cancelar corrida", "cancela")
-  if (!normalizedText.includes("cancel")) return;
+  // Handle the cancel command and replies to the confirmation step.
+  const cancelReplyTexts = ["sim", "s", "1", "confirmar", "btn_cancelar_sim", "sim cancelar", "sim, cancelar", "nao", "n", "2", "btn_cancelar_nao", "nao manter", "nao, manter", "manter"];
+  const { data: cancelConversation } = await supabase
+    .from("bot_conversas")
+    .select("id, state")
+    .eq("company_id", companyId)
+    .eq("phone", cleanPhone)
+    .maybeSingle();
+  const isCancelReply = cancelConversation?.state === "aguardando_cancelamento" && cancelReplyTexts.includes(normalizedText);
+  if (!normalizedText.includes("cancel") && !isCancelReply) return;
 
   // If this is the first cancel request (not already waiting for confirmation),
   // ask the passenger to confirm before actually canceling.
   const cancelConfirmTexts = ["sim", "s", "1", "confirmar", "btn_cancelar_sim", "sim cancelar", "sim, cancelar"];
   const cancelDenyTexts = ["nao", "n", "2", "btn_cancelar_nao", "nao manter", "nao, manter", "manter"];
-  const conv2 = await supabase.from("bot_conversas").select("id, state").eq("company_id", companyId).eq("phone", cleanPhone).maybeSingle();
-  const convState = conv2.data?.state ?? "";
+  const conv2 = cancelConversation;
+  const convState = conv2?.state ?? "";
 
   if (convState === "aguardando_cancelamento") {
     if (cancelDenyTexts.includes(normalizedText)) {
