@@ -428,126 +428,12 @@ async function sendPollMessage(
   bodyText: string,
   buttons: InteractiveButton[],
 ): Promise<void> {
-  try {
-    let provider: string;
-    let f: Record<string, string>;
-    if (connectionId) {
-      const botConfig = await getBotConnectionConfig(connectionId);
-      if (botConfig) { provider = botConfig.provider; f = botConfig.fields; }
-      else { const c = await getCompanyWhatsAppConfig(companyId); provider = c.provider; f = c.fields; }
-    } else {
-      const c = await getCompanyWhatsAppConfig(companyId); provider = c.provider; f = c.fields;
-    }
-
-    const sent = await sendPollWithProvider(provider, f, phone, bodyText, buttons);
-    // Always send a text fallback with numbered options — poll votes may arrive
-    // encrypted and unreadable, so the passenger needs a way to reply by text.
-    const fallbackMsg = `${buttons.map((b, i) => `${i + 1} - ${b.label}`).join("\n")}\n\nResponda com o numero ou nome da opcao.`;
-    await sendBotMessage(companyId, phone, connectionId, fallbackMsg);
-  } catch (err) {
-    await supabase.from("admin_logs").insert({
-      company_id: companyId,
-      source: "whatsapp_webhook", level: "error",
-      message: `sendPollMessage exception for ${phone}: ${err instanceof Error ? err.message.slice(0, 500) : String(err).slice(0, 500)}`,
-    });
-    const fallbackMsg = `${bodyText}\n\n${buttons.map((b, i) => `${i + 1} - ${b.label}`).join("\n")}\n\nResponda com o numero da opcao.`;
-    await sendBotMessage(companyId, phone, connectionId, fallbackMsg);
-  }
-}
-
-async function sendPollWithProvider(
-  provider: string,
-  f: Record<string, string>,
-  cleanPhone: string,
-  bodyText: string,
-  buttons: InteractiveButton[],
-): Promise<boolean> {
-  if (provider === "evolution" || provider === "veloov") {
-    const url = f["evo_url"] ?? "";
-    const token = f["evo_token"] ?? "";
-    if (!url || !token) return false;
-    const instance = f["evo_instance"] || "veloov";
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 10000);
-    let resp: Response;
-    // WhatsApp native polls: selectableCount=1 means single vote, cannot be changed.
-    // Poll votes arrive encrypted (pollUpdateMessage.vote.encPayload) which we cannot
-    // decrypt without the Baileys session store. So we always send a text fallback
-    // after the poll so passengers can type their choice if the vote is encrypted.
-    try {
-      resp = await fetch(`${url}/message/sendPoll/${instance}`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", apikey: token },
-        body: JSON.stringify({
-          number: cleanPhone,
-          name: bodyText,
-          selectableCount: 1,
-          values: buttons.slice(0, 10).map((b) => b.label),
-          delay: 1200,
-        }),
-        signal: controller.signal,
-      });
-    } catch (fetchErr) {
-      clearTimeout(timeout);
-      await supabase.from("admin_logs").insert({
-        source: "whatsapp_webhook", level: "error",
-        message: `sendPoll Evolution fetch error for ${cleanPhone}: ${fetchErr instanceof Error ? fetchErr.message.slice(0, 500) : String(fetchErr).slice(0, 500)}`,
-      });
-      return false;
-    }
-    clearTimeout(timeout);
-    const respBody = await resp.text().catch(() => "");
-    if (!resp.ok) {
-      await supabase.from("admin_logs").insert({
-        source: "whatsapp_webhook", level: "error",
-        message: `sendPoll Evolution HTTP ${resp.status} for ${cleanPhone}: ${respBody.slice(0, 500)}`,
-      });
-    }
-    return resp.ok;
-  }
-
-  if (provider === "meta_cloud") {
-    // Meta Cloud API doesn't support polls — use interactive buttons as fallback.
-    const token = f["meta_token"] ?? "";
-    const phoneId = f["meta_phone_id"] ?? "";
-    if (!token || !phoneId) return false;
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 10000);
-    let resp: Response;
-    try {
-      resp = await fetch(`https://graph.facebook.com/v20.0/${phoneId}/messages`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-        body: JSON.stringify({
-          messaging_product: "whatsapp",
-          to: cleanPhone,
-          type: "interactive",
-          interactive: {
-            type: "button",
-            body: { text: bodyText },
-            action: {
-              buttons: buttons.slice(0, 3).map((b) => ({
-                type: "reply",
-                reply: { id: b.id, title: b.label.slice(0, 20) },
-              })),
-            },
-          },
-        }),
-        signal: controller.signal,
-      });
-    } catch (fetchErr) {
-      clearTimeout(timeout);
-      await supabase.from("admin_logs").insert({
-        source: "whatsapp_webhook", level: "error",
-        message: `sendPoll Meta fetch error for ${cleanPhone}: ${fetchErr instanceof Error ? fetchErr.message.slice(0, 500) : String(fetchErr).slice(0, 500)}`,
-      });
-      return false;
-    }
-    clearTimeout(timeout);
-    return resp.ok;
-  }
-
-  return false;
+  // Polls and interactive buttons don't work reliably: WhatsApp encrypts poll
+  // votes and Meta blocks buttons on non-official instances. Send plain text
+  // with numbered options so the passenger can reply by typing or audio.
+  const optionText = buttons.map((b, i) => `${i + 1} - ${b.label}`).join("\n");
+  const message = `${bodyText}\n\n${optionText}\n\nResponda com o numero ou nome da opcao.`;
+  await sendBotMessage(companyId, phone, connectionId, message);
 }
 
 // ── Bot: WhatsApp ride-request flow ──
@@ -2826,7 +2712,7 @@ As mensagens do passageiro serao encaminhadas a partir de agora.`;
     }
 
     case "aguardando_confirmacao": {
-      if (!flow.confirm_address || ["sim", "sim.", "s", "confirmo", "confirmar", "sim!", "conf_sim"].includes(normalizedText)) {
+      if (!flow.confirm_address || ["sim", "sim.", "s", "confirmo", "confirmar", "sim!", "conf_sim", "1"].includes(normalizedText)) {
         const companyLoc = await getCompanyLocationInfo(companyId, connectionId);
         if (!companyLoc.slug) {
           await sendBotMessage(companyId, cleanPhone, connectionId, "Erro: empresa nao configurada corretamente. Tente novamente mais tarde.");
@@ -2834,7 +2720,7 @@ As mensagens do passageiro serao encaminhadas a partir de agora.`;
         }
 
         await proceedAfterDestination(companyId, cleanPhone, connectionId, conv.id, msg, flow);
-      } else if (["nao", "nao.", "n", "errado", "nao!", "conf_nao"].includes(normalizedText)) {
+      } else if (["nao", "nao.", "n", "errado", "nao!", "conf_nao", "2"].includes(normalizedText)) {
         await supabase.from("bot_conversas")
           .update({ state: "aguardando_endereco", updated_at: new Date().toISOString() })
           .eq("id", conv.id);
