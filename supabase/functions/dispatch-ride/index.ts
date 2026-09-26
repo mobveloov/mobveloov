@@ -262,6 +262,8 @@ Deno.serve(async (req: Request) => {
         price: price ?? 0,
         distance: distance ?? 0,
         payment_method: body.payment_method ?? "",
+        city: body.city,
+        state: body.state,
       });
     }
 
@@ -306,11 +308,13 @@ async function dispatchToMachine(
     price: number;
     distance: number;
     payment_method: string;
+    city?: string;
+    state?: string;
   },
 ): Promise<Response> {
   const { data: credentials } = await supabase
     .from("company_credentials")
-    .select("machine_api_url, machine_api_key, taximetro_username, taximetro_password")
+    .select("machine_api_url, machine_api_key, taximetro_username, taximetro_password, city, state")
     .eq("company_id", companyId)
     .single();
 
@@ -358,6 +362,10 @@ async function dispatchToMachine(
   // Machine API limits id_externo to 36 chars, so use first 8 chars of rideId + timestamp.
   const externalId = `${rideId.slice(0, 8)}${Date.now()}`;
 
+  // Resolve city/state: prefer the dispatch body, fall back to company credentials
+  const cidade = data.city || credentials?.city || undefined;
+  const estado = data.state || credentials?.state || undefined;
+
   // Build the v2 API payload per docs.machine.global spec
   const v2Payload: Record<string, unknown> = {
     id_externo: externalId,
@@ -376,6 +384,8 @@ async function dispatchToMachine(
     partida: {
       endereco: data.origin?.address || "Endereço não informado",
       bairro: extractBairro(data.origin?.address) || "Centro",
+      ...(cidade ? { cidade } : {}),
+      ...(estado ? { estado } : {}),
       ...(data.origin?.lat != null ? { lat: data.origin.lat } : {}),
       ...(data.origin?.lng != null ? { lng: data.origin.lng } : {}),
       ...(data.origin_reference ? { referencia: data.origin_reference } : {}),
@@ -394,6 +404,8 @@ async function dispatchToMachine(
     v2Payload.desejado = {
       endereco: data.destination.address,
       bairro: extractBairro(data.destination.address) || "Centro",
+      ...(cidade ? { cidade } : {}),
+      ...(estado ? { estado } : {}),
       ...(data.destination.lat != null ? { lat: data.destination.lat } : {}),
       ...(data.destination.lng != null ? { lng: data.destination.lng } : {}),
       ...(data.destination_reference ? { referencia: data.destination_reference } : {}),
@@ -404,6 +416,8 @@ async function dispatchToMachine(
     // fare is calculated by KM (taximeter) instead of a fixed route.
     v2Payload.desejado = {
       endereco: data.destination_reference,
+      ...(cidade ? { cidade } : {}),
+      ...(estado ? { estado } : {}),
       referencia: data.destination_reference,
     };
   }
