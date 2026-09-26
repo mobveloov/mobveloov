@@ -532,6 +532,46 @@ function deaccent(s: string): string {
   return s.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().trim();
 }
 
+const AFFIRMATIVE_WORDS = new Set([
+  "sim", "si", "s", "sin", "ss", "simr", "comcerteza", "com certeza", "pode mandar",
+  "manda", "bora", "ok", "okay", "okk", "confirmo", "confirmar", "confirma", "comfima",
+  "comfirma", "isso", "exato", "claro", "certo", "correto", "pode ser", "fechado",
+  "1", "conf_sim", "sim confirmar", "sim, confirmar",
+]);
+
+const NEGATIVE_WORDS = new Set([
+  "nao", "nn", "n", "naum", "naum", "nop", "nope", "errado", "errada", "engano",
+  "cancelar", "cancela", "canselar", "cansela", "mudei de ideia", "mudei", "corrigir",
+  "corrigi", "mudar", "muda", "parar", "para", "nao confirmar", "2", "conf_nao",
+  "nao corrigir", "nao, corrigir",
+]);
+
+function isAffirmative(text: string): boolean {
+  const d = deaccent(text).replace(/[^a-z0-9\s]/g, "").replace(/\s+/g, " ").trim();
+  if (AFFIRMATIVE_WORDS.has(d)) return true;
+  if (d.startsWith("sim") || d.startsWith("confirma") || d.startsWith("confirmo")) return true;
+  return false;
+}
+
+function isNegative(text: string): boolean {
+  const d = deaccent(text).replace(/[^a-z0-9\s]/g, "").replace(/\s+/g, " ").trim();
+  if (NEGATIVE_WORDS.has(d)) return true;
+  if (d.startsWith("nao") || d.startsWith("nn") || d.startsWith("cancel") || d.startsWith("cansel") || d.startsWith("errad")) return true;
+  return false;
+}
+
+function isCancelConfirmation(text: string): boolean {
+  const d = deaccent(text).replace(/[^a-z0-9\s]/g, "").replace(/\s+/g, " ").trim();
+  return ["1", "sim cancelar", "sim cancelar corrida", "confirmar cancelamento", "btn_cancelar_sim", "conf_sim", "cancelar", "cancela", "canselar", "cansela"].includes(d)
+    || (isAffirmative(d) && !isNegative(d));
+}
+
+function isCancelDenial(text: string): boolean {
+  const d = deaccent(text).replace(/[^a-z0-9\s]/g, "").replace(/\s+/g, " ").trim();
+  return ["2", "nao manter", "nao manter corrida", "btn_cancelar_nao", "manter"].includes(d)
+    || isNegative(d);
+}
+
 // Evolution v2 button replies may carry the display text instead of the button id.
 // Map the display text back to the semantic id (conf_sim, cat_..., pay_...) so the
 // state machine can match it. Falls back to the raw id when no known label matches.
@@ -2566,12 +2606,12 @@ async function handleBotMessage(
     }
   }
 
-  const normalizedText = (text ?? "").trim().toLowerCase();
+  const normalizedText = deaccent(text ?? "");
 
-  // Global cancel handler — works in any bot state. Asks for confirmation before canceling.
-  if (normalizedText.includes("cancel") || normalizedText === "cancelar" || normalizedText === "cancela" || normalizedText === "btn_cancelar") {
-    // If already in confirmation state and user confirms, proceed with cancel
-    if (conv.state === "aguardando_cancelamento" && (normalizedText === "sim" || normalizedText === "btn_cancelar_sim" || normalizedText === "confirmar" || normalizedText === "1" || normalizedText === "s")) {
+  // Handle the cancel confirmation before the global cancel-request shortcut.
+  if (conv.state === "aguardando_cancelamento" && isCancelConfirmation(text ?? "")) {
+    // Confirming a cancellation must cancel the active ride instead of asking again.
+    if (isCancelConfirmation(text ?? "")) {
       // Find active ride for this passenger
       const { data: activeRide } = await supabase
         .from("rides")
@@ -2641,7 +2681,7 @@ async function handleBotMessage(
     }
 
     // If in confirmation state and user says no, abort cancel
-    if (conv.state === "aguardando_cancelamento" && (normalizedText === "nao" || normalizedText === "btn_cancelar_nao" || normalizedText === "n" || normalizedText === "2")) {
+    if (conv.state === "aguardando_cancelamento" && isCancelDenial(text ?? "")) {
       await supabase.from("bot_conversas")
         .update({ state: "corrida_solicitada", updated_at: new Date().toISOString() })
         .eq("id", conv.id);
@@ -2676,6 +2716,48 @@ async function handleBotMessage(
       .update({ state: "menu_inicial", ride_id: null, address_text: null, address_lat: null, address_lng: null, address_formatted: null, destination_text: null, destination_lat: null, destination_lng: null, destination_formatted: null, selected_category_id: null, selected_payment_method: null, updated_at: new Date().toISOString() })
       .eq("id", conv.id);
     await sendBotMessage(companyId, cleanPhone, connectionId, "\u2705 Nao ha corrida ativa para cancelar. Para solicitar uma nova viagem, envie uma mensagem.");
+    return;
+  }
+
+  // Global cancel handler — works in any bot state. Asks for confirmation before canceling.
+  if (normalizedText.includes("cancel") || normalizedText === "cancelar" || normalizedText === "cancela" || normalizedText === "btn_cancelar" || deaccent(text ?? "").startsWith("cansel")) {
+    switch (conv.state) {
+      case "aguardando_cancelamento":
+        if (isCancelDenial(text ?? "")) {
+          await supabase.from("bot_conversas")
+            .update({ state: "corrida_solicitada", updated_at: new Date().toISOString() })
+            .eq("id", conv.id);
+          await sendBotMessage(companyId, cleanPhone, connectionId, "✅ Cancelamento abortado. Sua corrida continua ativa.");
+          return;
+        }
+        break;
+    }
+
+    const { data: activeRide } = await supabase
+      .from("rides")
+      .select("id, status")
+      .eq("company_id", companyId)
+      .eq("passenger_phone", cleanPhone)
+      .in("status", ["pending", "accepted", "en_route", "in_progress"])
+      .order("created_at", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+
+    if (activeRide) {
+      await supabase.from("bot_conversas")
+        .update({ state: "aguardando_cancelamento", updated_at: new Date().toISOString() })
+        .eq("id", conv.id);
+      await sendPollMessage(companyId, cleanPhone, connectionId,
+        "⚠️ Você realmente deseja cancelar sua corrida?",
+        [{ id: "btn_cancelar_sim", label: "Sim, cancelar ✅" }, { id: "btn_cancelar_nao", label: "Não, manter 🚕" }],
+      );
+      return;
+    }
+
+    await supabase.from("bot_conversas")
+      .update({ state: "menu_inicial", ride_id: null, address_text: null, address_lat: null, address_lng: null, address_formatted: null, destination_text: null, destination_lat: null, destination_lng: null, destination_formatted: null, selected_category_id: null, selected_payment_method: null, updated_at: new Date().toISOString() })
+      .eq("id", conv.id);
+    await sendBotMessage(companyId, cleanPhone, connectionId, "✅ Não há corrida ativa para cancelar. Para solicitar uma nova viagem, envie uma mensagem.");
     return;
   }
 
@@ -2718,7 +2800,8 @@ async function handleBotMessage(
       }
       const looksLikeRideDetails = normalizedText.length > 3 &&
         ["estou", "to ", "tô ", "vou ", "para ", "pra ", "em ", "na ", "no ", "leva", "leva ", "me pega", "me busca", "quero ir", "ir pro", "ir pra", "indo", "origem", "destino", "embarque", "rua ", "avenida ", "praca ", "travessa "].some((marker) => normalizedText.includes(marker));
-      const requestedRide = ["1", "corrida", "sim", "sim.", "quero", "viagem", "sim!", "menu_corrida"].includes(normalizedText)
+      const requestedRide = ["1", "corrida", "sim", "quero", "viagem", "menu_corrida"].includes(normalizedText)
+        || isAffirmative(text ?? "")
         || normalizedText.includes("corrida")
         || normalizedText.includes("viagem")
         || looksLikeRideDetails;
@@ -2767,7 +2850,7 @@ async function handleBotMessage(
         } else {
           await sendBotMessage(companyId, cleanPhone, connectionId, msg("ask_address", "\u{1F4CD} Perfeito! Qual e o endereco de embarque? Voce pode digitar o endereco, enviar sua localizacao ou mandar um audio."));
         }
-      } else if (["2", "suporte", "ajuda", "suport", "menu_suporte"].includes(normalizedText)) {
+      } else if (["2", "suporte", "ajuda", "suport", "menu_suporte"].includes(normalizedText) || (deaccent(text ?? "").startsWith("suport") && normalizedText.length > 3)) {
         // Fetch company support WhatsApp
         const { data: company } = await supabase
           .from("companies")
@@ -2799,7 +2882,7 @@ As mensagens do passageiro serao encaminhadas a partir de agora.`;
             .update({ state: "menu_inicial", updated_at: new Date().toISOString() })
             .eq("id", conv.id);
         }
-      } else if (["nao", "nao.", "cancelar", "n"].includes(normalizedText)) {
+      } else if (isNegative(text ?? "") || ["cancelar"].includes(normalizedText)) {
         await supabase.from("bot_conversas")
           .update({ state: "corrida_solicitada", updated_at: new Date().toISOString() })
           .eq("id", conv.id);
@@ -3380,8 +3463,8 @@ As mensagens do passageiro serao encaminhadas a partir de agora.`;
 
     case "aguardando_confirmacao": {
       // First try exact text matching, then fall back to LLM intent detection
-      const isSim = ["sim", "sim.", "s", "confirmo", "confirmar", "sim!", "conf_sim", "1"].includes(normalizedText);
-      const isNao = ["nao", "nao.", "n", "errado", "nao!", "conf_nao", "2"].includes(normalizedText);
+      const isSim = isAffirmative(text ?? "") || ["conf_sim"].includes(normalizedText);
+      const isNao = isNegative(text ?? "") || ["conf_nao"].includes(normalizedText);
 
       // If exact match failed, try LLM-based intent detection for typo tolerance
       if (!isSim && !isNao && text && text.trim().length > 0) {
@@ -3565,8 +3648,8 @@ As mensagens do passageiro serao encaminhadas a partir de agora.`;
     }
 
     case "aguardando_cancelamento": {
-      const cancelConfirm = ["sim", "s", "1", "confirmar", "btn_cancelar_sim", "sim cancelar", "sim, cancelar"].includes(normalizedText);
-      const cancelDeny = ["nao", "n", "2", "btn_cancelar_nao", "nao manter", "nao, manter", "manter"].includes(normalizedText);
+      const cancelConfirm = isCancelConfirmation(text ?? "");
+      const cancelDeny = isCancelDenial(text ?? "");
 
       if (cancelConfirm) {
         // Find and cancel the active ride for THIS passenger
