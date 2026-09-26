@@ -630,6 +630,17 @@ function normalizeDestinationForDispatch(value: string | null | undefined): stri
   return normalized.replace(/\bPESQUEIRO\s+DO\s+DIO\b/g, "PESQUEIRO DO DIU");
 }
 
+function extractBairroFromFormatted(formatted: string): string | null {
+  // Nominatim format: "Rua Arthur Mesquita, 57 - Jardim Santa Vitoria - Pitangueiras - SP"
+  const dashParts = formatted.split(" - ").map((s) => s.trim()).filter(Boolean);
+  if (dashParts.length >= 3) return dashParts[1] || null;
+  // Google/comma format: "Rua Arthur Mesquita, 57, Jardim Santa Vitoria, Pitangueiras - SP"
+  const commaParts = formatted.split(",").map((s) => s.trim()).filter(Boolean);
+  if (commaParts.length >= 4) return commaParts[commaParts.length - 3] || null;
+  if (commaParts.length === 3) return commaParts[1] || null;
+  return null;
+}
+
 // NLU: Uses LLM (OpenAI/Groq chat completion) to extract structured ride intent from a free-form message.
 // Falls back to null if no LLM key is configured, letting the regex-based parseCombinedAddress handle it.
 // Updated: added post-LLM normalization to strip residual "EU" suffix and fix common transcription errors.
@@ -2488,7 +2499,11 @@ As mensagens do passageiro serao encaminhadas a partir de agora.`;
         if (geocoded) {
           finalLat = geocoded.lat;
           finalLng = geocoded.lng;
-          finalAddress = addressText;
+          finalAddress = geocoded.formatted;
+          const bairro = extractBairroFromFormatted(geocoded.formatted);
+          if (bairro && originReference && !originReference.includes(bairro.toUpperCase())) {
+            originReference = `${originReference}, ${bairro.toUpperCase()}`;
+          }
         } else if (companyLoc.lat != null && companyLoc.lng != null) {
           finalLat = companyLoc.lat;
           finalLng = companyLoc.lng;

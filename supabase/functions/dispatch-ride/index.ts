@@ -520,8 +520,13 @@ async function dispatchToMachine(
 
 function extractBairro(address?: string): string | null {
   if (!address) return null;
-  const parts = address.split(",").map((s) => s.trim());
-  if (parts.length >= 3) return parts[parts.length - 2] || null;
+  // Nominatim format: "Rua Arthur Mesquita, 57 - Jardim Santa Vitoria - Pitangueiras - SP"
+  const dashParts = address.split(" - ").map((s) => s.trim()).filter(Boolean);
+  if (dashParts.length >= 3) return dashParts[1] || null;
+  // Google/comma format: "Rua Arthur Mesquita, 57, Jardim Santa Vitoria, Pitangueiras - SP"
+  const commaParts = address.split(",").map((s) => s.trim()).filter(Boolean);
+  if (commaParts.length >= 4) return commaParts[commaParts.length - 3] || null;
+  if (commaParts.length === 3) return commaParts[1] || null;
   return null;
 }
 
